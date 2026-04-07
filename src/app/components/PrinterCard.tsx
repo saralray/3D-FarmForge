@@ -124,8 +124,8 @@ export function PrinterCard({ printer, canManage = false, onRemove }: PrinterCar
           <div className={`w-full h-2 rounded-full ${getStatusColor()} opacity-20 mb-3`} />
           <div className="grid grid-cols-2 gap-2 text-sm">
             <div>
-              <div className="text-gray-500 dark:text-gray-400">Location</div>
-              <div className="font-medium text-sm dark:text-white">{printer.location}</div>
+              <div className="text-gray-500 dark:text-gray-400">IP Address</div>
+              <div className="font-medium text-sm dark:text-white">{printer.ipAddress}</div>
             </div>
             <div>
               <div className="text-gray-500 dark:text-gray-400">Success Rate</div>

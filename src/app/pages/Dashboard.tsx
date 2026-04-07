@@ -7,19 +7,31 @@ import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Alert } from '../components/ui/alert';
 import { useAuth } from '../contexts/AuthContext';
 
 const PRINTER_STORAGE_KEY = 'printfarm_printers';
 const IPV4_PATTERN =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+function normalizePrinter(printer: Partial<Printer>, index: number): Printer {
+  return {
+    id: printer.id ?? `printer-${index + 1}`,
+    name: printer.name ?? `Printer ${index + 1}`,
+    model: printer.model ?? 'Unknown Model',
+    ipAddress: printer.ipAddress ?? '0.0.0.0',
+    apiKeyHeader: printer.apiKeyHeader ?? '',
+    status: printer.status ?? 'offline',
+    currentJob: printer.currentJob,
+    temperature: printer.temperature ?? { nozzle: 0, bed: 0 },
+    progress: printer.progress ?? 0,
+    lastMaintenance: printer.lastMaintenance ?? new Date().toISOString().slice(0, 10),
+    totalPrintTime: printer.totalPrintTime ?? 0,
+    successRate: printer.successRate ?? 0,
+    spools: printer.spools,
+  };
+}
 
 function readStoredPrinters(): Printer[] {
   const rawValue = localStorage.getItem(PRINTER_STORAGE_KEY);
@@ -29,11 +41,11 @@ function readStoredPrinters(): Printer[] {
   }
 
   try {
-    const parsed = JSON.parse(rawValue) as Printer[];
+    const parsed = JSON.parse(rawValue) as Partial<Printer>[];
     if (!Array.isArray(parsed)) {
       throw new Error('Invalid printers');
     }
-    return parsed;
+    return parsed.map(normalizePrinter);
   } catch {
     localStorage.setItem(PRINTER_STORAGE_KEY, JSON.stringify(mockPrinters));
     return mockPrinters;
@@ -46,8 +58,7 @@ export function Dashboard() {
   const [printerName, setPrinterName] = useState('');
   const [printerModel, setPrinterModel] = useState('');
   const [printerIpAddress, setPrinterIpAddress] = useState('');
-  const [printerLocation, setPrinterLocation] = useState('');
-  const [printerStatus, setPrinterStatus] = useState<'idle' | 'offline' | 'paused' | 'error'>('idle');
+  const [printerApiKeyHeader, setPrinterApiKeyHeader] = useState('');
   const [printerFormError, setPrinterFormError] = useState('');
   const [printerFormSuccess, setPrinterFormSuccess] = useState('');
   const [name, setName] = useState('');
@@ -150,10 +161,10 @@ export function Dashboard() {
     const normalizedName = printerName.trim();
     const normalizedModel = printerModel.trim();
     const normalizedIpAddress = printerIpAddress.trim();
-    const normalizedLocation = printerLocation.trim();
+    const normalizedApiKeyHeader = printerApiKeyHeader.trim();
 
-    if (!normalizedName || !normalizedModel || !normalizedIpAddress || !normalizedLocation) {
-      setPrinterFormError('Name, model, IP address, and location are required.');
+    if (!normalizedName || !normalizedModel || !normalizedIpAddress || !normalizedApiKeyHeader) {
+      setPrinterFormError('Name, model, IP address, and API key header are required.');
       return;
     }
 
@@ -172,13 +183,13 @@ export function Dashboard() {
       name: normalizedName,
       model: normalizedModel,
       ipAddress: normalizedIpAddress,
-      status: printerStatus,
+      apiKeyHeader: normalizedApiKeyHeader,
+      status: 'idle',
       temperature: {
-        nozzle: printerStatus === 'offline' ? 0 : 25,
-        bed: printerStatus === 'offline' ? 0 : 24,
+        nozzle: 25,
+        bed: 24,
       },
       progress: 0,
-      location: normalizedLocation,
       lastMaintenance: new Date().toISOString().slice(0, 10),
       totalPrintTime: 0,
       successRate: 100,
@@ -188,8 +199,7 @@ export function Dashboard() {
     setPrinterName('');
     setPrinterModel('');
     setPrinterIpAddress('');
-    setPrinterLocation('');
-    setPrinterStatus('idle');
+    setPrinterApiKeyHeader('');
     setPrinterFormSuccess('Printer added successfully.');
   };
 
@@ -293,36 +303,16 @@ export function Dashboard() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="printer-location">Location</Label>
+                  <Label htmlFor="printer-api-key-header">API Key Header</Label>
                   <Input
-                    id="printer-location"
-                    value={printerLocation}
-                    onChange={(event) => setPrinterLocation(event.target.value)}
-                    placeholder="Rack D - Slot 1"
+                    id="printer-api-key-header"
+                    type="password"
+                    value={printerApiKeyHeader}
+                    onChange={(event) => setPrinterApiKeyHeader(event.target.value)}
+                    placeholder="X-API-Key: printer-secret"
+                    autoComplete="off"
                     required
                   />
-                </div>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Initial Status</Label>
-                  <Select
-                    value={printerStatus}
-                    onValueChange={(value) =>
-                      setPrinterStatus(value as 'idle' | 'offline' | 'paused' | 'error')
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select printer status" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="idle">Idle</SelectItem>
-                      <SelectItem value="offline">Offline</SelectItem>
-                      <SelectItem value="paused">Paused</SelectItem>
-                      <SelectItem value="error">Error</SelectItem>
-                    </SelectContent>
-                  </Select>
                 </div>
               </div>
 

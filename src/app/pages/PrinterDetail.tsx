@@ -12,7 +12,7 @@ import {
   Activity,
   Thermometer,
   Clock,
-  MapPin,
+  KeyRound,
   Network,
   Wrench,
   Play,
@@ -245,17 +245,19 @@ export function PrinterDetail() {
             <h2 className="text-xl font-semibold mb-4 dark:text-white">Information</h2>
             <div className="space-y-3">
               <div className="flex items-start gap-2">
-                <MapPin className="size-4 mt-0.5 text-gray-400" />
-                <div className="flex-1">
-                  <div className="text-sm text-gray-600 dark:text-gray-400">Location</div>
-                  <div className="font-medium dark:text-white">{printer.location}</div>
-                </div>
-              </div>
-              <div className="flex items-start gap-2">
                 <Network className="size-4 mt-0.5 text-gray-400" />
                 <div className="flex-1">
                   <div className="text-sm text-gray-600 dark:text-gray-400">IP Address</div>
                   <div className="font-medium dark:text-white">{printer.ipAddress}</div>
+                </div>
+              </div>
+              <div className="flex items-start gap-2">
+                <KeyRound className="size-4 mt-0.5 text-gray-400" />
+                <div className="flex-1">
+                  <div className="text-sm text-gray-600 dark:text-gray-400">API Key Header</div>
+                  <div className="font-medium dark:text-white">
+                    {printer.apiKeyHeader ? 'Configured' : 'Not configured'}
+                  </div>
                 </div>
               </div>
               <div className="flex items-start gap-2">

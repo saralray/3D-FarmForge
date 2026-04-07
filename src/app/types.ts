@@ -13,6 +13,7 @@ export interface Printer {
   name: string;
   model: string;
   ipAddress: string;
+  apiKeyHeader: string;
   status: PrinterStatus;
   currentJob?: PrintJob;
   temperature: {
@@ -20,7 +21,6 @@ export interface Printer {
     bed: number;
   };
   progress: number;
-  location: string;
   lastMaintenance: string;
   totalPrintTime: number; // hours
   successRate: number; // percentage
