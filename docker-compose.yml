@@ -2,11 +2,11 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_DB: stemlab
-      POSTGRES_USER: stemlab_app
-      POSTGRES_PASSWORD: stemlab_app_dev
+      POSTGRES_DB: ${POSTGRES_DB:-stemlab}
+      POSTGRES_USER: ${POSTGRES_USER:-stemlab_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_before_public_deploy}
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -17,7 +17,8 @@ services:
     depends_on:
       - db
     environment:
-      DATABASE_URL: postgresql://stemlab_app:stemlab_app_dev@db:5432/stemlab
+      DATABASE_URL: postgresql://${POSTGRES_USER:-stemlab_app}:${POSTGRES_PASSWORD:-change_me_before_public_deploy}@db:5432/${POSTGRES_DB:-stemlab}
+      VITE_PUBLIC_VIEWER_MODE: ${VITE_PUBLIC_VIEWER_MODE:-false}
 
   nginx:
     build:
@@ -35,7 +36,7 @@ services:
     depends_on:
       - db
     environment:
-      DATABASE_URL: postgresql://stemlab_app:stemlab_app_dev@db:5432/stemlab
+      DATABASE_URL: postgresql://${POSTGRES_USER:-stemlab_app}:${POSTGRES_PASSWORD:-change_me_before_public_deploy}@db:5432/${POSTGRES_DB:-stemlab}
       PRINTER_POLL_INTERVAL_MS: 5000
       PRINTER_REQUEST_TIMEOUT_MS: 3000
 

@@ -73,6 +73,34 @@ function sqlLiteral(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
+function isPublicViewerMode() {
+  return process.env.VITE_PUBLIC_VIEWER_MODE === 'true';
+}
+
+function buildPrinterListSelect(includeSensitive = true) {
+  return `
+    json_build_object(
+      'id', id,
+      'name', name,
+      'model', model,
+      'sortOrder', sort_order,
+      'profile', profile,
+      'url', ${includeSensitive ? 'url' : "''"},
+      'ipAddress', ${includeSensitive ? 'ip_address' : "''"},
+      'apiKeyHeader', ${includeSensitive ? 'api_key_header' : "''"},
+      'status', status,
+      'temperature', json_build_object('nozzle', temperature_nozzle, 'bed', temperature_bed),
+      'progress', progress,
+      'lastMaintenance', last_maintenance,
+      'totalPrintTime', total_print_time,
+      'successRate', success_rate,
+      'currentJob', current_job,
+      'nozzleTemperatures', nozzle_temperatures,
+      'spools', spools
+    )
+  `;
+}
+
 async function runPsql(sql) {
   const databaseUrl = getDatabaseUrl();
   if (!databaseUrl) {
@@ -92,29 +120,12 @@ export async function ensureSchema() {
 
 export async function listPrinters() {
   await ensureSchema();
+  const includeSensitive = !isPublicViewerMode();
 
   const sql = `
     SELECT COALESCE(
       json_agg(
-        json_build_object(
-          'id', id,
-          'name', name,
-          'model', model,
-          'sortOrder', sort_order,
-          'profile', profile,
-          'url', url,
-          'ipAddress', ip_address,
-          'apiKeyHeader', api_key_header,
-          'status', status,
-          'temperature', json_build_object('nozzle', temperature_nozzle, 'bed', temperature_bed),
-          'progress', progress,
-          'lastMaintenance', last_maintenance,
-          'totalPrintTime', total_print_time,
-          'successRate', success_rate,
-          'currentJob', current_job,
-          'nozzleTemperatures', nozzle_temperatures,
-          'spools', spools
-        )
+        ${buildPrinterListSelect(includeSensitive)}
         ORDER BY sort_order ASC, created_at DESC
       ),
       '[]'::json

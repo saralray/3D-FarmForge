@@ -269,11 +269,11 @@ export async function sendPrinterCommand(
 }
 
 export function buildPrinterWebcamUrl(printer: Printer) {
-  return `/__printer_webcam/${printer.ipAddress}/player`;
+  return `/__printer_webcam/${printer.id}/player`;
 }
 
 export function buildPrinterWebcamSnapshotUrl(printer: Printer) {
-  return `/__printer_webcam/${printer.ipAddress}/snapshot.jpg`;
+  return `/__printer_webcam/${printer.id}/snapshot.jpg`;
 }
 
 export function buildOfflinePrinterState(printer: Printer): Partial<Printer> {

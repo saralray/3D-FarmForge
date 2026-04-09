@@ -1,5 +1,6 @@
 import { Navigate, useLocation } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
+import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
 
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
@@ -17,6 +18,9 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
+    if (PUBLIC_VIEWER_MODE) {
+      return <>{children}</>;
+    }
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
@@ -39,6 +43,9 @@ export function AdminRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
+    if (PUBLIC_VIEWER_MODE) {
+      return <Navigate to="/" replace />;
+    }
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 

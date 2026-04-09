@@ -9,8 +9,7 @@ import { fetchPrinters } from '../lib/printersApi';
 import { fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
 import { useAuth } from '../contexts/AuthContext';
 
-const GOOGLE_SHEET_QUEUE_URL =
-  'https://docs.google.com/spreadsheets/d/13CZxAD8lctUtJEcVHH-qUHKNIJY0ENxcxPP-DwNgelE/edit?usp=sharing';
+const GOOGLE_SHEET_QUEUE_URL = import.meta.env.VITE_GOOGLE_SHEET_QUEUE_URL || '';
 
 export function Queue() {
   const { user } = useAuth();
@@ -148,14 +147,9 @@ export function Queue() {
             </Button>
           )}
           <Button
-            onClick={() =>
-              window.open(
-                GOOGLE_SHEET_QUEUE_URL,
-                '_blank',
-                'noopener,noreferrer',
-              )
-            }
+            onClick={() => window.open(GOOGLE_SHEET_QUEUE_URL, '_blank', 'noopener,noreferrer')}
             variant="outline"
+            disabled={!GOOGLE_SHEET_QUEUE_URL}
           >
             <ExternalLink className="size-4 mr-2" />
             Open Google Sheet

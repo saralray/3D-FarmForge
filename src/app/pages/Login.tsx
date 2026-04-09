@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useLocation } from 'react-router';
+import { useNavigate, useLocation, Navigate } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -7,8 +7,13 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Alert } from '../components/ui/alert';
 import { Printer, Eye, EyeOff } from 'lucide-react';
+import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
 
 export function Login() {
+  if (PUBLIC_VIEWER_MODE) {
+    return <Navigate to="/" replace />;
+  }
+
   const navigate = useNavigate();
   const location = useLocation();
   const { login } = useAuth();

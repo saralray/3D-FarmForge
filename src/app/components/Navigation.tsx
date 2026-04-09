@@ -3,6 +3,7 @@ import { LayoutDashboard, List, BarChart3, Printer, LogOut, Settings } from 'luc
 import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
+import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
 
 export function Navigation() {
   const location = useLocation();
@@ -13,7 +14,7 @@ export function Navigation() {
     { path: '/queue', label: 'Queue', icon: List },
     { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   ];
-  const adminNavItems = user?.role === 'admin'
+  const adminNavItems = !PUBLIC_VIEWER_MODE && user?.role === 'admin'
     ? [{ path: '/settings', label: 'Settings', icon: Settings }]
     : [];
 
@@ -77,7 +78,7 @@ export function Navigation() {
           <ThemeToggle />
         </div>
 
-        {user && (
+        {user && !PUBLIC_VIEWER_MODE && (
           <Button
             variant="outline"
             className="w-full"
@@ -89,8 +90,10 @@ export function Navigation() {
         )}
 
         <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
-          <div>Developer</div>
-          <div className="truncate">Saral Assabumrungrat CUD61</div>
+          <div>{PUBLIC_VIEWER_MODE ? 'Access' : 'Developer'}</div>
+          <div className="truncate">
+            {PUBLIC_VIEWER_MODE ? 'Public Viewer Mode' : 'Open Source Demo'}
+          </div>
         </div>
       </div>
     </nav>

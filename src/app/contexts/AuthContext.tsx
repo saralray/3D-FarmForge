@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { PUBLIC_VIEWER_MODE, PUBLIC_VIEWER_USER } from '../lib/runtimeConfig';
 
 interface User {
   id: string;
@@ -78,7 +79,7 @@ const DEFAULT_USERS: StoredUserRecord[] = [
     id: '1',
     username: 'admin',
     passwordHash: '247be42a8460b48531c8e35c3e494a0c86dd70b65b4f234ed4bc73474b76d994',
-    name: 'Stemlab Admin',
+    name: 'Print Farm Admin',
     role: 'admin' as const,
   },
 ];
@@ -213,6 +214,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    if (PUBLIC_VIEWER_MODE) {
+      setUsers([]);
+      setUser(PUBLIC_VIEWER_USER);
+      setIsLoading(false);
+      return;
+    }
+
     const storedUsers = readStoredUsers();
     setUsers(storedUsers.map(sanitizeUser));
 
@@ -239,6 +247,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const login = async (username: string, password: string): Promise<LoginResult> => {
+    if (PUBLIC_VIEWER_MODE) {
+      return { success: true };
+    }
+
     const normalizedUsername = username.trim().toLowerCase();
     const trimmedPassword = password.trim();
     const now = Date.now();
@@ -321,6 +333,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     password,
     role,
   }: CreateUserInput): Promise<CreateUserResult> => {
+    if (PUBLIC_VIEWER_MODE) {
+      return {
+        success: false,
+        error: 'User management is disabled in public viewer mode.',
+      };
+    }
+
     if (!user || user.role !== 'admin') {
       return {
         success: false,
@@ -371,6 +390,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const removeUser = async (userId: string): Promise<RemoveUserResult> => {
+    if (PUBLIC_VIEWER_MODE) {
+      return {
+        success: false,
+        error: 'User management is disabled in public viewer mode.',
+      };
+    }
+
     if (!user || user.role !== 'admin') {
       return {
         success: false,
@@ -421,6 +447,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     userId: string,
     password: string,
   ): Promise<ChangePasswordResult> => {
+    if (PUBLIC_VIEWER_MODE) {
+      return {
+        success: false,
+        error: 'User management is disabled in public viewer mode.',
+      };
+    }
+
     if (!user || user.role !== 'admin') {
       return {
         success: false,
@@ -467,6 +500,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    if (PUBLIC_VIEWER_MODE) {
+      return;
+    }
+
     setUser(null);
     writeStoredSession(null);
   };

@@ -5,9 +5,6 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { deletePrinter, getPrinterById, listDailyAnalytics, listPrinters, listQueueData, markQueueJobPrinted, resetDailyAnalytics, resetQueueJobs, upsertPrinter, upsertQueueJobs } from './server/postgres.js'
 
-const GOOGLE_SHEET_QUEUE_URL =
-  'https://docs.google.com/spreadsheets/d/13CZxAD8lctUtJEcVHH-qUHKNIJY0ENxcxPP-DwNgelE/edit?usp=sharing'
-
 function getGoogleSheetId(sheetUrl) {
   const match = sheetUrl.match(/\/spreadsheets\/d\/([^/]+)/)
   if (!match) {
@@ -197,6 +194,7 @@ function mapSheetRowsToQueue(rows) {
 
 export default defineConfig(({ mode }) => {
   Object.assign(process.env, loadEnv(mode, process.cwd(), ''))
+  const googleSheetQueueUrl = process.env.VITE_GOOGLE_SHEET_QUEUE_URL
 
   return {
   plugins: [
@@ -303,7 +301,11 @@ export default defineConfig(({ mode }) => {
         server.middlewares.use('/api/queue', async (req, res) => {
           try {
             if (req.method === 'GET' && (req.url === '/' || req.url === '')) {
-              const response = await fetch(toGoogleSheetCsvUrl(GOOGLE_SHEET_QUEUE_URL), {
+              if (!googleSheetQueueUrl) {
+                throw new Error('VITE_GOOGLE_SHEET_QUEUE_URL is not configured')
+              }
+
+              const response = await fetch(toGoogleSheetCsvUrl(googleSheetQueueUrl), {
                 headers: {
                   Accept: 'text/csv,text/plain;q=0.9,*/*;q=0.8',
                 },
@@ -420,6 +422,52 @@ export default defineConfig(({ mode }) => {
             res.end(
               JSON.stringify({
                 error: error instanceof Error ? error.message : 'Unable to reverse proxy printer request',
+              }),
+            )
+          }
+        })
+      },
+    },
+    {
+      name: 'printer-webcam-proxy',
+      configureServer(server) {
+        server.middlewares.use('/__printer_webcam', async (req, res) => {
+          const requestUrl = new URL(req.url ?? '/', 'http://localhost')
+          const [, printerId, ...pathParts] = requestUrl.pathname.split('/')
+          const webcamPath = `/${pathParts.join('/')}${requestUrl.search}`
+
+          if (!printerId) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'Missing printer webcam target' }))
+            return
+          }
+
+          try {
+            const printer = await getPrinterById(printerId)
+            if (!printer) {
+              res.statusCode = 404
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'Printer not found' }))
+              return
+            }
+
+            const response = await fetch(`${printer.url}/webcam${webcamPath}`)
+            res.statusCode = response.status
+
+            const contentType = response.headers.get('content-type')
+            if (contentType) {
+              res.setHeader('Content-Type', contentType)
+            }
+
+            res.setHeader('Cache-Control', 'no-store')
+            res.end(Buffer.from(await response.arrayBuffer()))
+          } catch (error) {
+            res.statusCode = 502
+            res.setHeader('Content-Type', 'application/json')
+            res.end(
+              JSON.stringify({
+                error: error instanceof Error ? error.message : 'Unable to proxy webcam request',
               }),
             )
           }
