@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, useLocation, Navigate } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
 import { Card } from '../components/ui/card';
@@ -22,34 +22,8 @@ export function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
-  const [now, setNow] = useState(Date.now());
 
   const from = (location.state as any)?.from?.pathname || '/';
-
-  const remainingLockMinutes =
-    lockedUntil && lockedUntil > now
-      ? Math.ceil((lockedUntil - now) / (60 * 1000))
-      : 0;
-
-  useEffect(() => {
-    if (!lockedUntil) {
-      return;
-    }
-
-    const interval = window.setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
-
-    return () => window.clearInterval(interval);
-  }, [lockedUntil]);
-
-  useEffect(() => {
-    if (lockedUntil && lockedUntil <= now) {
-      setLockedUntil(null);
-      setError('');
-    }
-  }, [lockedUntil, now]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,10 +33,8 @@ export function Login() {
     try {
       const result = await login(username, password);
       if (result.success) {
-        setLockedUntil(null);
         navigate(from, { replace: true });
       } else {
-        setLockedUntil(result.lockedUntil ?? null);
         setError(result.error ?? 'Unable to sign in.');
       }
     } catch {
@@ -131,16 +103,14 @@ export function Login() {
 
             {error && (
               <Alert variant="destructive" className="py-2">
-                {remainingLockMinutes > 0
-                  ? `${error} Retry in about ${remainingLockMinutes} minute${remainingLockMinutes === 1 ? '' : 's'}.`
-                  : error}
+                {error}
               </Alert>
             )}
 
             <Button
               type="submit"
               className="w-full"
-              disabled={isLoading || remainingLockMinutes > 0}
+              disabled={isLoading}
             >
               {isLoading ? 'Signing in...' : 'Sign In'}
             </Button>

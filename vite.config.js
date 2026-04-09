@@ -475,6 +475,10 @@ export default defineConfig(({ mode }) => {
       },
     },
   ],
+  server: {
+    host: '0.0.0.0',
+    allowedHosts: ['printfarm.stemlabs2.work'],
+  },
   resolve: {
     alias: {
       // Alias @ to the src directory
