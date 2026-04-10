@@ -92,7 +92,7 @@ export function Navigation() {
         <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
           <div>{PUBLIC_VIEWER_MODE ? 'Access' : 'Developer'}</div>
           <div className="truncate">
-            {PUBLIC_VIEWER_MODE ? 'Public Viewer Mode' : 'Open Source Demo'}
+            {PUBLIC_VIEWER_MODE ? 'Public Viewer Mode' : 'Saral Assabumrungrat CUD61'}
           </div>
         </div>
       </div>
