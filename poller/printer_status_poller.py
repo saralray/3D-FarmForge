@@ -2,6 +2,7 @@ import calendar
 import json
 import os
 import time
+from io import BytesIO
 from typing import Any
 
 import psycopg
@@ -44,6 +45,12 @@ CREATE TABLE IF NOT EXISTS analytics_daily (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS discord_webhooks (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  webhook_url TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 SELECT pg_advisory_unlock(90210);
 """
 
@@ -51,6 +58,7 @@ SNAPMAKER_STATUS_PATH = (
     "/printer/objects/query?print_stats&extruder=temperature,target"
     "&extruder1=temperature,target&extruder2=temperature,target"
     "&extruder3=temperature,target&heater_bed=temperature,target"
+    "&virtual_sdcard=progress"
 )
 
 
@@ -181,6 +189,21 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
         )
 
 
+def list_discord_webhooks(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(
+            """
+            SELECT
+              id,
+              name,
+              webhook_url AS "webhookUrl"
+            FROM discord_webhooks
+            ORDER BY created_at ASC
+            """
+        )
+        return list(cur.fetchall())
+
+
 def parse_header_string(header_value: str) -> dict[str, str]:
     separator_index = header_value.find(":")
     if separator_index == -1:
@@ -203,7 +226,9 @@ def map_print_state_to_status(state: str | None) -> str:
 
 
 def build_current_job(
-    print_stats: dict[str, Any] | None, previous_job: dict[str, Any] | None = None
+    print_stats: dict[str, Any] | None,
+    previous_job: dict[str, Any] | None = None,
+    progress: int = 0,
 ) -> dict[str, Any] | None:
     if not print_stats:
         return None
@@ -214,6 +239,20 @@ def build_current_job(
         return None
 
     filament_used = print_stats.get("filament_used", 0)
+    filament_used_grams = 0
+    if isinstance(filament_used, (int, float)):
+        filament_used_grams = round((filament_used / 1000) * 3, 1)
+    print_duration = print_stats.get("print_duration", 0)
+    printing_time_minutes = 0
+    if isinstance(print_duration, (int, float)) and print_duration > 0:
+        printing_time_minutes = max(0, round(print_duration / 60))
+    estimated_time_minutes = 0
+    time_remaining_minutes = 0
+    if isinstance(print_duration, (int, float)) and print_duration > 0 and progress > 0:
+        estimated_total_seconds = print_duration / max(progress / 100, 0.01)
+        remaining_seconds = max(estimated_total_seconds - print_duration, 0)
+        estimated_time_minutes = max(1, round(estimated_total_seconds / 60))
+        time_remaining_minutes = max(0, round(remaining_seconds / 60))
     previous_filename = previous_job.get("filename") if previous_job else None
     start_time = (
         previous_job.get("startTime")
@@ -224,10 +263,11 @@ def build_current_job(
         "id": f"job-{filename}",
         "filename": filename,
         "status": "paused" if state == "paused" else "failed" if state == "error" else "printing",
-        "progress": 0,
-        "estimatedTime": 0,
-        "timeRemaining": 0,
-        "filamentUsed": round(filament_used) if isinstance(filament_used, (int, float)) else 0,
+        "progress": progress,
+        "estimatedTime": estimated_time_minutes,
+        "timeRemaining": time_remaining_minutes,
+        "printingTime": printing_time_minutes,
+        "filamentUsed": filament_used_grams,
         "startTime": start_time,
         "priority": "medium",
     }
@@ -278,6 +318,7 @@ def fetch_snapmaker_status(printer: dict[str, Any]) -> dict[str, Any]:
     print_stats = status.get("print_stats")
     if not print_stats:
         raise RuntimeError("Printer did not return the expected status JSON")
+    virtual_sdcard = status.get("virtual_sdcard") or {}
 
     extruders = [
         status.get("extruder"),
@@ -304,11 +345,15 @@ def fetch_snapmaker_status(printer: dict[str, Any]) -> dict[str, Any]:
         bed_temperature = ((printer.get("temperature") or {}).get("bed")) or 0
 
     raw_print_state = print_stats.get("state")
+    raw_progress = virtual_sdcard.get("progress")
+    progress = 0
+    if isinstance(raw_progress, (int, float)):
+        progress = max(0, min(100, round(raw_progress * 100)))
 
     return {
         "status": map_print_state_to_status(raw_print_state),
-        "currentJob": build_current_job(print_stats, printer.get("currentJob")),
-        "progress": 0,
+        "currentJob": build_current_job(print_stats, printer.get("currentJob"), progress),
+        "progress": progress,
         "rawPrintState": raw_print_state,
         "temperature": {
             "nozzle": nozzle_temperatures[0] if nozzle_temperatures else fallback_nozzle,
@@ -431,6 +476,206 @@ def finalize_job_analytics(
         )
 
 
+def discord_color_for_status(status: str | None) -> int:
+    return {
+        "printing": 0x3B82F6,
+        "paused": 0xFACC15,
+        "idle": 0x22C55E,
+        "offline": 0xEF4444,
+        "error": 0xEF4444,
+        "completed": 0x22C55E,
+        "failed": 0xEF4444,
+    }.get((status or "").lower(), 0x5865F2)
+
+
+def iso_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def fetch_printer_snapshot(printer: dict[str, Any]) -> bytes | None:
+    try:
+        response = requests.get(
+            f"{printer['url']}/webcam/snapshot.jpg",
+            headers=parse_header_string(printer.get("apiKeyHeader", "")),
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.content
+    except Exception:
+        return None
+
+
+def send_discord_embed(
+    webhooks: list[dict[str, Any]], embed: dict[str, Any], snapshot_bytes: bytes | None = None
+) -> None:
+    if not embed:
+        return
+
+    for webhook in webhooks:
+        webhook_url = webhook.get("webhookUrl")
+        if not webhook_url:
+            continue
+
+        try:
+            if snapshot_bytes:
+                embed_with_image = {**embed, "image": {"url": "attachment://snapshot.jpg"}}
+                requests.post(
+                    webhook_url,
+                    data={
+                        "payload_json": json.dumps(
+                            {
+                                "username": "PrintFarm Bot",
+                                "embeds": [embed_with_image],
+                            }
+                        )
+                    },
+                    files={"file": ("snapshot.jpg", BytesIO(snapshot_bytes), "image/jpeg")},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                ).raise_for_status()
+            else:
+                requests.post(
+                    webhook_url,
+                    json={
+                        "username": "PrintFarm Bot",
+                        "embeds": [embed],
+                    },
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                ).raise_for_status()
+        except Exception as error:
+            print(f"discord webhook error ({webhook.get('name', 'unknown')}): {error}", flush=True)
+
+
+def build_status_transition_embed(previous_printer: dict[str, Any], next_printer: dict[str, Any]) -> dict[str, Any] | None:
+    previous_status = previous_printer.get("status")
+    next_status = next_printer.get("status")
+
+    if previous_status == next_status:
+        return None
+
+    printer_name = next_printer.get("name") or previous_printer.get("name") or "Printer"
+    if previous_status == "offline" and next_status != "offline":
+        title = f"{printer_name} Online"
+        description = "Connection restored"
+        status_value = "online"
+        color = discord_color_for_status("completed")
+    elif previous_status != "offline" and next_status == "offline":
+        title = f"{printer_name} Offline"
+        description = "Connection lost"
+        status_value = "offline"
+        color = discord_color_for_status("offline")
+    else:
+        return None
+
+    return {
+        "title": title,
+        "description": description,
+        "color": color,
+        "fields": [
+            {"name": "Printer", "value": printer_name, "inline": True},
+            {"name": "Status", "value": status_value, "inline": True},
+        ],
+        "timestamp": iso_timestamp(),
+    }
+
+
+def build_job_transition_event(
+    previous_printer: dict[str, Any], next_printer: dict[str, Any]
+) -> dict[str, Any] | None:
+    previous_job = previous_printer.get("currentJob") or {}
+    next_job = next_printer.get("currentJob") or {}
+    previous_filename = previous_job.get("filename")
+    next_filename = next_job.get("filename")
+    printer_name = next_printer.get("name") or previous_printer.get("name") or "Printer"
+
+    if not previous_filename and not next_filename:
+        return None
+
+    if not previous_filename and next_filename:
+        return {
+            "embed": {
+                "title": f"{printer_name} Print Started",
+                "description": str(next_filename),
+                "color": discord_color_for_status("printing"),
+                "fields": [
+                    {"name": "Printer", "value": printer_name, "inline": True},
+                ],
+                "timestamp": iso_timestamp(),
+            },
+            "includeSnapshot": False,
+        }
+
+    if previous_filename and not next_filename:
+        raw_print_state = next_printer.get("rawPrintState")
+        if raw_print_state == "cancelled":
+            title = f"{printer_name} Print Cancelled"
+            description = f"{previous_filename}\nCancelled by printer state"
+            color = discord_color_for_status("failed")
+            include_snapshot = True
+        else:
+            next_status = next_printer.get("status")
+            title = f"{printer_name} Print Completed" if next_status != "error" else f"{printer_name} Print Stopped"
+            description = str(previous_filename)
+            color = discord_color_for_status("failed" if next_status == "error" else "completed")
+            include_snapshot = next_status != "error"
+
+        return {
+            "embed": {
+                "title": title,
+                "description": description,
+                "color": color,
+                "fields": [
+                    {"name": "Printer", "value": printer_name, "inline": True},
+                    {
+                        "name": "Filament Used",
+                        "value": f"{previous_job.get('filamentUsed', 0)} g",
+                        "inline": True,
+                    },
+                ],
+                "timestamp": iso_timestamp(),
+            },
+            "includeSnapshot": include_snapshot,
+        }
+
+    if previous_filename != next_filename:
+        return {
+            "embed": {
+                "title": f"{printer_name} Print Job Switched",
+                "description": f"{previous_filename} -> {next_filename}",
+                "color": discord_color_for_status("printing"),
+                "timestamp": iso_timestamp(),
+            },
+            "includeSnapshot": False,
+        }
+
+    previous_job_status = previous_job.get("status")
+    next_job_status = next_job.get("status")
+    if previous_job_status == next_job_status:
+        return None
+
+    if previous_job_status == "paused" and next_job_status == "printing":
+        title = f"{printer_name} Print Resumed"
+        status_color = "printing"
+    elif previous_job_status == "printing" and next_job_status == "paused":
+        title = f"{printer_name} Print Paused"
+        status_color = "paused"
+    else:
+        return None
+
+    return {
+        "embed": {
+            "title": title,
+            "description": str(next_filename),
+            "color": discord_color_for_status(status_color),
+            "fields": [
+                {"name": "Printer", "value": printer_name, "inline": True},
+                {"name": "Progress", "value": f"{next_printer.get('progress', 0)}%", "inline": True},
+            ],
+            "timestamp": iso_timestamp(),
+        },
+        "includeSnapshot": False,
+    }
+
+
 def collect_analytics_for_transition(
     conn: psycopg.Connection, previous_printer: dict[str, Any], next_printer: dict[str, Any]
 ) -> None:
@@ -457,18 +702,38 @@ def collect_analytics_for_transition(
     finalize_job_analytics(conn, previous_job, outcome)
 
 
+def notify_for_transition(
+    webhooks: list[dict[str, Any]], previous_printer: dict[str, Any], next_printer: dict[str, Any]
+) -> None:
+    if not webhooks:
+        return
+
+    status_embed = build_status_transition_embed(previous_printer, next_printer)
+    if status_embed:
+        send_discord_embed(webhooks, status_embed)
+
+    job_event = build_job_transition_event(previous_printer, next_printer)
+    if not job_event:
+        return
+
+    snapshot_bytes = fetch_printer_snapshot(previous_printer) if job_event.get("includeSnapshot") else None
+    send_discord_embed(webhooks, job_event["embed"], snapshot_bytes)
+
+
 def run() -> None:
     while True:
         try:
             with psycopg.connect(db_url()) as conn:
                 ensure_schema(conn)
                 printers = list_printers(conn)
+                webhooks = list_discord_webhooks(conn)
                 for printer in printers:
                     try:
                         next_printer = refresh_status(printer)
                     except Exception:
                         next_printer = {**printer, **build_offline_printer_state(printer)}
                     collect_analytics_for_transition(conn, printer, next_printer)
+                    notify_for_transition(webhooks, printer, next_printer)
                     upsert_printer(conn, next_printer)
                 conn.commit()
         except Exception as error:

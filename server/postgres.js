@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS queue_jobs (
 ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS file_count INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS form_type TEXT NOT NULL DEFAULT '';
 ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS printed_status INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS discord_webhooks (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  webhook_url TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 SELECT pg_advisory_unlock(90210);
 `;
 
@@ -408,6 +414,60 @@ export async function resetQueueJobs() {
     UPDATE queue_jobs
     SET printed_status = 0,
         updated_at = NOW()
-    WHERE form_type = 'สั่งพิมพ์งาน 3D Print';
+      WHERE form_type = 'สั่งพิมพ์งาน 3D Print';
   `);
+}
+
+export async function listDiscordWebhooks() {
+  await ensureSchema();
+
+  const sql = `
+    SELECT COALESCE(
+      json_agg(
+        json_build_object(
+          'id', id,
+          'name', name,
+          'webhookUrl', webhook_url,
+          'createdAt', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        )
+        ORDER BY created_at ASC
+      ),
+      '[]'::json
+    )::text
+    FROM discord_webhooks;
+  `;
+
+  const output = await runPsql(sql);
+  return JSON.parse(output || '[]');
+}
+
+export async function createDiscordWebhook(webhook) {
+  await ensureSchema();
+
+  const payload = sqlLiteral(JSON.stringify(webhook));
+  const sql = `
+    WITH input AS (
+      SELECT ${payload}::jsonb AS data
+    )
+    INSERT INTO discord_webhooks (
+      id,
+      name,
+      webhook_url
+    )
+    SELECT
+      data->>'id',
+      data->>'name',
+      data->>'webhookUrl'
+    FROM input
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      webhook_url = EXCLUDED.webhook_url;
+  `;
+
+  await runPsql(sql);
+}
+
+export async function deleteDiscordWebhook(id) {
+  await ensureSchema();
+  await runPsql(`DELETE FROM discord_webhooks WHERE id = ${sqlLiteral(id)};`);
 }

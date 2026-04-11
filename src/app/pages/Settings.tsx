@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Settings as SettingsIcon, Shield, Trash2, Users } from 'lucide-react';
+import { Bell, Plus, Settings as SettingsIcon, Shield, Trash2, Users } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -9,6 +9,7 @@ import { Alert } from '../components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { useAuth } from '../contexts/AuthContext';
 import { Printer, PrinterProfile } from '../types';
+import { DiscordWebhook, fetchDiscordWebhooks, removeDiscordWebhook, saveDiscordWebhook } from '../lib/notificationsApi';
 import { fetchPrinters, savePrinter } from '../lib/printersApi';
 import { normalizePrinter, PRINTER_PROFILES } from '../lib/printerProfiles';
 
@@ -36,6 +37,13 @@ export function Settings() {
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
   const [changingPasswordUserId, setChangingPasswordUserId] = useState<string | null>(null);
+  const [discordWebhooks, setDiscordWebhooks] = useState<DiscordWebhook[]>([]);
+  const [webhookName, setWebhookName] = useState('');
+  const [webhookUrl, setWebhookUrl] = useState('');
+  const [notificationError, setNotificationError] = useState('');
+  const [notificationSuccess, setNotificationSuccess] = useState('');
+  const [savingWebhook, setSavingWebhook] = useState(false);
+  const [removingWebhookId, setRemovingWebhookId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchPrinters()
@@ -43,11 +51,22 @@ export function Settings() {
       .catch(() => {
         setPrinterFormError('Unable to load printers from Postgres. Check DATABASE_URL and server access.');
       });
+
+    fetchDiscordWebhooks()
+      .then(setDiscordWebhooks)
+      .catch(() => {
+        setNotificationError('Unable to load Discord webhooks.');
+      });
   }, []);
 
   const refreshPrinters = async () => {
     const storedPrinters = await fetchPrinters();
     setPrinters(storedPrinters.map(normalizePrinter));
+  };
+
+  const refreshDiscordWebhooks = async () => {
+    const storedWebhooks = await fetchDiscordWebhooks();
+    setDiscordWebhooks(storedWebhooks);
   };
 
   const handleCreatePrinter = async (event: React.FormEvent) => {
@@ -176,6 +195,64 @@ export function Settings() {
     }
   };
 
+  const handleCreateWebhook = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setNotificationError('');
+    setNotificationSuccess('');
+
+    if (user?.role !== 'admin') {
+      setNotificationError('Only admins can manage Discord notifications.');
+      return;
+    }
+
+    const normalizedName = webhookName.trim();
+    const normalizedWebhookUrl = webhookUrl.trim();
+
+    if (!normalizedName || !normalizedWebhookUrl) {
+      setNotificationError('Webhook name and Discord webhook URL are required.');
+      return;
+    }
+
+    if (!normalizedWebhookUrl.startsWith('https://discord.com/api/webhooks/')) {
+      setNotificationError('Enter a valid Discord webhook URL.');
+      return;
+    }
+
+    setSavingWebhook(true);
+
+    try {
+      await saveDiscordWebhook({
+        id: crypto.randomUUID(),
+        name: normalizedName,
+        webhookUrl: normalizedWebhookUrl,
+      });
+      await refreshDiscordWebhooks();
+      setWebhookName('');
+      setWebhookUrl('');
+      setNotificationSuccess('Discord webhook added successfully.');
+    } catch (error) {
+      setNotificationError(error instanceof Error ? error.message : 'Unable to save Discord webhook.');
+    } finally {
+      setSavingWebhook(false);
+    }
+  };
+
+  const handleRemoveWebhook = async (webhookId: string) => {
+    setNotificationError('');
+    setNotificationSuccess('');
+    setRemovingWebhookId(webhookId);
+
+    try {
+      await removeDiscordWebhook(webhookId);
+      await refreshDiscordWebhooks();
+      setNotificationSuccess('Discord webhook removed successfully.');
+    } catch (error) {
+      setNotificationError(error instanceof Error ? error.message : 'Unable to remove Discord webhook.');
+    } finally {
+      setRemovingWebhookId(null);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -198,6 +275,10 @@ export function Settings() {
           <TabsTrigger value="user-list" className="min-w-max">
             <Users className="size-4" />
             User List
+          </TabsTrigger>
+          <TabsTrigger value="notifications" className="min-w-max">
+            <Bell className="size-4" />
+            Notifications
           </TabsTrigger>
         </TabsList>
 
@@ -457,6 +538,111 @@ export function Settings() {
                   </div>
                 </div>
               ))}
+            </div>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="notifications">
+          <Card className="p-6 dark:bg-gray-900 dark:border-gray-800">
+            <div className="mb-5">
+              <div className="flex items-center gap-2">
+                <Bell className="size-5 text-blue-500" />
+                <h2 className="text-xl font-semibold dark:text-white">Notifications</h2>
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                Admins can add multiple Discord webhooks. The background poller sends printer status and job transition notifications to all saved webhooks.
+              </p>
+            </div>
+
+            <form onSubmit={handleCreateWebhook} className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="discord-webhook-name">Webhook Name</Label>
+                  <Input
+                    id="discord-webhook-name"
+                    value={webhookName}
+                    onChange={(event) => setWebhookName(event.target.value)}
+                    placeholder="Main Discord Channel"
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="discord-webhook-url">Discord Webhook URL</Label>
+                  <textarea
+                    id="discord-webhook-url"
+                    value={webhookUrl}
+                    onChange={(event) => setWebhookUrl(event.target.value.trim())}
+                    placeholder="https://discord.com/api/webhooks/..."
+                    className="min-h-32 w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    required
+                  />
+                </div>
+              </div>
+
+              {notificationError && (
+                <Alert variant="destructive" className="py-2">
+                  {notificationError}
+                </Alert>
+              )}
+
+              {notificationSuccess && <Alert className="py-2">{notificationSuccess}</Alert>}
+
+              <Button type="submit" disabled={savingWebhook}>
+                {savingWebhook ? 'Saving webhook...' : 'Add Discord Webhook'}
+              </Button>
+            </form>
+
+            <div className="mt-6 space-y-3">
+              {discordWebhooks.length > 0 ? (
+                discordWebhooks.map((webhook) => (
+                  <div
+                    key={webhook.id}
+                    className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-950"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#5865f2] font-semibold text-white">
+                        PF
+                      </div>
+                      <div className="flex min-w-0 flex-1 items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline gap-2">
+                            <div className="font-semibold text-gray-900 dark:text-white">PrintFarm Bot</div>
+                            <div className="text-xs text-gray-500 dark:text-gray-400">Webhook Target</div>
+                          </div>
+                          <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-900">
+                            <div className="flex items-start gap-3">
+                              <div className="h-full w-1 shrink-0 rounded-full bg-[#5865f2]" />
+                              <div className="min-w-0 flex-1">
+                                <div className="font-medium text-gray-900 dark:text-white">{webhook.name}</div>
+                                <div className="mt-2 truncate font-mono text-sm text-gray-600 dark:text-gray-300">
+                                  {webhook.webhookUrl}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={removingWebhookId !== null}
+                          onClick={() => handleRemoveWebhook(webhook.id)}
+                        >
+                          <Trash2 className="size-4 mr-2" />
+                          {removingWebhookId === webhook.id ? 'Removing...' : 'Remove'}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400">
+                  No Discord webhooks configured yet.
+                </div>
+              )}
             </div>
           </Card>
         </TabsContent>

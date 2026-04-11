@@ -90,6 +90,13 @@ function FilamentSpoolIcon({ color }: { color: string }) {
   );
 }
 
+function formatMinutesAsHourDotMinute(totalMinutes: number) {
+  const normalizedMinutes = Math.max(0, Math.round(totalMinutes));
+  const hours = Math.floor(normalizedMinutes / 60);
+  const minutes = normalizedMinutes % 60;
+  return `${hours}.${String(minutes).padStart(2, '0')}`;
+}
+
 export function PrinterDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -255,6 +262,8 @@ export function PrinterDetail() {
       isLoaded: Boolean(taskConfig.filament_exist?.[index]),
       isInUse: Boolean(taskConfig.extruders_used?.[index]),
     })) ?? [];
+  const formattedTimeRemaining = formatMinutesAsHourDotMinute(printer.currentJob?.timeRemaining ?? 0);
+  const formattedPrintingTime = formatMinutesAsHourDotMinute(printer.currentJob?.printingTime ?? 0);
 
   const handlePrinterCommand = async (command: 'pause' | 'resume' | 'cancel') => {
     if (!canControlPrinter) {
@@ -393,20 +402,16 @@ export function PrinterDetail() {
                   <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Time Remaining</div>
                   <div className="font-medium flex items-center gap-1 dark:text-white">
                     <Clock className="size-4" />
-                    {printer.currentJob.timeRemaining} min
+                    {formattedTimeRemaining} h.
                   </div>
                 </div>
                 <div>
-                  <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Estimated Total</div>
-                  <div className="font-medium dark:text-white">{printer.currentJob.estimatedTime} min</div>
+                  <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Printing Time</div>
+                  <div className="font-medium dark:text-white">{formattedPrintingTime} h.</div>
                 </div>
                 <div>
                   <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Filament Used</div>
                   <div className="font-medium dark:text-white">{printer.currentJob.filamentUsed}g</div>
-                </div>
-                <div>
-                  <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Priority</div>
-                  <Badge className="capitalize">{printer.currentJob.priority}</Badge>
                 </div>
               </div>
 

@@ -20,7 +20,7 @@ export const PRINTER_PROFILES: Record<
   snapmaker_u1: {
     label: 'Snapmaker U1',
     statusPath:
-      '/printer/objects/query?print_stats&extruder=temperature,target&extruder1=temperature,target&extruder2=temperature,target&extruder3=temperature,target&heater_bed=temperature,target',
+      '/printer/objects/query?print_stats&extruder=temperature,target&extruder1=temperature,target&extruder2=temperature,target&extruder3=temperature,target&heater_bed=temperature,target&virtual_sdcard=progress',
     defaultModel: 'Snapmaker U1',
     buildBaseUrl: (ipAddress) => `http://${ipAddress}`,
   },
@@ -150,7 +150,10 @@ function getReachableGenericStatus(printer: Printer): PrinterStatus {
   return 'idle';
 }
 
-function buildCurrentJob(printStats: Record<string, unknown> | undefined): PrintJob | undefined {
+function buildCurrentJob(
+  printStats: Record<string, unknown> | undefined,
+  progress: number,
+): PrintJob | undefined {
   if (!printStats) {
     return undefined;
   }
@@ -160,16 +163,30 @@ function buildCurrentJob(printStats: Record<string, unknown> | undefined): Print
   if (!filename || !state || state === 'standby' || state === 'complete' || state === 'cancelled') {
     return undefined;
   }
+  const printDuration =
+    typeof printStats.print_duration === 'number' ? printStats.print_duration : 0;
+  const printingTime = printDuration > 0 ? Math.max(0, Math.round(printDuration / 60)) : 0;
+  const estimatedTime =
+    printDuration > 0 && progress > 0
+      ? Math.max(1, Math.round((printDuration / Math.max(progress / 100, 0.01)) / 60))
+      : 0;
+  const timeRemaining =
+    printDuration > 0 && progress > 0
+      ? Math.max(0, Math.round(((printDuration / Math.max(progress / 100, 0.01)) - printDuration) / 60))
+      : 0;
 
   return {
     id: `job-${filename}`,
     filename,
     status: state === 'paused' ? 'paused' : state === 'error' ? 'failed' : 'printing',
-    progress: 0,
-    estimatedTime: 0,
-    timeRemaining: 0,
+    progress,
+    estimatedTime,
+    timeRemaining,
+    printingTime,
     filamentUsed:
-      typeof printStats.filament_used === 'number' ? Math.round(printStats.filament_used) : 0,
+      typeof printStats.filament_used === 'number'
+        ? Math.round(((printStats.filament_used / 1000) * 3) * 10) / 10
+        : 0,
     priority: 'medium',
   };
 }
@@ -203,6 +220,7 @@ export async function fetchPrinterLiveStatus(printer: Printer): Promise<Partial<
         extruder2?: Record<string, unknown>;
         extruder3?: Record<string, unknown>;
         heater_bed?: Record<string, unknown>;
+        virtual_sdcard?: Record<string, unknown>;
       };
     };
   };
@@ -216,6 +234,7 @@ export async function fetchPrinterLiveStatus(printer: Printer): Promise<Partial<
     status?.extruder3,
   ];
   const heaterBed = status?.heater_bed;
+  const virtualSdCard = status?.virtual_sdcard;
   const state = typeof printStats?.state === 'string' ? printStats.state : undefined;
 
   if (!status || !printStats) {
@@ -231,11 +250,15 @@ export async function fetchPrinterLiveStatus(printer: Printer): Promise<Partial<
     typeof heaterBed?.temperature === 'number'
       ? Math.round(heaterBed.temperature)
       : printer.temperature.bed;
+  const progress =
+    typeof virtualSdCard?.progress === 'number'
+      ? Math.max(0, Math.min(100, Math.round(virtualSdCard.progress * 100)))
+      : 0;
 
   return {
     status: mapPrintStateToStatus(state),
-    currentJob: buildCurrentJob(printStats),
-    progress: 0,
+    currentJob: buildCurrentJob(printStats, progress),
+    progress,
     temperature: {
       nozzle: nozzleTemperatures[0] ?? printer.temperature.nozzle,
       bed: bedTemperature,

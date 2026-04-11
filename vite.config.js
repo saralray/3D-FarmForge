@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { deletePrinter, getPrinterById, listDailyAnalytics, listPrinters, listQueueData, markQueueJobPrinted, resetDailyAnalytics, resetQueueJobs, upsertPrinter, upsertQueueJobs } from './server/postgres.js'
+import { createDiscordWebhook, deleteDiscordWebhook, deletePrinter, getPrinterById, listDailyAnalytics, listDiscordWebhooks, listPrinters, listQueueData, markQueueJobPrinted, resetDailyAnalytics, resetQueueJobs, upsertPrinter, upsertQueueJobs } from './server/postgres.js'
 
 function getGoogleSheetId(sheetUrl) {
   const match = sheetUrl.match(/\/spreadsheets\/d\/([^/]+)/)
@@ -357,6 +357,61 @@ export default defineConfig(({ mode }) => {
             res.end(
               JSON.stringify({
                 error: error instanceof Error ? error.message : 'Queue request failed',
+              }),
+            )
+            return
+          }
+
+          res.statusCode = 404
+          res.end()
+        })
+      },
+    },
+    {
+      name: 'discord-webhook-api',
+      configureServer(server) {
+        server.middlewares.use('/api/notifications/discord-webhooks', async (req, res) => {
+          try {
+            if (req.method === 'GET' && (req.url === '/' || req.url === '')) {
+              const webhooks = await listDiscordWebhooks()
+              res.statusCode = 200
+              res.setHeader('Content-Type', 'application/json')
+              res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+              res.setHeader('Pragma', 'no-cache')
+              res.setHeader('Expires', '0')
+              res.setHeader('Surrogate-Control', 'no-store')
+              res.end(JSON.stringify(webhooks))
+              return
+            }
+
+            if (req.method === 'POST' && (req.url === '/' || req.url === '')) {
+              const payload = await readJsonBody(req)
+              await createDiscordWebhook(payload)
+              res.statusCode = 204
+              res.end()
+              return
+            }
+
+            if (req.method === 'DELETE' && req.url?.startsWith('/')) {
+              const webhookId = decodeURIComponent(req.url.slice(1))
+              if (!webhookId) {
+                res.statusCode = 400
+                res.setHeader('Content-Type', 'application/json')
+                res.end(JSON.stringify({ error: 'Missing webhook id' }))
+                return
+              }
+
+              await deleteDiscordWebhook(webhookId)
+              res.statusCode = 204
+              res.end()
+              return
+            }
+          } catch (error) {
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(
+              JSON.stringify({
+                error: error instanceof Error ? error.message : 'Discord webhook request failed',
               }),
             )
             return

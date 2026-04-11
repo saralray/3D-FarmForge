@@ -42,6 +42,7 @@ export interface PrintJob {
   progress: number;
   estimatedTime: number; // minutes
   timeRemaining: number; // minutes
+  printingTime: number; // minutes
   filamentUsed: number; // grams
   startTime?: string;
   endTime?: string;
