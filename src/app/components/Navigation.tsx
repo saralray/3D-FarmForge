@@ -1,10 +1,10 @@
 import { Link, useLocation } from 'react-router';
 import { AnimatePresence, motion } from 'motion/react';
-import { LayoutDashboard, List, BarChart3, LogOut, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import { LayoutDashboard, List, BarChart3, LogOut, Settings, ChevronLeft, ChevronRight, ClipboardList, ExternalLink } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
-import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
+import { GOOGLE_FORM_URL, PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
 import { useSidebar } from '../contexts/SidebarContext';
 import stemlabLogo from '../../../CUD-STEM-LAB-logoBBGv2.svg';
 
@@ -92,6 +92,26 @@ export function Navigation() {
               </AnimatePresence>
             </Link>
           ))}
+          <button
+            type="button"
+            onClick={() => window.open(GOOGLE_FORM_URL, '_blank', 'noopener,noreferrer')}
+            className="flex w-full items-center rounded-lg px-4 py-3 text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            <ClipboardList className="size-5" />
+            <AnimatePresence initial={false}>
+              {!isCollapsed && (
+                <motion.div
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -8 }}
+                  className="ml-3 flex min-w-0 flex-1 items-center justify-between gap-2"
+                >
+                  <span className="whitespace-nowrap">ฟอร์มขอพิมพ์งาน</span>
+                  <ExternalLink className="size-4 shrink-0 text-gray-400 dark:text-gray-500" />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </button>
         </div>
       </div>
 
@@ -126,7 +146,7 @@ export function Navigation() {
           <ThemeToggle />
         </div>
 
-        {user && !PUBLIC_VIEWER_MODE && (
+        {user && !PUBLIC_VIEWER_MODE && user.role !== 'viewer' && (
           <Button
             variant="outline"
             className={isCollapsed ? 'w-full px-0' : 'w-full'}

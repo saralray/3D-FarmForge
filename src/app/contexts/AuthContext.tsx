@@ -165,6 +165,11 @@ function writeStoredSession(user: User | null) {
   sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
 }
 
+function createViewerSession() {
+  writeStoredSession(PUBLIC_VIEWER_USER);
+  return PUBLIC_VIEWER_USER;
+}
+
 function sha256Fallback(message: string) {
   const encoder = new TextEncoder();
   const bytes = Array.from(encoder.encode(message));
@@ -301,6 +306,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const storedSession = readStoredSession();
     if (storedSession) {
       setUser(storedSession.user);
+    } else {
+      setUser(createViewerSession());
     }
     setIsLoading(false);
   }, []);
@@ -313,7 +320,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const interval = window.setInterval(() => {
       const storedSession = readStoredSession();
       if (!storedSession) {
-        setUser(null);
+        setUser(createViewerSession());
       }
     }, 60 * 1000);
 
@@ -555,8 +562,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    setUser(null);
-    writeStoredSession(null);
+    const viewerUser = createViewerSession();
+    setUser(viewerUser);
   };
 
   return (
