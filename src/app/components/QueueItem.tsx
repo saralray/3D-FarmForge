@@ -7,9 +7,18 @@ interface QueueItemProps {
   mode?: 'queue' | 'history';
   onRemove?: (jobId: string) => void;
   onDownload?: (job: PrintJob) => void;
+  canManage?: boolean;
+  canDownload?: boolean;
 }
 
-export function QueueItem({ job, mode = 'queue', onRemove, onDownload }: QueueItemProps) {
+export function QueueItem({
+  job,
+  mode = 'queue',
+  onRemove,
+  onDownload,
+  canManage = true,
+  canDownload = true,
+}: QueueItemProps) {
   const formatDate = (dateString?: string) => {
     if (!dateString) return '';
     const date = new Date(dateString);
@@ -38,7 +47,7 @@ export function QueueItem({ job, mode = 'queue', onRemove, onDownload }: QueueIt
             </div>
             
             <div className="flex items-center gap-1">
-              {job.stlFileUrl && (
+              {canDownload && job.stlFileUrl && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -51,7 +60,7 @@ export function QueueItem({ job, mode = 'queue', onRemove, onDownload }: QueueIt
                   <Download className="size-4 text-blue-500" />
                 </Button>
               )}
-              {mode === 'queue' && (
+              {canManage && mode === 'queue' && (
                 <Button
                   variant="ghost"
                   size="sm"

@@ -383,7 +383,7 @@ export function Settings() {
                 <h2 className="text-xl font-semibold dark:text-white">Add User</h2>
               </div>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                Admins can add operator and viewer accounts without exposing credentials on the login screen.
+                Admins can add admin and operator accounts without exposing credentials on the login screen.
               </p>
             </div>
 
@@ -433,7 +433,7 @@ export function Settings() {
                   <Label>User Role</Label>
                   <Select
                     value={role}
-                    onValueChange={(value) => setRole(value as 'admin' | 'operator' | 'viewer')}
+                    onValueChange={(value) => setRole(value as 'admin' | 'operator')}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Select a role" />
@@ -441,7 +441,6 @@ export function Settings() {
                     <SelectContent>
                       <SelectItem value="admin">Admin</SelectItem>
                       <SelectItem value="operator">Operator</SelectItem>
-                      <SelectItem value="viewer">Viewer</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

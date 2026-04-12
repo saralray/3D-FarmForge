@@ -127,6 +127,9 @@ export function Queue() {
   };
 
   const totalFiles = queue.reduce((acc, job) => acc + (job.fileCount ?? 1), 0);
+  const canManageQueue = user?.role === 'admin' || user?.role === 'operator';
+  const canDownloadQueueFiles = user?.role !== 'viewer';
+  const canOpenGoogleSheet = user?.role !== 'viewer';
 
   return (
     <div className="p-6 space-y-6">
@@ -146,14 +149,16 @@ export function Queue() {
               {resetInFlight ? 'Resetting...' : 'Reset Queue'}
             </Button>
           )}
-          <Button
-            onClick={() => window.open(GOOGLE_SHEET_QUEUE_URL, '_blank', 'noopener,noreferrer')}
-            variant="outline"
-            disabled={!GOOGLE_SHEET_QUEUE_URL}
-          >
-            <ExternalLink className="size-4 mr-2" />
-            Open Google Sheet
-          </Button>
+          {canOpenGoogleSheet && (
+            <Button
+              onClick={() => window.open(GOOGLE_SHEET_QUEUE_URL, '_blank', 'noopener,noreferrer')}
+              variant="outline"
+              disabled={!GOOGLE_SHEET_QUEUE_URL}
+            >
+              <ExternalLink className="size-4 mr-2" />
+              Open Google Sheet
+            </Button>
+          )}
         </div>
       </div>
 
@@ -193,8 +198,10 @@ export function Queue() {
                 <div className="flex-1">
                   <QueueItem
                     job={job}
-                    onRemove={handleRemove}
-                    onDownload={handleDownload}
+                    onRemove={canManageQueue ? handleRemove : undefined}
+                    onDownload={canDownloadQueueFiles ? handleDownload : undefined}
+                    canManage={canManageQueue}
+                    canDownload={canDownloadQueueFiles}
                   />
                 </div>
               </div>
@@ -226,7 +233,9 @@ export function Queue() {
                   <QueueItem
                     job={job}
                     mode="history"
-                    onDownload={handleDownload}
+                    onDownload={canDownloadQueueFiles ? handleDownload : undefined}
+                    canManage={false}
+                    canDownload={canDownloadQueueFiles}
                   />
                 </div>
               </div>

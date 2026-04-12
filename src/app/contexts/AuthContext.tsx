@@ -11,6 +11,7 @@ interface User {
 interface AuthContextType {
   user: User | null;
   login: (username: string, password: string) => Promise<LoginResult>;
+  loginAsViewer: () => Promise<LoginResult>;
   createUser: (input: CreateUserInput) => Promise<CreateUserResult>;
   removeUser: (userId: string) => Promise<RemoveUserResult>;
   changeUserPassword: (userId: string, password: string) => Promise<ChangePasswordResult>;
@@ -370,6 +371,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   };
 
+  const loginAsViewer = async (): Promise<LoginResult> => {
+    const viewerUser = PUBLIC_VIEWER_USER;
+    setUser(viewerUser);
+    writeStoredSession(viewerUser);
+    return { success: true };
+  };
+
   const createUser = async ({
     name,
     username,
@@ -552,7 +560,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, users, login, createUser, removeUser, changeUserPassword, logout, isLoading }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        users,
+        login,
+        loginAsViewer,
+        createUser,
+        removeUser,
+        changeUserPassword,
+        logout,
+        isLoading,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

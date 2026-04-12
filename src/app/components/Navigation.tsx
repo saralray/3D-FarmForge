@@ -1,13 +1,17 @@
 import { Link, useLocation } from 'react-router';
-import { LayoutDashboard, List, BarChart3, Printer, LogOut, Settings } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import { LayoutDashboard, List, BarChart3, LogOut, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
 import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
+import { useSidebar } from '../contexts/SidebarContext';
+import stemlabLogo from '../../../CUD-STEM-LAB-logoBBGv2.svg';
 
 export function Navigation() {
   const location = useLocation();
   const { user, logout } = useAuth();
+  const { isCollapsed, toggleSidebar } = useSidebar();
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -26,14 +30,38 @@ export function Navigation() {
   };
 
   return (
-    <nav className="bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 w-64 h-screen flex flex-col">
+    <motion.nav
+      animate={{ width: isCollapsed ? 84 : 288 }}
+      transition={{ duration: 0.3, ease: 'easeInOut' }}
+      className="relative flex h-screen flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900"
+    >
+      <button
+        type="button"
+        onClick={toggleSidebar}
+        aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        className="absolute -right-3 top-6 z-10 flex size-6 items-center justify-center rounded-full border border-gray-200 bg-white shadow-md transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
+      >
+        {isCollapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
+      </button>
       <div className="p-6 border-b border-gray-200 dark:border-gray-700">
-        <div className="flex items-center gap-2">
-          <Printer className="size-8 text-blue-500" />
-          <div>
-            <h1 className="font-bold text-xl dark:text-white">PrintFarm</h1>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Manager v1.0</p>
-          </div>
+        <div className="space-y-3 overflow-hidden">
+          <img
+            src={stemlabLogo}
+            alt="CUD Stemlab PrintFarm logo"
+            className={`w-auto max-w-full dark:invert dark:brightness-200 ${isCollapsed ? 'h-9' : 'h-14'}`}
+          />
+          <AnimatePresence initial={false}>
+            {!isCollapsed && (
+              <motion.p
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                className="text-xs text-gray-500 dark:text-gray-400"
+              >
+                Manager v1.0
+              </motion.p>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 
@@ -43,14 +71,25 @@ export function Navigation() {
             <Link
               key={item.path}
               to={item.path}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+              className={`flex items-center rounded-lg px-4 py-3 transition-colors ${
                 isActive(item.path)
                   ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-medium'
                   : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
               }`}
             >
               <item.icon className="size-5" />
-              {item.label}
+              <AnimatePresence initial={false}>
+                {!isCollapsed && (
+                  <motion.span
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -8 }}
+                    className="ml-3 whitespace-nowrap"
+                  >
+                    {item.label}
+                  </motion.span>
+                )}
+              </AnimatePresence>
             </Link>
           ))}
         </div>
@@ -58,44 +97,62 @@ export function Navigation() {
 
       <div className="p-4 border-t border-gray-200 dark:border-gray-700 space-y-3">
         {user && (
-          <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-            <div className="size-10 bg-blue-500 rounded-full flex items-center justify-center text-white font-semibold">
+          <div className={`flex items-center rounded-lg bg-gray-50 p-3 dark:bg-gray-800 ${isCollapsed ? 'justify-center' : 'gap-3'}`}>
+            <div className="flex size-10 items-center justify-center rounded-full bg-blue-500 font-semibold text-white">
               {user.name.charAt(0)}
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium dark:text-white truncate">
-                {user.name}
-              </div>
-              <div className="text-xs text-gray-500 dark:text-gray-400 capitalize">
-                {user.role}
-              </div>
-            </div>
+            <AnimatePresence initial={false}>
+              {!isCollapsed && (
+                <motion.div
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -8 }}
+                  className="min-w-0 flex-1"
+                >
+                  <div className="truncate text-sm font-medium dark:text-white">
+                    {user.name}
+                  </div>
+                  <div className="text-xs capitalize text-gray-500 dark:text-gray-400">
+                    {user.role}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         )}
         
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-gray-600 dark:text-gray-400">Theme</span>
+        <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'}`}>
+          {!isCollapsed && <span className="text-sm text-gray-600 dark:text-gray-400">Theme</span>}
           <ThemeToggle />
         </div>
 
         {user && !PUBLIC_VIEWER_MODE && (
           <Button
             variant="outline"
-            className="w-full"
+            className={isCollapsed ? 'w-full px-0' : 'w-full'}
             onClick={logout}
           >
             <LogOut className="size-4 mr-2" />
-            Logout
+            {!isCollapsed && 'Logout'}
           </Button>
         )}
 
-        <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
-          <div>{PUBLIC_VIEWER_MODE ? 'Access' : 'Developer'}</div>
-          <div className="truncate">
-            {PUBLIC_VIEWER_MODE ? 'Public Viewer Mode' : 'Saral Assabumrungrat CUD61'}
-          </div>
-        </div>
+        <AnimatePresence initial={false}>
+          {!isCollapsed && (
+            <motion.div
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              className="space-y-1 text-xs text-gray-500 dark:text-gray-400"
+            >
+              <div>{PUBLIC_VIEWER_MODE ? 'Access' : 'Developer'}</div>
+              <div className="truncate">
+                {PUBLIC_VIEWER_MODE ? 'Public Viewer Mode' : 'Saral Assabumrungrat CUD61'}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
-    </nav>
+    </motion.nav>
   );
 }

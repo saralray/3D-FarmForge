@@ -356,6 +356,11 @@ export async function upsertQueueJobs(jobs) {
 async function listQueueJobsByPrintedStatus(printedStatus) {
   await ensureSchema();
 
+  const orderByClause =
+    Number(printedStatus) === 1
+      ? 'updated_at DESC, submitted_at DESC NULLS LAST, created_at DESC'
+      : 'submitted_at ASC NULLS LAST, created_at ASC';
+
   const sql = `
     SELECT COALESCE(
       json_agg(
@@ -376,7 +381,7 @@ async function listQueueJobsByPrintedStatus(printedStatus) {
           'notes', notes,
           'submittedAt', CASE WHEN submitted_at IS NULL THEN NULL ELSE to_char(submitted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END
         )
-        ORDER BY submitted_at DESC NULLS LAST, created_at DESC
+        ORDER BY ${orderByClause}
       ),
       '[]'::json
     )::text
