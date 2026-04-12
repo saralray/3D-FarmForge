@@ -146,9 +146,14 @@ export function Navigation() {
               className="space-y-1 text-xs text-gray-500 dark:text-gray-400"
             >
               <div>{PUBLIC_VIEWER_MODE ? 'Access' : 'Developer'}</div>
-              <div className="truncate">
-                {PUBLIC_VIEWER_MODE ? 'Public Viewer Mode' : 'Saral Assabumrungrat CUD61'}
-              </div>
+              {PUBLIC_VIEWER_MODE ? (
+                <div className="truncate">Public Viewer Mode</div>
+              ) : (
+                <>
+                  <div className="truncate">Saral Assabumrungrat CUD61</div>
+                  <div className="truncate">Thiraphat Srichit CUD62</div>
+                </>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
