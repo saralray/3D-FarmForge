@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router';
 import { AnimatePresence, motion } from 'motion/react';
-import { LayoutDashboard, List, BarChart3, LogOut, Settings, ChevronLeft, ChevronRight, ClipboardList, ExternalLink } from 'lucide-react';
+import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ExternalLink } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
@@ -35,14 +35,6 @@ export function Navigation() {
       transition={{ duration: 0.3, ease: 'easeInOut' }}
       className="relative flex h-screen flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900"
     >
-      <button
-        type="button"
-        onClick={toggleSidebar}
-        aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        className="absolute -right-3 top-6 z-10 flex size-6 items-center justify-center rounded-full border border-gray-200 bg-white shadow-md transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
-      >
-        {isCollapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
-      </button>
       <div className="p-6 border-b border-gray-200 dark:border-gray-700">
         <div className="space-y-3 overflow-hidden">
           <img
