@@ -39,6 +39,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-stemlab_app}:${POSTGRES_PASSWORD:-change_me_before_public_deploy}@db:5432/${POSTGRES_DB:-stemlab}
       PRINTER_POLL_INTERVAL_MS: 5000
       PRINTER_REQUEST_TIMEOUT_MS: 3000
+      PRINTER_OFFLINE_GRACE_SECONDS: ${PRINTER_OFFLINE_GRACE_SECONDS:-30}
 
 volumes:
   postgres_data:

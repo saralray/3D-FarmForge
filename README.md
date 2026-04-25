@@ -48,6 +48,7 @@ Key settings in `.env.example`:
 - `POSTGRES_PASSWORD`
 - `POSTGRES_PORT`
 - `VITE_PUBLIC_VIEWER_MODE`
+- `PRINTER_OFFLINE_GRACE_SECONDS` controls how long a printer must be unreachable before the poller sends an offline notification
 
 The app container and poller derive their `DATABASE_URL` from those values in `docker-compose.yml`.
 
