@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Navigation } from '../components/Navigation';
+import { PrinterStatusNotifier } from '../components/PrinterStatusNotifier';
 import { useSidebar } from '../contexts/SidebarContext';
 
 export function Root() {
@@ -25,6 +26,7 @@ export function Root() {
       <main className="flex-1 overflow-y-auto">
         <Outlet />
       </main>
+      <PrinterStatusNotifier />
     </div>
   );
 }
