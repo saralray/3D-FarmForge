@@ -20,6 +20,7 @@ export function Navigation() {
   const adminNavItems = !PUBLIC_VIEWER_MODE && user?.role === 'admin'
     ? [{ path: '/settings', label: 'Settings', icon: Settings }]
     : [];
+  const showUserProfile = user && user.role !== 'viewer';
 
   const isActive = (path: string) => {
     if (path === '/') {
@@ -82,7 +83,7 @@ export function Navigation() {
       </div>
 
       <div className="p-4 border-t border-gray-200 dark:border-gray-700 space-y-3">
-        {user && (
+        {showUserProfile && (
           <div className={`flex items-center rounded-lg bg-gray-50 p-3 dark:bg-gray-800 ${isCollapsed ? 'justify-center' : 'gap-3'}`}>
             <div className="flex size-10 items-center justify-center rounded-full bg-blue-500 font-semibold text-white">
               {user.name.charAt(0)}

@@ -593,13 +593,15 @@ export function PrinterDetail() {
                   <div className="font-medium capitalize dark:text-white">{activityLabel}</div>
                 </div>
               </div>
-              <div className="flex items-start gap-2">
-                <Activity className="size-4 mt-0.5 text-gray-400" />
-                <div className="flex-1">
-                  <div className="text-sm text-gray-600 dark:text-gray-400">Profile</div>
-                  <div className="font-medium dark:text-white">{printer.profile}</div>
+              {canViewSensitiveInfo && (
+                <div className="flex items-start gap-2">
+                  <Activity className="size-4 mt-0.5 text-gray-400" />
+                  <div className="flex-1">
+                    <div className="text-sm text-gray-600 dark:text-gray-400">Profile</div>
+                    <div className="font-medium dark:text-white">{printer.profile}</div>
+                  </div>
                 </div>
-              </div>
+              )}
               {canViewSensitiveInfo && (
                 <div className="flex items-start gap-2">
                   <KeyRound className="size-4 mt-0.5 text-gray-400" />
