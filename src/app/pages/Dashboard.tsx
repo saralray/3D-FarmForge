@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { mockPrinters } from '../data/mockData';
 import { Printer } from '../types';
 import { PrinterCard } from '../components/PrinterCard';
 import { Activity, AlertCircle, CheckCircle, Pause, WifiOff } from 'lucide-react';
@@ -21,10 +20,6 @@ export function Dashboard() {
       setPrinters(nextPrinters);
       loadErrorToastShownRef.current = false;
     } catch {
-      setPrinters((currentPrinters) =>
-        currentPrinters.length > 0 ? currentPrinters : mockPrinters.map(normalizePrinter)
-      );
-
       if (!loadErrorToastShownRef.current) {
         toast.error('Unable to load printer status from the server.', {
           id: 'dashboard-load-printers-error',

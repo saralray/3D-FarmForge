@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { mockAnalytics, mockPrinters } from '../data/mockData';
 import { Card } from '../components/ui/card';
 import {
   LineChart,
@@ -17,7 +16,7 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { TrendingUp, Package, Clock, CheckCircle } from 'lucide-react';
-import { Printer } from '../types';
+import { AnalyticsData, Printer } from '../types';
 import { fetchPrinters } from '../lib/printersApi';
 import { normalizePrinter } from '../lib/printerProfiles';
 import { Button } from '../components/ui/button';
@@ -26,8 +25,8 @@ import { formatMaxTwoDecimals, roundToMaxTwoDecimals } from '../lib/numberFormat
 
 export function Analytics() {
   const { user } = useAuth();
-  const [printers, setPrinters] = useState<Printer[]>(mockPrinters.map(normalizePrinter));
-  const [analyticsData, setAnalyticsData] = useState(mockAnalytics);
+  const [printers, setPrinters] = useState<Printer[]>([]);
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsData[]>([]);
   const [resetInFlight, setResetInFlight] = useState(false);
 
   useEffect(() => {
@@ -45,9 +44,7 @@ export function Analytics() {
           setAnalyticsData(payload);
         }
       } catch {
-        if (!isCancelled) {
-          setAnalyticsData(mockAnalytics);
-        }
+        // Leave the last good snapshot on screen if the refresh fails.
       }
     };
 

@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { mockPrinters } from '../data/mockData';
 import { Printer } from '../types';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -117,7 +116,7 @@ export function PrinterDetail() {
         setPrinter(printers.map(normalizePrinter).find((candidate) => candidate.id === id) || null);
       })
       .catch(() => {
-        setPrinter(mockPrinters.find((candidate) => candidate.id === id) || null);
+        setPrinter(null);
       });
   }, [id]);
 
