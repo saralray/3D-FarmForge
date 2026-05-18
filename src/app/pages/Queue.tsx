@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button';
 import { List, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import { fetchPrinters } from '../lib/printersApi';
-import { fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
+import { deleteQueueJob, fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
 import { useAuth } from '../contexts/AuthContext';
 
 const GOOGLE_SHEET_QUEUE_URL = import.meta.env.VITE_GOOGLE_SHEET_QUEUE_URL || '';
@@ -93,6 +93,28 @@ export function Queue() {
     }
   };
 
+  const handleDeleteQueueJob = async (jobId: string) => {
+    if (user?.role !== 'admin') {
+      return;
+    }
+
+    const shouldDelete = window.confirm('Delete this queue job?');
+    if (!shouldDelete) {
+      return;
+    }
+
+    try {
+      await deleteQueueJob(jobId);
+      const refreshed = await fetchQueueJobs();
+      setQueue(refreshed.queue);
+      setHistory(refreshed.history);
+      toast.success('Queue job deleted');
+    } catch (error) {
+      console.error('Failed to delete queue job', error);
+      toast.error('Unable to delete queue job');
+    }
+  };
+
   const handleDownload = (job: PrintJob) => {
     if (!job.stlFileUrl) {
       toast.error('No file link available for this submission');
@@ -127,6 +149,7 @@ export function Queue() {
 
   const totalFiles = queue.reduce((acc, job) => acc + (job.fileCount ?? 1), 0);
   const canManageQueue = user?.role === 'admin' || user?.role === 'operator';
+  const canDeleteQueueJobs = user?.role === 'admin';
   const canDownloadQueueFiles = user?.role !== 'viewer';
   const canOpenGoogleSheet = user?.role !== 'viewer';
 
@@ -198,8 +221,10 @@ export function Queue() {
                   <QueueItem
                     job={job}
                     onRemove={canManageQueue ? handleRemove : undefined}
+                    onDelete={canDeleteQueueJobs ? handleDeleteQueueJob : undefined}
                     onDownload={canDownloadQueueFiles ? handleDownload : undefined}
                     canManage={canManageQueue}
+                    canDelete={canDeleteQueueJobs}
                     canDownload={canDownloadQueueFiles}
                   />
                 </div>
@@ -232,8 +257,10 @@ export function Queue() {
                   <QueueItem
                     job={job}
                     mode="history"
+                    onDelete={canDeleteQueueJobs ? handleDeleteQueueJob : undefined}
                     onDownload={canDownloadQueueFiles ? handleDownload : undefined}
                     canManage={false}
+                    canDelete={canDeleteQueueJobs}
                     canDownload={canDownloadQueueFiles}
                   />
                 </div>

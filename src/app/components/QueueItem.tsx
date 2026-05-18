@@ -1,13 +1,15 @@
 import { PrintJob } from '../types';
-import { FileText, Check, Download, User, Mail } from 'lucide-react';
+import { FileText, Check, Download, User, Mail, Trash2 } from 'lucide-react';
 import { Button } from './ui/button';
 
 interface QueueItemProps {
   job: PrintJob;
   mode?: 'queue' | 'history';
   onRemove?: (jobId: string) => void;
+  onDelete?: (jobId: string) => void;
   onDownload?: (job: PrintJob) => void;
   canManage?: boolean;
+  canDelete?: boolean;
   canDownload?: boolean;
 }
 
@@ -15,8 +17,10 @@ export function QueueItem({
   job,
   mode = 'queue',
   onRemove,
+  onDelete,
   onDownload,
   canManage = true,
+  canDelete = false,
   canDownload = true,
 }: QueueItemProps) {
   const formatDate = (dateString?: string) => {
@@ -71,6 +75,19 @@ export function QueueItem({
                   title="Mark as printed"
                 >
                   <Check className="size-4 text-green-600" />
+                </Button>
+              )}
+              {canDelete && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete?.(job.id);
+                  }}
+                  title="Delete job"
+                >
+                  <Trash2 className="size-4 text-red-600" />
                 </Button>
               )}
             </div>

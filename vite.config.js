@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { createDiscordWebhook, deleteDiscordWebhook, deletePrinter, getPrinterById, listDailyAnalytics, listDiscordWebhooks, listPrinters, listQueueData, markQueueJobPrinted, resetDailyAnalytics, resetQueueJobs, upsertPrinter, upsertQueueJobs } from './server/postgres.js'
+import { createDiscordWebhook, deleteDiscordWebhook, deletePrinter, deleteQueueJob, getPrinterById, listDailyAnalytics, listDiscordWebhooks, listPrinters, listQueueData, markQueueJobPrinted, resetDailyAnalytics, resetQueueJobs, upsertPrinter, upsertQueueJobs } from './server/postgres.js'
 
 function getGoogleSheetId(sheetUrl) {
   const match = sheetUrl.match(/\/spreadsheets\/d\/([^/]+)/)
@@ -412,6 +412,21 @@ export default defineConfig(({ mode }) => {
               }
 
               await markQueueJobPrinted(jobId)
+              res.statusCode = 204
+              res.end()
+              return
+            }
+
+            if (req.method === 'DELETE' && req.url?.startsWith('/')) {
+              const jobId = decodeURIComponent(req.url.slice(1))
+              if (!jobId) {
+                res.statusCode = 400
+                res.setHeader('Content-Type', 'application/json')
+                res.end(JSON.stringify({ error: 'Missing queue job id' }))
+                return
+              }
+
+              await deleteQueueJob(jobId)
               res.statusCode = 204
               res.end()
               return

@@ -52,12 +52,14 @@ CREATE TABLE IF NOT EXISTS queue_jobs (
   estimated_time INTEGER NOT NULL DEFAULT 0,
   form_type TEXT NOT NULL,
   printed_status INTEGER NOT NULL DEFAULT 0,
+  deleted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS file_count INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS form_type TEXT NOT NULL DEFAULT '';
 ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS printed_status INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS discord_webhooks (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -469,6 +471,7 @@ async function listQueueJobsByPrintedStatus(printedStatus) {
     )::text
     FROM queue_jobs
     WHERE form_type = 'สั่งพิมพ์งาน 3D Print'
+      AND deleted_at IS NULL
       AND printed_status = ${Number(printedStatus)};
   `;
 
@@ -491,7 +494,8 @@ export async function markQueueJobPrinted(id) {
     UPDATE queue_jobs
     SET printed_status = 1,
         updated_at = NOW()
-    WHERE id = ${sqlLiteral(id)};
+    WHERE id = ${sqlLiteral(id)}
+      AND deleted_at IS NULL;
   `);
 }
 
@@ -500,8 +504,19 @@ export async function resetQueueJobs() {
   await runPsql(`
     UPDATE queue_jobs
     SET printed_status = 0,
+        deleted_at = NULL,
         updated_at = NOW()
       WHERE form_type = 'สั่งพิมพ์งาน 3D Print';
+  `);
+}
+
+export async function deleteQueueJob(id) {
+  await ensureSchema();
+  await runPsql(`
+    UPDATE queue_jobs
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE id = ${sqlLiteral(id)};
   `);
 }
 

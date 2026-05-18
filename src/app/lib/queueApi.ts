@@ -50,3 +50,11 @@ export async function resetQueueJobStatuses() {
 
   await readJsonResponse<void>(response);
 }
+
+export async function deleteQueueJob(jobId: string) {
+  const response = await fetch(`/api/queue/${encodeURIComponent(jobId)}`, {
+    method: 'DELETE',
+  });
+
+  await readJsonResponse<void>(response);
+}
