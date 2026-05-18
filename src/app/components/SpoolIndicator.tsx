@@ -1,5 +1,6 @@
 import { Spool } from '../types';
 import { Progress } from './ui/progress';
+import { formatMaxTwoDecimals } from '../lib/numberFormat';
 
 interface SpoolIndicatorProps {
   spools: Spool[];
@@ -15,7 +16,7 @@ export function SpoolIndicator({ spools, compact = false }: SpoolIndicatorProps)
             key={spool.id}
             className="size-4 rounded-full border-2 border-white dark:border-gray-800 shadow-sm"
             style={{ backgroundColor: spool.color }}
-            title={`${spool.material} - ${spool.remaining}%`}
+            title={`${spool.material} - ${formatMaxTwoDecimals(spool.remaining)}%`}
           />
         ))}
       </div>
@@ -40,12 +41,12 @@ export function SpoolIndicator({ spools, compact = false }: SpoolIndicatorProps)
               </span>
             </div>
             <div className="text-sm font-medium dark:text-white">
-              {spool.remaining}%
+              {formatMaxTwoDecimals(spool.remaining)}%
             </div>
           </div>
           <Progress value={spool.remaining} className="h-2" />
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            {spool.weight}g remaining
+            {formatMaxTwoDecimals(spool.weight)}g remaining
           </div>
         </div>
       ))}

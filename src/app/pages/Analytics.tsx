@@ -22,6 +22,7 @@ import { fetchPrinters } from '../lib/printersApi';
 import { normalizePrinter } from '../lib/printerProfiles';
 import { Button } from '../components/ui/button';
 import { useAuth } from '../contexts/AuthContext';
+import { formatMaxTwoDecimals, roundToMaxTwoDecimals } from '../lib/numberFormat';
 
 export function Analytics() {
   const { user } = useAuth();
@@ -87,10 +88,14 @@ export function Analytics() {
     0
   );
   const completedJobs = analyticsData.reduce((acc, day) => acc + day.completedJobs, 0);
-  const totalPrintTime = analyticsData.reduce((acc, day) => acc + day.printTime, 0);
-  const totalFilament = analyticsData.reduce((acc, day) => acc + day.filamentUsed, 0);
+  const totalPrintTime = roundToMaxTwoDecimals(
+    analyticsData.reduce((acc, day) => acc + day.printTime, 0)
+  );
+  const totalFilament = roundToMaxTwoDecimals(
+    analyticsData.reduce((acc, day) => acc + day.filamentUsed, 0)
+  );
 
-  const successRate = totalJobs > 0 ? ((completedJobs / totalJobs) * 100).toFixed(1) : '0.0';
+  const successRate = totalJobs > 0 ? formatMaxTwoDecimals((completedJobs / totalJobs) * 100) : '0';
 
   const statusData = [
     { name: 'Printing', value: printers.filter((p) => p.status === 'printing').length },
@@ -186,7 +191,9 @@ export function Analytics() {
           <div className="flex items-center justify-between">
             <div>
               <div className="text-sm text-gray-600 dark:text-gray-400">Print Time</div>
-              <div className="text-3xl font-bold mt-1 dark:text-white">{totalPrintTime}h</div>
+              <div className="text-3xl font-bold mt-1 dark:text-white">
+                {formatMaxTwoDecimals(totalPrintTime)}h
+              </div>
               <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Last 7 days</div>
             </div>
             <Clock className="size-8 text-purple-500" />
@@ -197,7 +204,9 @@ export function Analytics() {
           <div className="flex items-center justify-between">
             <div>
               <div className="text-sm text-gray-600 dark:text-gray-400">Filament Used</div>
-              <div className="text-3xl font-bold mt-1 dark:text-white">{(totalFilament / 1000).toFixed(1)}kg</div>
+              <div className="text-3xl font-bold mt-1 dark:text-white">
+                {formatMaxTwoDecimals(totalFilament / 1000)}kg
+              </div>
               <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Last 7 days</div>
             </div>
             <Package className="size-8 text-orange-500" />

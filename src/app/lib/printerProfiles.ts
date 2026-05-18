@@ -1,4 +1,5 @@
 import { PrintJob, Printer, PrinterProfile, PrinterStatus } from '../types';
+import { normalizeMaxTwoDecimals } from './numberFormat';
 
 export const PRINTER_STORAGE_KEY = 'printfarm_printers';
 
@@ -50,6 +51,24 @@ export function normalizePrinter(printer: Partial<Printer>, index: number): Prin
     printer.url ??
     (printer.ipAddress && printer.ipAddress !== '0.0.0.0' ? `http://${printer.ipAddress}` : '');
   const supportsLiveStatus = PRINTER_PROFILES[profile].statusPath !== null;
+  const fallbackNozzleTemperature = normalizeMaxTwoDecimals(printer.temperature?.nozzle);
+  const fallbackBedTemperature = normalizeMaxTwoDecimals(printer.temperature?.bed);
+
+  const currentJob = printer.currentJob
+    ? {
+        ...printer.currentJob,
+        progress: normalizeMaxTwoDecimals(printer.currentJob.progress),
+        estimatedTime: normalizeMaxTwoDecimals(printer.currentJob.estimatedTime),
+        timeRemaining: normalizeMaxTwoDecimals(printer.currentJob.timeRemaining),
+        printingTime: normalizeMaxTwoDecimals(printer.currentJob.printingTime),
+        filamentUsed: normalizeMaxTwoDecimals(printer.currentJob.filamentUsed),
+      }
+    : undefined;
+  const spools = printer.spools?.map((spool) => ({
+    ...spool,
+    remaining: normalizeMaxTwoDecimals(spool.remaining),
+    weight: normalizeMaxTwoDecimals(spool.weight),
+  }));
 
   return {
     id: printer.id ?? `printer-${index + 1}`,
@@ -60,16 +79,19 @@ export function normalizePrinter(printer: Partial<Printer>, index: number): Prin
     ipAddress: printer.ipAddress ?? '0.0.0.0',
     apiKeyHeader: printer.apiKeyHeader ?? '',
     status: printer.status ?? 'offline',
-    currentJob: printer.currentJob,
-    temperature: printer.temperature ?? { nozzle: 0, bed: 0 },
+    currentJob,
+    temperature: {
+      nozzle: fallbackNozzleTemperature,
+      bed: fallbackBedTemperature,
+    },
     nozzleTemperatures:
-      printer.nozzleTemperatures ??
-      (supportsLiveStatus ? [0, 0, 0, 0] : [printer.temperature?.nozzle ?? 0]),
-    progress: printer.progress ?? 0,
+      printer.nozzleTemperatures?.map((temperature) => normalizeMaxTwoDecimals(temperature)) ??
+      (supportsLiveStatus ? [0, 0, 0, 0] : [fallbackNozzleTemperature]),
+    progress: normalizeMaxTwoDecimals(printer.progress),
     lastMaintenance: printer.lastMaintenance ?? new Date().toISOString().slice(0, 10),
-    totalPrintTime: printer.totalPrintTime ?? 0,
-    successRate: printer.successRate ?? 0,
-    spools: printer.spools,
+    totalPrintTime: normalizeMaxTwoDecimals(printer.totalPrintTime),
+    successRate: normalizeMaxTwoDecimals(printer.successRate),
+    spools,
   };
 }
 

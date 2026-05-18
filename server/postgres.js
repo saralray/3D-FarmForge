@@ -97,11 +97,14 @@ function buildPrinterListSelect(includeSensitive = true) {
       'ipAddress', ${includeSensitive ? 'ip_address' : "''"},
       'apiKeyHeader', ${includeSensitive ? 'api_key_header' : "''"},
       'status', status,
-      'temperature', json_build_object('nozzle', temperature_nozzle, 'bed', temperature_bed),
+      'temperature', json_build_object(
+        'nozzle', ROUND(temperature_nozzle::numeric, 2),
+        'bed', ROUND(temperature_bed::numeric, 2)
+      ),
       'progress', progress,
       'lastMaintenance', last_maintenance,
-      'totalPrintTime', total_print_time,
-      'successRate', success_rate,
+      'totalPrintTime', ROUND(total_print_time::numeric, 2),
+      'successRate', ROUND(success_rate::numeric, 2),
       'currentJob', current_job,
       'nozzleTemperatures', nozzle_temperatures,
       'spools', spools
@@ -170,11 +173,14 @@ export async function getPrinterById(id) {
           'ipAddress', ip_address,
           'apiKeyHeader', api_key_header,
           'status', status,
-          'temperature', json_build_object('nozzle', temperature_nozzle, 'bed', temperature_bed),
+          'temperature', json_build_object(
+            'nozzle', ROUND(temperature_nozzle::numeric, 2),
+            'bed', ROUND(temperature_bed::numeric, 2)
+          ),
           'progress', progress,
           'lastMaintenance', last_maintenance,
-          'totalPrintTime', total_print_time,
-          'successRate', success_rate,
+          'totalPrintTime', ROUND(total_print_time::numeric, 2),
+          'successRate', ROUND(success_rate::numeric, 2),
           'currentJob', current_job,
           'nozzleTemperatures', nozzle_temperatures,
           'spools', spools

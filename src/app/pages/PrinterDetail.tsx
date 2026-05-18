@@ -28,6 +28,7 @@ import {
 } from '../lib/printerProfiles';
 import { fetchPrinters, removePrinter } from '../lib/printersApi';
 import { useAuth } from '../contexts/AuthContext';
+import { formatMaxTwoDecimals } from '../lib/numberFormat';
 
 interface PrinterTaskConfig {
   filament_vendor?: string[];
@@ -392,7 +393,7 @@ export function PrinterDetail() {
               <div>
                 <div className="flex justify-between text-sm mb-2">
                   <span className="text-gray-600 dark:text-gray-400">Progress</span>
-                  <span className="font-medium dark:text-white">{printer.progress}%</span>
+                  <span className="font-medium dark:text-white">{formatMaxTwoDecimals(printer.progress)}%</span>
                 </div>
                 <Progress value={printer.progress} className="h-3" />
               </div>
@@ -411,7 +412,9 @@ export function PrinterDetail() {
                 </div>
                 <div>
                   <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Filament Used</div>
-                  <div className="font-medium dark:text-white">{printer.currentJob.filamentUsed}g</div>
+                  <div className="font-medium dark:text-white">
+                    {formatMaxTwoDecimals(printer.currentJob.filamentUsed)}g
+                  </div>
                 </div>
               </div>
 
@@ -495,7 +498,7 @@ export function PrinterDetail() {
                       {nozzleTemperatures.length > 1 ? `Nozzle ${index + 1}` : 'Nozzle'}
                     </span>
                     <span className={`font-bold text-lg ${getStatusColor()}`}>
-                      {temperature}°C
+                      {formatMaxTwoDecimals(temperature)}°C
                     </span>
                   </div>
                   <Progress
@@ -508,7 +511,7 @@ export function PrinterDetail() {
                 <div className="flex justify-between mb-2">
                   <span className="text-sm text-gray-600 dark:text-gray-400">Bed</span>
                   <span className={`font-bold text-lg ${getStatusColor()}`}>
-                    {printer.temperature.bed}°C
+                    {formatMaxTwoDecimals(printer.temperature.bed)}°C
                   </span>
                 </div>
                 <Progress
@@ -619,14 +622,18 @@ export function PrinterDetail() {
                 <Clock className="size-4 mt-0.5 text-gray-400" />
                 <div className="flex-1">
                   <div className="text-sm text-gray-600 dark:text-gray-400">Total Print Time</div>
-                  <div className="font-medium dark:text-white">{printer.totalPrintTime}h</div>
+                  <div className="font-medium dark:text-white">
+                    {formatMaxTwoDecimals(printer.totalPrintTime)}h
+                  </div>
                 </div>
               </div>
               <div className="flex items-start gap-2">
                 <CheckCircle className="size-4 mt-0.5 text-gray-400" />
                 <div className="flex-1">
                   <div className="text-sm text-gray-600 dark:text-gray-400">Success Rate</div>
-                  <div className="font-medium dark:text-white">{printer.successRate}%</div>
+                  <div className="font-medium dark:text-white">
+                    {formatMaxTwoDecimals(printer.successRate)}%
+                  </div>
                 </div>
               </div>
               {user?.role === 'admin' && (

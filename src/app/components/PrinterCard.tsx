@@ -6,6 +6,7 @@ import { Card } from './ui/card';
 import { Progress } from './ui/progress';
 import { Badge } from './ui/badge';
 import { buildPrinterWebcamSnapshotUrl } from '../lib/printerProfiles';
+import { formatMaxTwoDecimals } from '../lib/numberFormat';
 
 interface PrinterCardProps {
   printer: Printer;
@@ -188,7 +189,7 @@ export function PrinterCard({
                 <span className="text-gray-500 dark:text-gray-400">
                   ETA <span className="font-medium dark:text-white">{printer.currentJob?.timeRemaining}m</span>
                 </span>
-                <span className="font-medium dark:text-white">{printer.progress}%</span>
+                <span className="font-medium dark:text-white">{formatMaxTwoDecimals(printer.progress)}%</span>
               </div>
             </div>
             <Progress value={printer.progress} className="h-2" />
