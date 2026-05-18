@@ -38,8 +38,7 @@ export function Queue() {
         const printers = await fetchPrinters();
         if (active) {
           setAvailablePrinters(
-            printers.filter((printer) => printer.status === 'idle' || printer.status === 'offline')
-              .length,
+            printers.filter((printer) => printer.status === 'idle').length,
           );
         }
       } catch (error) {
