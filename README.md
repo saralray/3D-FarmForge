@@ -148,7 +148,10 @@ or workflow). Create it once, with strong random values:
 ```bash
 kubectl create namespace printfarm
 
-PG_PASS="$(openssl rand -base64 32)"
+# Use a URL-safe alphabet (hex) so the password drops into DATABASE_URL
+# without needing URL-encoding. base64 includes '/' and '+', which break
+# postgresql:// parsing and lead to SASL auth errors at runtime.
+PG_PASS="$(openssl rand -hex 32)"
 kubectl -n printfarm create secret generic printfarm-secret \
   --from-literal=POSTGRES_DB=printfarm \
   --from-literal=POSTGRES_USER=printfarm_app \
