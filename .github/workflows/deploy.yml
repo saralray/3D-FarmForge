@@ -23,6 +23,9 @@ jobs:
         run: |
           docker build \
             -f Dockerfile.web \
+            --build-arg VITE_PUBLIC_VIEWER_MODE=false \
+            --build-arg VITE_GOOGLE_FORM_URL='https://docs.google.com/forms/d/e/1FAIpQLSdRR27bQDytT0xJNa2z6YSqksiclxtgoKxbaY-uANlAZGgeag/viewform?usp=dialog' \
+            --build-arg VITE_GOOGLE_SHEET_QUEUE_URL='https://docs.google.com/spreadsheets/d/13CZxAD8lctUtJEcVHH-qUHKNIJY0ENxcxPP-DwNgelE/edit?usp=sharing' \
             -t saralray/printfarm-web:latest .
 
       - name: Push web image
