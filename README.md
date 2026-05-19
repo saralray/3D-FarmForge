@@ -38,7 +38,7 @@ Generate the Basic Auth password hash with:
 node -e "console.log(require('node:crypto').createHash('sha256').update(process.argv[1]).digest('hex'))" "your-password"
 ```
 
-Use a long random `POSTGRES_PASSWORD` and set `APP_BASIC_AUTH_PASSWORD_SHA256` to the generated hash.
+Use a long random `POSTGRES_PASSWORD`.
 
 4. Start the full production-style stack:
 
@@ -52,7 +52,7 @@ docker compose up --build
 http://localhost:8080
 ```
 
-The browser will prompt for the `APP_BASIC_AUTH_USERNAME` and matching password.
+The app opens directly in the browser and uses its in-app login screen for restricted views.
 
 ## Development
 
@@ -80,8 +80,6 @@ Key settings in `.env.example`:
 - `POSTGRES_USER`
 - `POSTGRES_PASSWORD`
 - `HTTP_PORT`
-- `APP_BASIC_AUTH_USERNAME`
-- `APP_BASIC_AUTH_PASSWORD_SHA256`
 - `VITE_PUBLIC_VIEWER_MODE`
 - `VITE_GOOGLE_SHEET_QUEUE_URL`
 - `VITE_GOOGLE_FORM_URL`

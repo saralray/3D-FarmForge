@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -44,36 +44,6 @@ const mimeTypes = {
 
 function hash(value) {
   return createHash('sha256').update(value).digest('hex');
-}
-
-function fixedTimeEqual(left, right) {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
-}
-
-function isAuthorized(req) {
-  const username = process.env.APP_BASIC_AUTH_USERNAME;
-  const passwordHash = process.env.APP_BASIC_AUTH_PASSWORD_SHA256;
-
-  if (!username && !passwordHash) {
-    return true;
-  }
-
-  if (!username || !passwordHash) {
-    return false;
-  }
-
-  const header = req.headers.authorization || '';
-  if (!header.startsWith('Basic ')) {
-    return false;
-  }
-
-  const [providedUsername, providedPassword = ''] = Buffer.from(header.slice(6), 'base64')
-    .toString('utf8')
-    .split(':');
-
-  return fixedTimeEqual(providedUsername, username) && fixedTimeEqual(hash(providedPassword), passwordHash);
 }
 
 function setSecurityHeaders(res) {
@@ -507,13 +477,6 @@ async function handleRequest(req, res) {
     } catch (error) {
       sendJson(res, 503, { ok: false });
     }
-    return;
-  }
-
-  if (!isAuthorized(req)) {
-    res.statusCode = 401;
-    res.setHeader('WWW-Authenticate', 'Basic realm="STEM Lab Print Farm", charset="UTF-8"');
-    res.end('Authentication required');
     return;
   }
 
