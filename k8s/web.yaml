@@ -39,10 +39,16 @@ spec:
                   key: DATABASE_URL
 
             - name: VITE_PUBLIC_VIEWER_MODE
-              value: "false"
+              valueFrom:
+                configMapKeyRef:
+                  name: printfarm-config
+                  key: VITE_PUBLIC_VIEWER_MODE
 
             - name: VITE_GOOGLE_SHEET_QUEUE_URL
-              value: "https://docs.google.com/spreadsheets/d/13CZxAD8lctUtJEcVHH-qUHKNIJY0ENxcxPP-DwNgelE/edit?usp=sharing"
+              valueFrom:
+                configMapKeyRef:
+                  name: printfarm-config
+                  key: VITE_GOOGLE_SHEET_QUEUE_URL
 
             - name: MAX_BODY_BYTES
               value: "1048576"

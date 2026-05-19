@@ -9,9 +9,22 @@ jobs:
   deploy:
     runs-on: self-hosted
 
+    env:
+      # Forks set DOCKERHUB_USERNAME in repo secrets; the same value is used
+      # for the build/push registry and as the Kubernetes image prefix.
+      IMAGE_PREFIX: ${{ secrets.DOCKERHUB_USERNAME }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          : "${IMAGE_PREFIX:?DOCKERHUB_USERNAME secret is not set}"
+          test -n "${{ secrets.DOCKERHUB_TOKEN }}"           || { echo "DOCKERHUB_TOKEN secret is not set"; exit 1; }
+          test -n "${{ secrets.KUBE_CONFIG }}"               || { echo "KUBE_CONFIG secret is not set"; exit 1; }
+          test -n "${{ secrets.GOOGLE_FORM_URL }}"           || { echo "GOOGLE_FORM_URL secret is not set"; exit 1; }
+          test -n "${{ secrets.GOOGLE_SHEET_QUEUE_URL }}"    || { echo "GOOGLE_SHEET_QUEUE_URL secret is not set"; exit 1; }
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -23,37 +36,57 @@ jobs:
         run: |
           docker build \
             -f Dockerfile.web \
-            --build-arg VITE_PUBLIC_VIEWER_MODE=false \
-            --build-arg VITE_GOOGLE_FORM_URL='https://docs.google.com/forms/d/e/1FAIpQLSdRR27bQDytT0xJNa2z6YSqksiclxtgoKxbaY-uANlAZGgeag/viewform?usp=dialog' \
-            --build-arg VITE_GOOGLE_SHEET_QUEUE_URL='https://docs.google.com/spreadsheets/d/13CZxAD8lctUtJEcVHH-qUHKNIJY0ENxcxPP-DwNgelE/edit?usp=sharing' \
-            -t saralray/printfarm-web:latest .
+            --build-arg VITE_PUBLIC_VIEWER_MODE='${{ vars.PUBLIC_VIEWER_MODE || 'false' }}' \
+            --build-arg VITE_GOOGLE_FORM_URL='${{ secrets.GOOGLE_FORM_URL }}' \
+            --build-arg VITE_GOOGLE_SHEET_QUEUE_URL='${{ secrets.GOOGLE_SHEET_QUEUE_URL }}' \
+            -t "${IMAGE_PREFIX}/printfarm-web:latest" .
 
       - name: Build poller image
         run: |
           docker build \
             -f Dockerfile.poller \
-            -t saralray/printfarm-poller:latest .
+            -t "${IMAGE_PREFIX}/printfarm-poller:latest" .
 
       - name: Build nginx image
         run: |
           docker build \
             -f Dockerfile.nginx \
-            -t saralray/printfarm-nginx:latest .
+            -t "${IMAGE_PREFIX}/printfarm-nginx:latest" .
 
       - name: Push images
         run: |
-          docker push saralray/printfarm-web:latest
-          docker push saralray/printfarm-poller:latest
-          docker push saralray/printfarm-nginx:latest
+          docker push "${IMAGE_PREFIX}/printfarm-web:latest"
+          docker push "${IMAGE_PREFIX}/printfarm-poller:latest"
+          docker push "${IMAGE_PREFIX}/printfarm-nginx:latest"
 
       - name: Setup kubeconfig
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
 
-      - name: Apply manifests
+      - name: Apply namespace
         run: |
-          kubectl apply -f k8s/
+          kubectl apply -f k8s/namespace.yaml
+
+      - name: Apply runtime ConfigMap
+        # Generated in-cluster from repo secrets/variables so the URLs never
+        # land in Git. The web Deployment reads these keys via configMapKeyRef.
+        run: |
+          kubectl -n printfarm create configmap printfarm-config \
+            --from-literal=VITE_PUBLIC_VIEWER_MODE='${{ vars.PUBLIC_VIEWER_MODE || 'false' }}' \
+            --from-literal=VITE_GOOGLE_SHEET_QUEUE_URL='${{ secrets.GOOGLE_SHEET_QUEUE_URL }}' \
+            --from-literal=VITE_GOOGLE_FORM_URL='${{ secrets.GOOGLE_FORM_URL }}' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply manifests
+        # Manifests use the upstream "saralray/" image prefix as a placeholder.
+        # Each fork's images live under its own DOCKERHUB_USERNAME, so the
+        # prefix is rewritten on the fly before apply.
+        run: |
+          for f in k8s/*.yaml; do
+            sed "s|saralray/|${IMAGE_PREFIX}/|g" "$f"
+            echo "---"
+          done | kubectl apply -f -
 
       - name: Restart deployments
         run: |
