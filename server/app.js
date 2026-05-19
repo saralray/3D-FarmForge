@@ -255,7 +255,7 @@ function mapSheetRowsToQueue(rows) {
     .slice(1)
     .map((row, index) => {
       const formType = row[4]?.trim();
-      if (formType !== 'à¸ªà¸±à¹ˆà¸‡à¸žà¸´à¸¡à¸žà¹Œà¸‡à¸²à¸™ 3D Print') {
+      if (formType !== 'สั่งพิมพ์งาน 3D Print') {
         return null;
       }
 
