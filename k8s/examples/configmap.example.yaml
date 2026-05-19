@@ -1,0 +1,20 @@
+# Example ConfigMap for non-secret runtime configuration.
+#
+# The Deploy workflow generates `printfarm-config` in-cluster from GitHub
+# Actions repository secrets/variables, so this file is not part of the
+# automatic apply. Use it only for manual deployments:
+#
+#   kubectl apply -f k8s/examples/configmap.example.yaml   # after editing
+#
+# The web Deployment reads these keys via configMapKeyRef in k8s/web.yaml,
+# and they're also baked into the frontend bundle at docker-build time via
+# VITE_* build args (see Dockerfile.web). Keep them in sync.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: printfarm-config
+  namespace: printfarm
+data:
+  VITE_PUBLIC_VIEWER_MODE: "false"
+  VITE_GOOGLE_SHEET_QUEUE_URL: "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit?usp=sharing"
+  VITE_GOOGLE_FORM_URL: "https://docs.google.com/forms/d/e/YOUR_FORM_ID/viewform?usp=dialog"

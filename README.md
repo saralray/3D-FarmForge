@@ -111,6 +111,83 @@ In viewer mode:
 - Admin deletion is a soft delete so removed jobs do not reappear after the next Google Sheet sync.
 - Operators can mark jobs as printed. Admins can delete queue and history jobs.
 
+## Kubernetes Deployment
+
+This repo is designed to be forked and deployed by anyone — **no secrets or
+deployment-specific URLs are committed**. Each fork supplies its own values
+via GitHub Actions secrets (for the GitHub-Actions deploy path) or directly
+to the cluster (for a manual `kubectl` deploy).
+
+### One-time setup — GitHub Actions deploy
+
+Configure these in your repo under **Settings → Secrets and variables →
+Actions**.
+
+**Secrets** (encrypted, masked in logs):
+
+| Name | Purpose |
+|------|---------|
+| `DOCKERHUB_USERNAME` | Username used to push images; also the K8s image prefix |
+| `DOCKERHUB_TOKEN` | Docker Hub access token for that user |
+| `KUBE_CONFIG` | Contents of a kubeconfig with rights on the cluster |
+| `GOOGLE_FORM_URL` | Public Google Form link for queue submissions |
+| `GOOGLE_SHEET_QUEUE_URL` | Public Google Sheet link the server reads as CSV |
+
+**Variables** (plain text):
+
+| Name | Default | Purpose |
+|------|---------|---------|
+| `PUBLIC_VIEWER_MODE` | `false` | Set to `true` to ship a public viewer build |
+
+### One-time setup — cluster
+
+The cluster needs a `printfarm-secret` Secret holding the database credentials.
+The deploy workflow does **not** create it (the values never enter the repo
+or workflow). Create it once, with strong random values:
+
+```bash
+kubectl create namespace printfarm
+
+PG_PASS="$(openssl rand -base64 32)"
+kubectl -n printfarm create secret generic printfarm-secret \
+  --from-literal=POSTGRES_DB=printfarm \
+  --from-literal=POSTGRES_USER=printfarm_app \
+  --from-literal=POSTGRES_PASSWORD="$PG_PASS" \
+  --from-literal=DATABASE_URL="postgresql://printfarm_app:$PG_PASS@postgres:5432/printfarm"
+```
+
+`k8s/examples/secret.example.yaml` documents the same shape if you'd rather
+template it.
+
+After that, every push to `main` builds and deploys automatically.
+
+### Manual deploy (no GitHub Actions)
+
+If you're applying manifests yourself, the workflow's `sed` step has an
+equivalent one-liner:
+
+```bash
+export IMAGE_PREFIX=your-dockerhub-username
+
+# (build & push your three images as in deploy.yml…)
+
+kubectl apply -f k8s/namespace.yaml
+
+# Runtime config — never commit a filled-in copy:
+kubectl -n printfarm create configmap printfarm-config \
+  --from-literal=VITE_PUBLIC_VIEWER_MODE=false \
+  --from-literal=VITE_GOOGLE_SHEET_QUEUE_URL='https://docs.google.com/spreadsheets/d/...' \
+  --from-literal=VITE_GOOGLE_FORM_URL='https://docs.google.com/forms/d/e/...' \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Apply with your image prefix substituted:
+for f in k8s/*.yaml; do
+  sed "s|saralray/|${IMAGE_PREFIX}/|g" "$f"; echo "---"
+done | kubectl apply -f -
+```
+
+The `printfarm-secret` (see above) must already exist.
+
 ## Notifications
 
 The app uses bottom-right popup notifications for operational feedback such as queue updates, dashboard order updates, printer status changes, and dashboard load/save errors.

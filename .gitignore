@@ -26,3 +26,13 @@ dist-ssr
 # Optional npm cache directory
 .npm
 
+
+# Environment secrets — never commit; copy .env.example to .env and fill in.
+.env
+.env.local
+.env.*.local
+
+# Local Kubernetes secret manifests — never commit. Use k8s/examples/secret.example.yaml
+# as a template and create the cluster secret out-of-band.
+k8s/secrets.yaml
+k8s/secret.yaml
