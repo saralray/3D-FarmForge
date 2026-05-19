@@ -35,6 +35,9 @@ spec:
             - name: VITE_PUBLIC_VIEWER_MODE
               value: "false"
 
+            - name: VITE_GOOGLE_SHEET_QUEUE_URL
+              value: "https://docs.google.com/spreadsheets/d/13CZxAD8lctUtJEcVHH-qUHKNIJY0ENxcxPP-DwNgelE/edit?usp=sharing"
+
             - name: MAX_BODY_BYTES
               value: "1048576"
 
