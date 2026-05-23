@@ -356,6 +356,57 @@ export function printerSupportsLight(printer: Printer) {
   return printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini';
 }
 
+export function printerSupportsTemperatureControl(printer: Printer) {
+  return printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini';
+}
+
+// Set a heater's target temperature. Snapmaker U1 (Klipper/Moonraker) uses a
+// gcode script; Bambu has no HTTP API, so the server publishes an MQTT
+// gcode_line command. A target of 0 turns the heater off.
+export async function setPrinterTemperature(
+  printer: Printer,
+  heater: 'nozzle' | 'bed',
+  target: number,
+) {
+  const value = Math.round(target);
+  if (!Number.isFinite(value) || value < 0 || value > 350) {
+    throw new Error('Temperature target is out of range');
+  }
+
+  let response: Response;
+  if (printer.profile === 'bambulab_a1_mini') {
+    response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'set_temperature', heater, target: value }),
+    });
+  } else if (printer.profile === 'snapmaker_u1') {
+    const klipperHeater = heater === 'nozzle' ? 'extruder' : 'heater_bed';
+    const script = `SET_HEATER_TEMPERATURE HEATER=${klipperHeater} TARGET=${value}`;
+    response = await fetch(
+      `/__printer_proxy/${encodeURIComponent(printer.id)}/printer/gcode/script?script=${encodeURIComponent(script)}`,
+      { method: 'POST' },
+    );
+  } else {
+    throw new Error('Temperature control is not available for this printer.');
+  }
+
+  if (!response.ok) {
+    let message = `Temperature command failed with ${response.status}`;
+
+    try {
+      const payload = (await response.json()) as { error?: string };
+      if (payload.error) {
+        message = payload.error;
+      }
+    } catch {
+      // Ignore non-JSON proxy responses.
+    }
+
+    throw new Error(message);
+  }
+}
+
 export async function setPrinterLight(printer: Printer, on: boolean) {
   // Snapmaker U1 (Klipper/Moonraker) toggles its cavity LED via a gcode script;
   // Bambu has no HTTP API, so the server publishes an MQTT ledctrl command.

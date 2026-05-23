@@ -309,8 +309,23 @@ function mapSheetRowsToQueue(rows) {
 // poller's connection.
 const BAMBU_PRINT_ACTIONS = { pause: 'pause', resume: 'resume', cancel: 'stop' };
 
+// Map a heater target to the M-code Bambu accepts over `gcode_line`.
+function buildBambuTemperatureGcode(heater, target) {
+  const value = Math.round(Number(target));
+  if (!Number.isFinite(value) || value < 0 || value > 350) {
+    throw new Error('Temperature target is out of range');
+  }
+  if (heater === 'nozzle') {
+    return `M104 S${value}\n`;
+  }
+  if (heater === 'bed') {
+    return `M140 S${value}\n`;
+  }
+  throw new Error(`Unsupported heater: ${heater}`);
+}
+
 // Print actions go under `print`; the chamber light is a `system` ledctrl message.
-function buildBambuCommandPayload(command) {
+function buildBambuCommandPayload(command, params = {}) {
   const sequenceId = String(Date.now() % 1000000);
 
   if (command === 'light_on' || command === 'light_off') {
@@ -328,6 +343,16 @@ function buildBambuCommandPayload(command) {
     };
   }
 
+  if (command === 'set_temperature') {
+    return {
+      print: {
+        command: 'gcode_line',
+        param: buildBambuTemperatureGcode(params.heater, params.target),
+        sequence_id: sequenceId,
+      },
+    };
+  }
+
   const action = BAMBU_PRINT_ACTIONS[command];
   if (!action) {
     throw new Error(`Unsupported command: ${command}`);
@@ -339,8 +364,8 @@ function buildBambuCommandPayload(command) {
   return { print: printCommand };
 }
 
-function sendBambuCommand(printer, command) {
-  const payload = buildBambuCommandPayload(command);
+function sendBambuCommand(printer, command, params) {
+  const payload = buildBambuCommandPayload(command, params);
   const serial = (printer.serial || '').trim();
   if (!serial) {
     throw new Error('Bambu printer is missing its serial number');
@@ -490,8 +515,8 @@ async function handleApi(req, res, requestUrl) {
       sendJson(res, 404, { error: 'Printer not found' });
       return true;
     }
-    const { command } = await readJsonBody(req);
-    await sendBambuCommand(printer, command);
+    const { command, heater, target } = await readJsonBody(req);
+    await sendBambuCommand(printer, command, { heater, target });
     sendEmpty(res);
     return true;
   }
