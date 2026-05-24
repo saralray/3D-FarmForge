@@ -3,7 +3,8 @@ import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, Exte
 import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
-import { GOOGLE_FORM_URL, PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
+import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
+import { useIntegrationSettings } from '../lib/settingsApi';
 import { useSidebar } from '../contexts/SidebarContext';
 import stemlabLogo from '../../../CUD-STEM-LAB-logoBBGv2.svg';
 
@@ -11,6 +12,7 @@ export function Navigation() {
   const location = useLocation();
   const { user, logout } = useAuth();
   const { isCollapsed, toggleSidebar } = useSidebar();
+  const { googleFormUrl } = useIntegrationSettings();
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -68,7 +70,7 @@ export function Navigation() {
           ))}
           <button
             type="button"
-            onClick={() => window.open(GOOGLE_FORM_URL, '_blank', 'noopener,noreferrer')}
+            onClick={() => window.open(googleFormUrl, '_blank', 'noopener,noreferrer')}
             className="flex w-full items-center rounded-lg px-4 py-3 text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
           >
             <ClipboardList className="size-5" />

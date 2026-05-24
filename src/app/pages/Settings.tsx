@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bell, Plus, Settings as SettingsIcon, Shield, Trash2, Users } from 'lucide-react';
+import { Bell, Link2, Plus, Settings as SettingsIcon, Shield, Trash2, Users } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -12,6 +12,7 @@ import { Printer, PrinterProfile } from '../types';
 import { DiscordWebhook, fetchDiscordWebhooks, removeDiscordWebhook, saveDiscordWebhook } from '../lib/notificationsApi';
 import { fetchPrinters, savePrinter } from '../lib/printersApi';
 import { normalizePrinter, PRINTER_PROFILES } from '../lib/printerProfiles';
+import { fetchIntegrationSettings, saveIntegrationSettings } from '../lib/settingsApi';
 
 const IPV4_PATTERN =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
@@ -45,6 +46,11 @@ export function Settings() {
   const [notificationSuccess, setNotificationSuccess] = useState('');
   const [savingWebhook, setSavingWebhook] = useState(false);
   const [removingWebhookId, setRemovingWebhookId] = useState<string | null>(null);
+  const [googleSheetQueueUrl, setGoogleSheetQueueUrl] = useState('');
+  const [googleFormUrl, setGoogleFormUrl] = useState('');
+  const [integrationError, setIntegrationError] = useState('');
+  const [integrationSuccess, setIntegrationSuccess] = useState('');
+  const [savingIntegrations, setSavingIntegrations] = useState(false);
 
   useEffect(() => {
     fetchPrinters()
@@ -57,6 +63,15 @@ export function Settings() {
       .then(setDiscordWebhooks)
       .catch(() => {
         setNotificationError('Unable to load Discord webhooks.');
+      });
+
+    fetchIntegrationSettings()
+      .then((settings) => {
+        setGoogleSheetQueueUrl(settings.googleSheetQueueUrl);
+        setGoogleFormUrl(settings.googleFormUrl);
+      })
+      .catch(() => {
+        setIntegrationError('Unable to load integration URLs.');
       });
   }, []);
 
@@ -264,6 +279,46 @@ export function Settings() {
     }
   };
 
+  const handleSaveIntegrations = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setIntegrationError('');
+    setIntegrationSuccess('');
+
+    if (user?.role !== 'admin') {
+      setIntegrationError('Only admins can change integration URLs.');
+      return;
+    }
+
+    const normalizedSheetUrl = googleSheetQueueUrl.trim();
+    const normalizedFormUrl = googleFormUrl.trim();
+
+    if (normalizedSheetUrl && !/\/spreadsheets\/d\//.test(normalizedSheetUrl)) {
+      setIntegrationError('Enter a valid Google Sheets URL (must contain /spreadsheets/d/).');
+      return;
+    }
+
+    if (normalizedFormUrl && !/\/forms\//.test(normalizedFormUrl)) {
+      setIntegrationError('Enter a valid Google Forms URL (must contain /forms/).');
+      return;
+    }
+
+    setSavingIntegrations(true);
+
+    try {
+      const saved = await saveIntegrationSettings({
+        googleSheetQueueUrl: normalizedSheetUrl,
+        googleFormUrl: normalizedFormUrl,
+      });
+      setGoogleSheetQueueUrl(saved.googleSheetQueueUrl);
+      setGoogleFormUrl(saved.googleFormUrl);
+      setIntegrationSuccess('Integration URLs saved successfully.');
+    } catch (error) {
+      setIntegrationError(error instanceof Error ? error.message : 'Unable to save integration URLs.');
+    } finally {
+      setSavingIntegrations(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -290,6 +345,10 @@ export function Settings() {
           <TabsTrigger value="notifications" className="min-w-max">
             <Bell className="size-4" />
             Notifications
+          </TabsTrigger>
+          <TabsTrigger value="integrations" className="min-w-max">
+            <Link2 className="size-4" />
+            Integrations
           </TabsTrigger>
         </TabsList>
 
@@ -673,6 +732,66 @@ export function Settings() {
                 </div>
               )}
             </div>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="integrations">
+          <Card className="p-6 dark:bg-gray-900 dark:border-gray-800">
+            <div className="mb-5">
+              <div className="flex items-center gap-2">
+                <Link2 className="size-5 text-blue-500" />
+                <h2 className="text-xl font-semibold dark:text-white">Integrations</h2>
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                Admins can set the Google Sheet that feeds the print queue and the Google Form users submit print requests through. These override the build-time defaults and take effect on the next queue sync.
+              </p>
+            </div>
+
+            <form onSubmit={handleSaveIntegrations} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="google-sheet-url">Google Sheet (queue feed)</Label>
+                <Input
+                  id="google-sheet-url"
+                  value={googleSheetQueueUrl}
+                  onChange={(event) => setGoogleSheetQueueUrl(event.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  The server fetches this sheet as CSV to build the queue. Must be link-shareable.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="google-form-url">Google Form (print request)</Label>
+                <Input
+                  id="google-form-url"
+                  value={googleFormUrl}
+                  onChange={(event) => setGoogleFormUrl(event.target.value)}
+                  placeholder="https://docs.google.com/forms/d/e/YOUR_FORM_ID/viewform"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Linked from the login screen and the sidebar so users can submit print requests.
+                </p>
+              </div>
+
+              {integrationError && (
+                <Alert variant="destructive" className="py-2">
+                  {integrationError}
+                </Alert>
+              )}
+
+              {integrationSuccess && <Alert className="py-2">{integrationSuccess}</Alert>}
+
+              <Button type="submit" disabled={savingIntegrations}>
+                {savingIntegrations ? 'Saving...' : 'Save Integration URLs'}
+              </Button>
+            </form>
           </Card>
         </TabsContent>
       </Tabs>

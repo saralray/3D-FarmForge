@@ -8,11 +8,11 @@ import { toast } from 'sonner';
 import { fetchPrinters } from '../lib/printersApi';
 import { deleteQueueJob, fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
 import { useAuth } from '../contexts/AuthContext';
-
-const GOOGLE_SHEET_QUEUE_URL = import.meta.env.VITE_GOOGLE_SHEET_QUEUE_URL || '';
+import { useIntegrationSettings } from '../lib/settingsApi';
 
 export function Queue() {
   const { user } = useAuth();
+  const { googleSheetQueueUrl } = useIntegrationSettings();
   const [queue, setQueue] = useState<PrintJob[]>([]);
   const [history, setHistory] = useState<PrintJob[]>([]);
   const [availablePrinters, setAvailablePrinters] = useState(0);
@@ -173,9 +173,9 @@ export function Queue() {
           )}
           {canOpenGoogleSheet && (
             <Button
-              onClick={() => window.open(GOOGLE_SHEET_QUEUE_URL, '_blank', 'noopener,noreferrer')}
+              onClick={() => window.open(googleSheetQueueUrl, '_blank', 'noopener,noreferrer')}
               variant="outline"
-              disabled={!GOOGLE_SHEET_QUEUE_URL}
+              disabled={!googleSheetQueueUrl}
             >
               <ExternalLink className="size-4 mr-2" />
               Open Google Sheet

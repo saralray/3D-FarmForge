@@ -7,7 +7,8 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Alert } from '../components/ui/alert';
 import { Eye, EyeOff, ClipboardList } from 'lucide-react';
-import { GOOGLE_FORM_URL, PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
+import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
+import { useIntegrationSettings } from '../lib/settingsApi';
 import stemlabLogo from '../../../CUD-STEM-LAB-logoBBGv2.svg';
 
 export function Login() {
@@ -18,6 +19,7 @@ export function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const { login, loginAsViewer } = useAuth();
+  const { googleFormUrl } = useIntegrationSettings();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -159,7 +161,7 @@ export function Login() {
               type="button"
               variant="outline"
               className="h-14 w-full border-sky-200 bg-sky-100 text-base text-sky-800 hover:bg-sky-200 hover:text-sky-900 dark:border-sky-800 dark:bg-sky-900/80 dark:text-sky-100 dark:hover:bg-sky-900"
-              onClick={() => window.open(GOOGLE_FORM_URL, '_blank', 'noopener,noreferrer')}
+              onClick={() => window.open(googleFormUrl, '_blank', 'noopener,noreferrer')}
             >
               <ClipboardList className="mr-2 size-5" />
               ฟอร์มขอพิมพ์งาน

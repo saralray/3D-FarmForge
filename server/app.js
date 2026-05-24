@@ -30,6 +30,19 @@ import {
 const PRINTER_CARD_LAYOUT_KEY = 'printer_card_layout';
 const PRINTER_CARD_LAYOUT_PROFILES = new Set(['generic', 'snapmaker_u1', 'bambulab_a1_mini']);
 
+// Google Sheet (queue feed) and Google Form (print-request) URLs. Admin-editable
+// from Settings and persisted in app_settings; the VITE_* env vars seed the
+// defaults so existing deployments keep working until an admin overrides them.
+const INTEGRATION_URLS_KEY = 'integration_urls';
+
+async function getIntegrationUrls() {
+  const stored = (await getAppSetting(INTEGRATION_URLS_KEY)) || {};
+  return {
+    googleSheetQueueUrl: stored.googleSheetQueueUrl || process.env.VITE_GOOGLE_SHEET_QUEUE_URL || '',
+    googleFormUrl: stored.googleFormUrl || process.env.VITE_GOOGLE_FORM_URL || '',
+  };
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, '..', 'dist');
 const port = Number.parseInt(process.env.PORT || '5173', 10);
@@ -600,9 +613,9 @@ async function handleApi(req, res, requestUrl) {
 
   if (requestUrl.pathname === '/api/queue') {
     if (req.method === 'GET') {
-      const googleSheetQueueUrl = process.env.VITE_GOOGLE_SHEET_QUEUE_URL;
+      const { googleSheetQueueUrl } = await getIntegrationUrls();
       if (!googleSheetQueueUrl) {
-        throw new Error('VITE_GOOGLE_SHEET_QUEUE_URL is not configured');
+        throw new Error('Google Sheet queue URL is not configured (set it in Settings → Integrations)');
       }
 
       const response = await fetch(toGoogleSheetCsvUrl(googleSheetQueueUrl), {
@@ -683,6 +696,31 @@ async function handleApi(req, res, requestUrl) {
       }
       await setAppSetting(key, layout);
       sendEmpty(res);
+      return true;
+    }
+  }
+
+  // Google Sheet (queue feed) + Google Form (print request) URLs. GET merges the
+  // stored values with the VITE_* env defaults so callers always get an effective
+  // value; PUT (admin-only in the UI) persists the override.
+  if (requestUrl.pathname === '/api/settings/integrations') {
+    if (req.method === 'GET') {
+      sendJson(res, 200, await getIntegrationUrls());
+      return true;
+    }
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      const googleSheetQueueUrl = body?.googleSheetQueueUrl;
+      const googleFormUrl = body?.googleFormUrl;
+      if (typeof googleSheetQueueUrl !== 'string' || typeof googleFormUrl !== 'string') {
+        sendJson(res, 400, { error: 'googleSheetQueueUrl and googleFormUrl must be strings' });
+        return true;
+      }
+      await setAppSetting(INTEGRATION_URLS_KEY, {
+        googleSheetQueueUrl: googleSheetQueueUrl.trim(),
+        googleFormUrl: googleFormUrl.trim(),
+      });
+      sendJson(res, 200, await getIntegrationUrls());
       return true;
     }
   }
