@@ -4,16 +4,30 @@
 // one arrangement.
 import type { PrinterProfile } from '../types';
 
-export type CardId = 'currentJob' | 'temperature' | 'filament' | 'light' | 'information';
+export type CardId =
+  | 'currentJob'
+  | 'temperature'
+  | 'motion'
+  | 'filament'
+  | 'light'
+  | 'information';
 
 // A layout is three columns, each an ordered list of card ids.
 export type CardLayout = CardId[][];
 
-export const CARD_IDS: CardId[] = ['currentJob', 'temperature', 'filament', 'light', 'information'];
+export const CARD_IDS: CardId[] = [
+  'currentJob',
+  'temperature',
+  'motion',
+  'filament',
+  'light',
+  'information',
+];
 
 export const CARD_LABELS: Record<CardId, string> = {
   currentJob: 'Current Job',
   temperature: 'Temperature',
+  motion: 'Motion Control',
   filament: 'Current Filament',
   light: 'Chamber Light',
   information: 'Information',
@@ -21,7 +35,7 @@ export const CARD_LABELS: Record<CardId, string> = {
 
 export const DEFAULT_CARD_LAYOUT: CardLayout = [
   ['currentJob'],
-  ['temperature', 'filament'],
+  ['temperature', 'motion', 'filament'],
   ['light', 'information'],
 ];
 

@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from 'vite'
 import { createHash } from 'node:crypto'
+import { Readable } from 'node:stream'
 import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
@@ -587,7 +588,13 @@ export default defineConfig(({ mode }) => {
               return
             }
 
-            const response = await fetch(`${printer.url}/webcam${webcamPath}`)
+            const abortController = new AbortController()
+            res.on('close', () => abortController.abort())
+            res.on('error', () => abortController.abort())
+
+            const response = await fetch(`${printer.url}/webcam${webcamPath}`, {
+              signal: abortController.signal,
+            })
             res.statusCode = response.status
 
             const contentType = response.headers.get('content-type')
@@ -596,8 +603,23 @@ export default defineConfig(({ mode }) => {
             }
 
             res.setHeader('Cache-Control', 'no-store')
-            res.end(Buffer.from(await response.arrayBuffer()))
+
+            // Pipe the body so an endless MJPEG stream flows frame-by-frame
+            // instead of buffering forever in arrayBuffer().
+            if (response.body) {
+              const upstream = Readable.fromWeb(response.body)
+              upstream.on('error', () => {
+                if (!res.writableEnded) res.end()
+              })
+              upstream.pipe(res)
+            } else {
+              res.end()
+            }
           } catch (error) {
+            // A client navigating away aborts the fetch — expected, not an error.
+            if (res.destroyed || res.headersSent) {
+              return
+            }
             res.statusCode = 502
             res.setHeader('Content-Type', 'application/json')
             res.end(

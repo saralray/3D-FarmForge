@@ -22,15 +22,29 @@ import {
   Lightbulb,
   LayoutGrid,
   Check,
+  ArrowUp,
+  ArrowDown,
+  ArrowRight,
+  Home,
+  Move,
+  Power,
 } from 'lucide-react';
 import {
+  MOTION_STEP_OPTIONS,
+  buildPrinterWebcamPlayerUrl,
   buildPrinterWebcamSnapshotUrl,
+  disablePrinterMotors,
+  homePrinterAxes,
+  movePrinterAxis,
   normalizePrinter,
   printerSupportsLight,
+  printerSupportsMotionControl,
   printerSupportsTemperatureControl,
+  printerSupportsWebcamStream,
   sendPrinterCommand,
   setPrinterLight,
   setPrinterTemperature,
+  type MotionAxis,
 } from '../lib/printerProfiles';
 import { Input } from '../components/ui/input';
 import { fetchPrinters, removePrinter } from '../lib/printersApi';
@@ -175,6 +189,11 @@ export function PrinterDetail() {
   const [tempInputs, setTempInputs] = useState<Record<string, string>>({});
   const [tempInFlight, setTempInFlight] = useState<string | null>(null);
   const [tempError, setTempError] = useState<string | null>(null);
+  // Manual jog/home controls. The selected step (mm) applies to every jog; the
+  // in-flight key (e.g. "x+", "home") disables the pad while a command runs.
+  const [motionStep, setMotionStep] = useState<number>(10);
+  const [motionInFlight, setMotionInFlight] = useState<string | null>(null);
+  const [motionError, setMotionError] = useState<string | null>(null);
   const [snapshotNonce, setSnapshotNonce] = useState(() => Date.now());
   const [taskConfig, setTaskConfig] = useState<PrinterTaskConfig | null>(null);
   const [taskConfigError, setTaskConfigError] = useState<string | null>(null);
@@ -249,7 +268,9 @@ export function PrinterDetail() {
   useEffect(() => {
     setSnapshotNonce(Date.now());
 
-    if (!printer || !isOnline) {
+    // Snapmaker shows a live MJPEG stream (see the markup), so it doesn't need
+    // snapshot polling — only refresh snapshots for snapshot-only profiles.
+    if (!printer || !isOnline || printerSupportsWebcamStream(printer)) {
       return;
     }
 
@@ -406,8 +427,15 @@ export function PrinterDetail() {
   const canControlPrinter = user?.role === 'admin' || user?.role === 'operator';
   const canControlTemp =
     canControlPrinter && isOnline && printerSupportsTemperatureControl(printer);
+  // Jogging mid-print would wreck the job, so motion is only live when the
+  // printer is connected and idle; otherwise the card shows a disabled note.
+  const canControlMotion = canControlPrinter && printerSupportsMotionControl(printer);
+  const isMotionReady = canControlMotion && isOnline && printer.status === 'idle';
+  const motionControlsDisabled = !isMotionReady || motionInFlight !== null;
   const canViewSensitiveInfo = user?.role !== 'viewer';
+  const supportsWebcamStream = printerSupportsWebcamStream(printer);
   const webcamSnapshotUrl = `${buildPrinterWebcamSnapshotUrl(printer)}?t=${snapshotNonce}`;
+  const webcamPlayerUrl = buildPrinterWebcamPlayerUrl(printer);
   const taskConfigSlots: FilamentSlot[] =
     taskConfig?.filament_type?.map((type, index) => ({
       slot: index + 1,
@@ -543,6 +571,33 @@ export function PrinterDetail() {
     }
   };
 
+  const runMotionCommand = async (key: string, action: () => Promise<void>) => {
+    if (!isMotionReady) {
+      return;
+    }
+
+    setMotionInFlight(key);
+    setMotionError(null);
+
+    try {
+      await action();
+    } catch (error) {
+      setMotionError(error instanceof Error ? error.message : 'Unable to move the printer');
+    } finally {
+      setMotionInFlight(null);
+    }
+  };
+
+  const handleJog = (axis: MotionAxis, direction: 1 | -1) =>
+    runMotionCommand(`${axis}${direction > 0 ? '+' : '-'}`, () =>
+      movePrinterAxis(printer, axis, direction * motionStep),
+    );
+
+  const handleHomeAll = () => runMotionCommand('home', () => homePrinterAxes(printer, 'all'));
+
+  const handleDisableMotors = () =>
+    runMotionCommand('disable', () => disablePrinterMotors(printer));
+
   const handleRemovePrinter = async () => {
     if (!printer || user?.role !== 'admin') {
       return;
@@ -641,12 +696,24 @@ export function PrinterDetail() {
             {/* Camera is always shown so staff can watch the printer regardless of job state. */}
             <div className="overflow-hidden rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-900">
               {isOnline ? (
-                <img
-                  src={webcamSnapshotUrl}
-                  alt={`${printer.name} preview`}
-                  className="h-80 w-full object-cover"
-                  loading="lazy"
-                />
+                supportsWebcamStream ? (
+                  // Snapmaker's own real-time H264 player (jmuxer → <video>), which
+                  // also falls back to snapshots on its own if H264 can't play.
+                  <iframe
+                    key={`webcam-${printer.id}`}
+                    src={webcamPlayerUrl}
+                    title={`${printer.name} live view`}
+                    className="h-80 w-full border-0 bg-black"
+                    allow="autoplay"
+                  />
+                ) : (
+                  <img
+                    src={webcamSnapshotUrl}
+                    alt={`${printer.name} preview`}
+                    className="h-80 w-full object-cover"
+                    loading="lazy"
+                  />
+                )
               ) : (
                 <div className="flex h-80 w-full items-center justify-center text-sm text-gray-500 dark:text-gray-400">
                   Webcam offline
@@ -893,6 +960,140 @@ export function PrinterDetail() {
                 </p>
               )}
               {lightError && <p className="mt-3 text-sm text-red-500">{lightError}</p>}
+            </Card>
+          ) : null,
+          motion: canControlMotion ? (
+            <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
+              <h2 className="text-xl font-semibold mb-4 flex items-center gap-2 dark:text-white">
+                <Move className="size-5" />
+                Motion Control
+              </h2>
+              <div className="space-y-5">
+                <div>
+                  <div className="text-sm text-gray-600 dark:text-gray-400 mb-2">Step size (mm)</div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {MOTION_STEP_OPTIONS.map((step) => (
+                      <Button
+                        key={step}
+                        type="button"
+                        size="sm"
+                        variant={motionStep === step ? 'default' : 'outline'}
+                        onClick={() => setMotionStep(step)}
+                      >
+                        {step}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-start justify-center gap-6">
+                  <div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        disabled={motionControlsDisabled}
+                        onClick={() => handleJog('y', 1)}
+                        aria-label="Jog Y positive"
+                      >
+                        <ArrowUp className="size-5" />
+                      </Button>
+                      <div />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        disabled={motionControlsDisabled}
+                        onClick={() => handleJog('x', -1)}
+                        aria-label="Jog X negative"
+                      >
+                        <ArrowLeft className="size-5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        disabled={motionControlsDisabled}
+                        onClick={handleHomeAll}
+                        aria-label="Home all axes"
+                      >
+                        <Home className="size-5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        disabled={motionControlsDisabled}
+                        onClick={() => handleJog('x', 1)}
+                        aria-label="Jog X positive"
+                      >
+                        <ArrowRight className="size-5" />
+                      </Button>
+                      <div />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        disabled={motionControlsDisabled}
+                        onClick={() => handleJog('y', -1)}
+                        aria-label="Jog Y negative"
+                      >
+                        <ArrowDown className="size-5" />
+                      </Button>
+                      <div />
+                    </div>
+                    <div className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">X / Y</div>
+                  </div>
+
+                  <div>
+                    <div className="flex flex-col gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        disabled={motionControlsDisabled}
+                        onClick={() => handleJog('z', 1)}
+                        aria-label="Jog Z up"
+                      >
+                        <ArrowUp className="size-5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        disabled={motionControlsDisabled}
+                        onClick={() => handleJog('z', -1)}
+                        aria-label="Jog Z down"
+                      >
+                        <ArrowDown className="size-5" />
+                      </Button>
+                    </div>
+                    <div className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">Z</div>
+                  </div>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={motionControlsDisabled}
+                  onClick={handleDisableMotors}
+                >
+                  <Power className="size-4 mr-2" />
+                  {motionInFlight === 'disable' ? 'Disabling…' : 'Disable motors'}
+                </Button>
+
+                {!isMotionReady && (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    {isOnline
+                      ? 'Motion control is available when the printer is idle.'
+                      : 'Connect the printer to control its motion.'}
+                  </p>
+                )}
+                {motionError && <p className="text-sm text-red-500">{motionError}</p>}
+              </div>
             </Card>
           ) : null,
           information: (

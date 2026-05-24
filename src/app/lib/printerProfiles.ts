@@ -450,12 +450,105 @@ export async function setPrinterLight(printer: Printer, on: boolean) {
   }
 }
 
+export type MotionAxis = 'x' | 'y' | 'z';
+
+// Step sizes (mm) offered by the manual jog controls.
+export const MOTION_STEP_OPTIONS = [0.1, 1, 10, 100] as const;
+
+// Conservative manual-jog feedrates (mm/min); Z moves slower to protect the
+// lead screw and gantry.
+const MOTION_FEEDRATE_MM_PER_MIN: Record<MotionAxis, number> = {
+  x: 3000,
+  y: 3000,
+  z: 600,
+};
+
+export function printerSupportsMotionControl(printer: Printer) {
+  return printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini';
+}
+
+// Klipper (Snapmaker) and Bambu firmware both accept the same standard G-code,
+// so the jog program is built once here and routed per profile below. The move
+// is wrapped in relative mode (G91) and restored to absolute (G90) so a later
+// print or home isn't thrown off.
+function buildJogGcode(axis: MotionAxis, distance: number) {
+  return `G91\nG1 ${axis.toUpperCase()}${distance} F${MOTION_FEEDRATE_MM_PER_MIN[axis]}\nG90`;
+}
+
+// Route a motion G-code program to the printer: Snapmaker over the Moonraker
+// HTTP proxy, Bambu as an MQTT gcode_line published by the web server (which
+// only accepts a safe motion subset for the `gcode` command).
+async function sendMotionGcode(printer: Printer, gcode: string) {
+  let response: Response;
+  if (printer.profile === 'bambulab_a1_mini') {
+    response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'gcode', gcode }),
+    });
+  } else if (printer.profile === 'snapmaker_u1') {
+    response = await fetch(
+      `/__printer_proxy/${encodeURIComponent(printer.id)}/printer/gcode/script?script=${encodeURIComponent(gcode)}`,
+      { method: 'POST' },
+    );
+  } else {
+    throw new Error('Motion control is not available for this printer.');
+  }
+
+  if (!response.ok) {
+    let message = `Motion command failed with ${response.status}`;
+
+    try {
+      const payload = (await response.json()) as { error?: string };
+      if (payload.error) {
+        message = payload.error;
+      }
+    } catch {
+      // Ignore non-JSON proxy responses.
+    }
+
+    throw new Error(message);
+  }
+}
+
+// Jog one axis by a signed distance (mm) relative to its current position.
+export async function movePrinterAxis(printer: Printer, axis: MotionAxis, distance: number) {
+  const normalized = Math.round(distance * 100) / 100;
+  if (!Number.isFinite(normalized) || normalized === 0 || Math.abs(normalized) > 250) {
+    throw new Error('Jog distance is out of range');
+  }
+  await sendMotionGcode(printer, buildJogGcode(axis, normalized));
+}
+
+// Home the printer (G28 homes every axis on both Klipper and Bambu firmware).
+export async function homePrinterAxes(printer: Printer, axes: 'all' | MotionAxis = 'all') {
+  await sendMotionGcode(printer, axes === 'all' ? 'G28' : `G28 ${axes.toUpperCase()}`);
+}
+
+// Release the steppers so the axes can be moved by hand (M84).
+export async function disablePrinterMotors(printer: Printer) {
+  await sendMotionGcode(printer, 'M84');
+}
+
 export function buildPrinterWebcamUrl(printer: Printer) {
   return `/__printer_webcam/${printer.id}/player`;
 }
 
 export function buildPrinterWebcamSnapshotUrl(printer: Printer) {
   return `/__printer_webcam/${printer.id}/snapshot.jpg`;
+}
+
+// Snapmaker U1 serves a real-time webcam player at /webcam/player — an H264
+// stream muxed into a <video> via jmuxer, with its own snapshot fallback. It's
+// far lighter and lower-latency than MJPEG, so we embed it directly. Bambu has
+// no HTTP stream (snapshot-only TLS socket) and generic printers have no
+// webcam, so only Snapmaker gets the live player.
+export function printerSupportsWebcamStream(printer: Printer) {
+  return printer.profile === 'snapmaker_u1';
+}
+
+export function buildPrinterWebcamPlayerUrl(printer: Printer) {
+  return `/__printer_webcam/${printer.id}/player`;
 }
 
 export function buildOfflinePrinterState(printer: Printer): Partial<Printer> {

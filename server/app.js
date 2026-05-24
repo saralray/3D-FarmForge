@@ -3,6 +3,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
 import mqtt from 'mqtt';
@@ -325,6 +326,30 @@ function buildBambuTemperatureGcode(heater, target, nozzleIndex = 0) {
   throw new Error(`Unsupported heater: ${heater}`);
 }
 
+// Motion control posts raw G-code, but only a safe motion subset is honored
+// over this endpoint — never heater or firmware-config commands, so a stray or
+// hostile request can't drive the hotend or flash the board.
+const ALLOWED_MOTION_GCODE = /^(?:G0|G1|G28|G90|G91|M84|M18)\b/i;
+
+function sanitizeMotionGcode(gcode) {
+  if (typeof gcode !== 'string') {
+    throw new Error('gcode must be a string');
+  }
+  const lines = gcode
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0 || lines.length > 8) {
+    throw new Error('gcode must contain between 1 and 8 commands');
+  }
+  for (const line of lines) {
+    if (!ALLOWED_MOTION_GCODE.test(line)) {
+      throw new Error(`Disallowed motion command: ${line}`);
+    }
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 // Print actions go under `print`; the chamber light is a `system` ledctrl message.
 function buildBambuCommandPayload(command, params = {}) {
   const sequenceId = String(Date.now() % 1000000);
@@ -349,6 +374,16 @@ function buildBambuCommandPayload(command, params = {}) {
       print: {
         command: 'gcode_line',
         param: buildBambuTemperatureGcode(params.heater, params.target, params.nozzleIndex),
+        sequence_id: sequenceId,
+      },
+    };
+  }
+
+  if (command === 'gcode') {
+    return {
+      print: {
+        command: 'gcode_line',
+        param: sanitizeMotionGcode(params.gcode),
         sequence_id: sequenceId,
       },
     };
@@ -516,8 +551,8 @@ async function handleApi(req, res, requestUrl) {
       sendJson(res, 404, { error: 'Printer not found' });
       return true;
     }
-    const { command, heater, target, nozzleIndex } = await readJsonBody(req);
-    await sendBambuCommand(printer, command, { heater, target, nozzleIndex });
+    const { command, heater, target, nozzleIndex, gcode } = await readJsonBody(req);
+    await sendBambuCommand(printer, command, { heater, target, nozzleIndex, gcode });
     sendEmpty(res);
     return true;
   }
@@ -659,26 +694,66 @@ async function handlePrinterProxy(req, res, requestUrl, prefix, makeTargetUrl, e
 
   const proxyPath = `/${pathParts.map(encodeURIComponent).join('/')}${requestUrl.search}`;
   const body = req.method && !['GET', 'HEAD'].includes(req.method) ? await readBody(req) : undefined;
-  const response = await fetch(makeTargetUrl(printer, proxyPath), {
-    method: req.method,
-    headers: {
-      ...parseHeaderString(printer.apiKeyHeader),
-      ...extraHeaders,
-      ...Object.fromEntries(
-        Object.entries(req.headers).filter(([key]) => !['host', 'connection', 'content-length'].includes(key)),
-      ),
-    },
-    body: body && body.length > 0 ? body : undefined,
-  });
+  const isWebcam = prefix === '/__printer_webcam/';
+
+  // A webcam response can be an endless MJPEG stream (multipart/x-mixed-replace),
+  // so it's piped through rather than buffered with arrayBuffer() (which would
+  // never resolve). Abort the upstream fetch when the client disconnects so we
+  // don't leak a camera connection per closed tab.
+  const abortController = new AbortController();
+  if (isWebcam) {
+    res.on('close', () => abortController.abort());
+    res.on('error', () => abortController.abort());
+  }
+
+  let response;
+  try {
+    response = await fetch(makeTargetUrl(printer, proxyPath), {
+      method: req.method,
+      headers: {
+        ...parseHeaderString(printer.apiKeyHeader),
+        ...extraHeaders,
+        ...Object.fromEntries(
+          Object.entries(req.headers).filter(([key]) => !['host', 'connection', 'content-length'].includes(key)),
+        ),
+      },
+      body: body && body.length > 0 ? body : undefined,
+      signal: abortController.signal,
+    });
+  } catch (error) {
+    // A client navigating away aborts the fetch — expected, not an error.
+    if (abortController.signal.aborted) {
+      return true;
+    }
+    throw error;
+  }
 
   res.statusCode = response.status;
   const contentType = response.headers.get('content-type');
   if (contentType) {
     res.setHeader('Content-Type', contentType);
   }
-  if (prefix === '/__printer_webcam/') {
+
+  if (isWebcam) {
     res.setHeader('Cache-Control', 'no-store');
+    // The webcam player is embedded in an <iframe> on the detail page; relax the
+    // global X-Frame-Options: DENY to allow same-origin framing of camera assets.
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    if (!response.body) {
+      res.end();
+      return true;
+    }
+    const upstream = Readable.fromWeb(response.body);
+    upstream.on('error', () => {
+      abortController.abort();
+      if (!res.writableEnded) {
+        res.end();
+      }
+    });
+    upstream.pipe(res);
+    return true;
   }
+
   res.end(Buffer.from(await response.arrayBuffer()));
   return true;
 }
