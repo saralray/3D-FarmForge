@@ -5,8 +5,11 @@ A print-farm management dashboard for monitoring 3D printers, queue requests, pr
 ## Features
 
 - dashboard for printer status, webcam previews, live job activity, drag-and-drop printer ordering, and bottom-right popup notifications
-- printer detail pages with current job progress, temperatures, filament status, webcam refreshes, and role-based printer controls
+- printer detail pages with current job progress, nozzle/bed temperatures and targets, print-time tracking, filament status, webcam refreshes, drag-rearrangeable cards per profile, and role-based printer controls
+- multi-profile printer support: generic HTTP printers, Snapmaker U1 (Moonraker), and Bambu Lab A1 Mini (MQTT over TLS)
+- per-printer controls: pause/resume/cancel, temperature setpoints for multiple nozzles and the bed, manual jog/motion commands, and persisted chamber light state
 - queue sync from a Google Sheet into PostgreSQL, with local printed status, queue history, and soft deletion for admin cleanup
+- Discord webhook notifications for queue and printer events, managed in-app
 - analytics backed by PostgreSQL for printer usage and queue activity
 - optional public viewer mode that hides sensitive printer details and viewer profile UI
 - role-aware access for admin, operator, and viewer accounts
@@ -81,8 +84,8 @@ Key settings in `.env.example`:
 - `POSTGRES_PASSWORD`
 - `HTTP_PORT`
 - `VITE_PUBLIC_VIEWER_MODE`
-- `VITE_GOOGLE_SHEET_QUEUE_URL`
-- `VITE_GOOGLE_FORM_URL`
+- `VITE_GOOGLE_SHEET_QUEUE_URL` (seed value; admins can override at runtime in Settings → Integrations)
+- `VITE_GOOGLE_FORM_URL` (seed value; admins can override at runtime in Settings → Integrations)
 - `PRINTER_POLL_INTERVAL_MS`
 - `PRINTER_REQUEST_TIMEOUT_MS`
 - `PRINTER_OFFLINE_GRACE_SECONDS`
@@ -103,9 +106,17 @@ In viewer mode:
 - the sidebar viewer profile UI is hidden
 - viewer accounts can monitor jobs but cannot pause, resume, cancel, remove, or reorder printers
 
+## Printer Profiles
+
+The poller and web API support three printer profiles, selected per printer:
+
+- **generic** — HTTP reachability ping for basic online/offline status.
+- **Snapmaker U1** — polled over the Moonraker HTTP API; supports temperature, motion, and chamber light control.
+- **Bambu Lab A1 Mini** — holds a persistent MQTT-over-TLS connection (port 8883). Requires the device **serial**, the LAN access code, and LAN Mode enabled. Pause/resume/cancel are sent as MQTT commands; the chamber webcam is captured as still snapshots over a raw TLS socket (port 6000, requires LAN Mode Liveview).
+
 ## Queue Behavior
 
-- Queue jobs sync from `VITE_GOOGLE_SHEET_QUEUE_URL`.
+- Queue jobs sync from the configured Google Sheet (`VITE_GOOGLE_SHEET_QUEUE_URL` seed, overridable in Settings → Integrations).
 - Only rows for the 3D print form type are shown in the queue.
 - Marking a job as printed moves it from the active queue into history.
 - Admin deletion is a soft delete so removed jobs do not reappear after the next Google Sheet sync.
@@ -194,6 +205,8 @@ The `printfarm-secret` (see above) must already exist.
 ## Notifications
 
 The app uses bottom-right popup notifications for operational feedback such as queue updates, dashboard order updates, printer status changes, and dashboard load/save errors.
+
+It also supports Discord webhook notifications for queue and printer events. Admins manage webhooks in-app (stored in PostgreSQL via `/api/notifications`).
 
 ## Validation
 
