@@ -20,15 +20,12 @@ services:
       dockerfile: Dockerfile.web
       args:
         VITE_PUBLIC_VIEWER_MODE: ${VITE_PUBLIC_VIEWER_MODE:-false}
-        VITE_GOOGLE_FORM_URL: ${VITE_GOOGLE_FORM_URL:-}
-        VITE_GOOGLE_SHEET_QUEUE_URL: ${VITE_GOOGLE_SHEET_QUEUE_URL:-}
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
-      VITE_GOOGLE_SHEET_QUEUE_URL: ${VITE_GOOGLE_SHEET_QUEUE_URL:?set VITE_GOOGLE_SHEET_QUEUE_URL}
       VITE_PUBLIC_VIEWER_MODE: ${VITE_PUBLIC_VIEWER_MODE:-false}
       MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
     healthcheck:

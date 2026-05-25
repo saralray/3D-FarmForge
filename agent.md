@@ -20,7 +20,7 @@ Main parts:
 
 ## Operational Behavior
 
-- Queue jobs sync from `VITE_GOOGLE_SHEET_QUEUE_URL` into PostgreSQL and only show rows whose form type is `สั่งพิมพ์งาน 3D Print`.
+- Queue jobs sync from the Google Sheet URL configured by an admin in Settings → Integrations (stored in the DB) into PostgreSQL, and only show rows whose form type is `สั่งพิมพ์งาน 3D Print`.
 - Marking a queue job as printed sets `printed_status = 1`, moving it from the active queue into history.
 - Admin queue deletion is a soft delete using `deleted_at`; this prevents deleted Google Sheet rows from reappearing on the next sync.
 - Resetting the queue only clears `printed_status` for non-deleted 3D print queue rows; deleted jobs must stay hidden and should not reappear after reset.

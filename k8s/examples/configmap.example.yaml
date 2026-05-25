@@ -6,9 +6,9 @@
 #
 #   kubectl apply -f k8s/examples/configmap.example.yaml   # after editing
 #
-# The web Deployment reads these keys via configMapKeyRef in k8s/web.yaml,
-# and they're also baked into the frontend bundle at docker-build time via
-# VITE_* build args (see Dockerfile.web). Keep them in sync.
+# The web Deployment reads these keys via configMapKeyRef in k8s/web.yaml.
+# The Google Sheet/Form URLs are not configured here — admins set them at
+# runtime in Settings → Integrations (stored in the DB).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,5 +16,3 @@ metadata:
   namespace: printfarm
 data:
   VITE_PUBLIC_VIEWER_MODE: "false"
-  VITE_GOOGLE_SHEET_QUEUE_URL: "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit?usp=sharing"
-  VITE_GOOGLE_FORM_URL: "https://docs.google.com/forms/d/e/YOUR_FORM_ID/viewform?usp=dialog"

@@ -30,16 +30,16 @@ import {
 const PRINTER_CARD_LAYOUT_KEY = 'printer_card_layout';
 const PRINTER_CARD_LAYOUT_PROFILES = new Set(['generic', 'snapmaker_u1', 'bambulab_a1_mini']);
 
-// Google Sheet (queue feed) and Google Form (print-request) URLs. Admin-editable
-// from Settings and persisted in app_settings; the VITE_* env vars seed the
-// defaults so existing deployments keep working until an admin overrides them.
+// Google Sheet (queue feed) and Google Form (print-request) URLs. Configured by
+// admins in Settings → Integrations and persisted in app_settings; they are
+// empty until an admin sets them (no build-time/env defaults).
 const INTEGRATION_URLS_KEY = 'integration_urls';
 
 async function getIntegrationUrls() {
   const stored = (await getAppSetting(INTEGRATION_URLS_KEY)) || {};
   return {
-    googleSheetQueueUrl: stored.googleSheetQueueUrl || process.env.VITE_GOOGLE_SHEET_QUEUE_URL || '',
-    googleFormUrl: stored.googleFormUrl || process.env.VITE_GOOGLE_FORM_URL || '',
+    googleSheetQueueUrl: stored.googleSheetQueueUrl || '',
+    googleFormUrl: stored.googleFormUrl || '',
   };
 }
 

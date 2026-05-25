@@ -84,8 +84,6 @@ Key settings in `.env.example`:
 - `POSTGRES_PASSWORD`
 - `HTTP_PORT`
 - `VITE_PUBLIC_VIEWER_MODE`
-- `VITE_GOOGLE_SHEET_QUEUE_URL` (seed value; admins can override at runtime in Settings → Integrations)
-- `VITE_GOOGLE_FORM_URL` (seed value; admins can override at runtime in Settings → Integrations)
 - `PRINTER_POLL_INTERVAL_MS`
 - `PRINTER_REQUEST_TIMEOUT_MS`
 - `PRINTER_OFFLINE_GRACE_SECONDS`
@@ -116,7 +114,7 @@ The poller and web API support three printer profiles, selected per printer:
 
 ## Queue Behavior
 
-- Queue jobs sync from the configured Google Sheet (`VITE_GOOGLE_SHEET_QUEUE_URL` seed, overridable in Settings → Integrations).
+- Queue jobs sync from the Google Sheet configured by an admin in Settings → Integrations (stored in the DB).
 - Only rows for the 3D print form type are shown in the queue.
 - Marking a job as printed moves it from the active queue into history.
 - Admin deletion is a soft delete so removed jobs do not reappear after the next Google Sheet sync.
@@ -141,8 +139,9 @@ Actions**.
 | `DOCKERHUB_USERNAME` | Username used to push images; also the K8s image prefix |
 | `DOCKERHUB_TOKEN` | Docker Hub access token for that user |
 | `KUBE_CONFIG` | Contents of a kubeconfig with rights on the cluster |
-| `GOOGLE_FORM_URL` | Public Google Form link for queue submissions |
-| `GOOGLE_SHEET_QUEUE_URL` | Public Google Sheet link the server reads as CSV |
+
+The Google Sheet/Form URLs are **not** repo secrets — admins configure them at
+runtime in Settings → Integrations (stored in the DB).
 
 **Variables** (plain text):
 
@@ -190,8 +189,6 @@ kubectl apply -f k8s/namespace.yaml
 # Runtime config — never commit a filled-in copy:
 kubectl -n printfarm create configmap printfarm-config \
   --from-literal=VITE_PUBLIC_VIEWER_MODE=false \
-  --from-literal=VITE_GOOGLE_SHEET_QUEUE_URL='https://docs.google.com/spreadsheets/d/...' \
-  --from-literal=VITE_GOOGLE_FORM_URL='https://docs.google.com/forms/d/e/...' \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # Apply with your image prefix substituted:

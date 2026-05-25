@@ -38,15 +38,14 @@ kubectl apply -k k8s/          # Kustomize (recommended)
 kubectl apply -f k8s/          # plain kubectl (applies alphabetically)
 ```
 
-Before applying, edit `k8s/secret.yaml` (fill in `CHANGE_ME` values) and `k8s/configmap.yaml` (set the Google Sheet/Form URLs).
+Before applying, edit `k8s/secret.yaml` (fill in `CHANGE_ME` values). The Google
+Sheet/Form URLs are no longer build/deploy config — admins set them at runtime in
+Settings → Integrations (stored in the DB).
 
 Build and push the two custom images (only `web` and `poller` — nginx uses the upstream image directly):
 ```bash
-# VITE_* build args are baked into the web bundle; keep them in sync with k8s/configmap.yaml
 docker build \
   --build-arg VITE_PUBLIC_VIEWER_MODE=false \
-  --build-arg VITE_GOOGLE_SHEET_QUEUE_URL=<your-url> \
-  --build-arg VITE_GOOGLE_FORM_URL=<your-url> \
   -f Dockerfile.web -t stemlab-printfarm/web:latest .
 
 docker build -f Dockerfile.poller -t stemlab-printfarm/poller:latest .

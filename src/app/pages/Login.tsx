@@ -161,6 +161,7 @@ export function Login() {
               type="button"
               variant="outline"
               className="h-14 w-full border-sky-200 bg-sky-100 text-base text-sky-800 hover:bg-sky-200 hover:text-sky-900 dark:border-sky-800 dark:bg-sky-900/80 dark:text-sky-100 dark:hover:bg-sky-900"
+              disabled={!googleFormUrl}
               onClick={() => window.open(googleFormUrl, '_blank', 'noopener,noreferrer')}
             >
               <ClipboardList className="mr-2 size-5" />

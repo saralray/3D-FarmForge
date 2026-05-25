@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
-import { GOOGLE_FORM_URL } from './runtimeConfig';
 
 export interface IntegrationSettings {
   googleSheetQueueUrl: string;
   googleFormUrl: string;
 }
 
-// Falls back to the build-time env defaults so consumers always have a usable
-// value even before the API responds (or if the server is briefly unavailable).
+// The effective URLs are configured by admins in Settings → Integrations and
+// stored in the DB. Start empty until the API responds; consumers disable the
+// relevant action (queue/form link) while the value is blank.
 const DEFAULT_INTEGRATION_SETTINGS: IntegrationSettings = {
-  googleSheetQueueUrl: import.meta.env.VITE_GOOGLE_SHEET_QUEUE_URL || '',
-  googleFormUrl: GOOGLE_FORM_URL,
+  googleSheetQueueUrl: '',
+  googleFormUrl: '',
 };
 
 async function parseError(response: Response) {

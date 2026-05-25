@@ -44,12 +44,6 @@ spec:
                   name: printfarm-config
                   key: VITE_PUBLIC_VIEWER_MODE
 
-            - name: VITE_GOOGLE_SHEET_QUEUE_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: printfarm-config
-                  key: VITE_GOOGLE_SHEET_QUEUE_URL
-
             - name: MAX_BODY_BYTES
               value: "1048576"
 

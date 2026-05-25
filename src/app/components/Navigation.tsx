@@ -70,8 +70,9 @@ export function Navigation() {
           ))}
           <button
             type="button"
+            disabled={!googleFormUrl}
             onClick={() => window.open(googleFormUrl, '_blank', 'noopener,noreferrer')}
-            className="flex w-full items-center rounded-lg px-4 py-3 text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
+            className="flex w-full items-center rounded-lg px-4 py-3 text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:text-gray-300 dark:hover:bg-gray-800"
           >
             <ClipboardList className="size-5" />
             {!isCollapsed && (
