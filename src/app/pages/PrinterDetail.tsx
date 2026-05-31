@@ -30,6 +30,7 @@ import {
   Power,
   ArrowDownToLine,
   ArrowUpFromLine,
+  Pencil,
 } from 'lucide-react';
 import {
   MOTION_STEP_OPTIONS,
@@ -40,6 +41,7 @@ import {
   loadPrinterFilament,
   movePrinterAxis,
   normalizePrinter,
+  PRINTER_PROFILES,
   printerSupportsFilamentControl,
   printerSupportsLight,
   printerSupportsMotionControl,
@@ -52,7 +54,17 @@ import {
   type MotionAxis,
 } from '../lib/printerProfiles';
 import { Input } from '../components/ui/input';
-import { fetchPrinters, removePrinter } from '../lib/printersApi';
+import { Label } from '../components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog';
+import { Alert } from '../components/ui/alert';
+import { fetchPrinters, removePrinter, savePrinter } from '../lib/printersApi';
 import { useAuth } from '../contexts/AuthContext';
 import { formatMaxTwoDecimals } from '../lib/numberFormat';
 import { PrinterCardLayout } from '../components/PrinterCardLayout';
@@ -202,6 +214,19 @@ function formatMinutesAsHourDotMinute(totalMinutes: number) {
 const CONTROL_GLOW =
   'hover:bg-blue-50! hover:text-blue-600! dark:hover:bg-blue-900/30! dark:hover:text-blue-400!';
 
+const IPV4_PATTERN =
+  /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+// Editable printer-information fields admins can change from the detail page.
+interface PrinterInfoDraft {
+  name: string;
+  model: string;
+  ipAddress: string;
+  apiKeyHeader: string;
+  serial: string;
+  lastMaintenance: string;
+}
+
 export function PrinterDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -220,6 +245,12 @@ export function PrinterDetail() {
   const [lightError, setLightError] = useState<string | null>(null);
   const [removeInFlight, setRemoveInFlight] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  // Admin "edit printer information" dialog. The draft is held separately from
+  // `printer` so the 10s auto-refresh doesn't clobber in-progress edits.
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editDraft, setEditDraft] = useState<PrinterInfoDraft | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
   // Temperature target inputs keyed per heater ("nozzle-<index>" or "bed"). The
   // box mirrors the printer's reported target (synced in the effect below) so it
   // reflects changes made from the printer screen or slicer.
@@ -703,6 +734,78 @@ export function PrinterDetail() {
       setFilamentError(error instanceof Error ? error.message : 'Unable to control filament');
     } finally {
       setFilamentInFlight(null);
+    }
+  };
+
+  const openEditDialog = () => {
+    if (!printer) {
+      return;
+    }
+    setEditDraft({
+      name: printer.name,
+      model: printer.model,
+      ipAddress: printer.ipAddress,
+      apiKeyHeader: printer.apiKeyHeader,
+      serial: printer.serial ?? '',
+      lastMaintenance: printer.lastMaintenance,
+    });
+    setEditError(null);
+    setIsEditOpen(true);
+  };
+
+  const handleSavePrinterInfo = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!printer || user?.role !== 'admin' || !editDraft) {
+      return;
+    }
+
+    const name = editDraft.name.trim();
+    const model = editDraft.model.trim();
+    const ipAddress = editDraft.ipAddress.trim();
+    const apiKeyHeader = editDraft.apiKeyHeader.trim();
+    const serial = editDraft.serial.trim();
+    const lastMaintenance = editDraft.lastMaintenance.trim();
+    const profileConfig = PRINTER_PROFILES[printer.profile];
+
+    if (!name || !model || !ipAddress || !apiKeyHeader) {
+      setEditError(`Name, model, IP address, and ${profileConfig.credentialLabel} are required.`);
+      return;
+    }
+
+    if (!IPV4_PATTERN.test(ipAddress)) {
+      setEditError('Enter a valid IPv4 address.');
+      return;
+    }
+
+    if (printer.profile === 'bambulab_a1_mini' && !serial) {
+      setEditError('Bambu Lab printers require the device serial number.');
+      return;
+    }
+
+    setEditSaving(true);
+    setEditError(null);
+
+    // Recompute the base URL from the (possibly changed) IP so the proxy and
+    // poller keep reaching the printer. Other runtime fields are preserved.
+    const updatedPrinter: Printer = {
+      ...printer,
+      name,
+      model,
+      ipAddress,
+      url: profileConfig.buildBaseUrl(ipAddress),
+      apiKeyHeader,
+      serial: serial || undefined,
+      lastMaintenance,
+    };
+
+    try {
+      await savePrinter(updatedPrinter);
+      setPrinter(updatedPrinter);
+      setIsEditOpen(false);
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : 'Unable to save printer information.');
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -1326,7 +1429,16 @@ export function PrinterDetail() {
                 </div>
               </div>
               {user?.role === 'admin' && (
-                <div className="pt-4">
+                <div className="space-y-2 pt-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className={`w-full ${CONTROL_GLOW}`}
+                    onClick={openEditDialog}
+                  >
+                    <Pencil className="mr-2 size-4" />
+                    Edit Printer
+                  </Button>
                   <Button
                     type="button"
                     variant="destructive"
@@ -1345,6 +1457,141 @@ export function PrinterDetail() {
           ),
         }}
       />
+
+      {user?.role === 'admin' && editDraft && (
+        <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
+          <DialogContent className="dark:bg-gray-900 dark:border-gray-800">
+            <DialogHeader>
+              <DialogTitle>Edit Printer</DialogTitle>
+              <DialogDescription>
+                Update this printer's information. Connection changes take effect on the next status check.
+              </DialogDescription>
+            </DialogHeader>
+
+            <form onSubmit={handleSavePrinterInfo} className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-printer-name">Printer Name</Label>
+                  <Input
+                    id="edit-printer-name"
+                    value={editDraft.name}
+                    onChange={(event) =>
+                      setEditDraft((prev) => (prev ? { ...prev, name: event.target.value } : prev))
+                    }
+                    required
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-printer-model">Model</Label>
+                  <Input
+                    id="edit-printer-model"
+                    value={editDraft.model}
+                    onChange={(event) =>
+                      setEditDraft((prev) => (prev ? { ...prev, model: event.target.value } : prev))
+                    }
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-printer-ip">Printer IP</Label>
+                  <Input
+                    id="edit-printer-ip"
+                    value={editDraft.ipAddress}
+                    onChange={(event) =>
+                      setEditDraft((prev) =>
+                        prev ? { ...prev, ipAddress: event.target.value.trim() } : prev,
+                      )
+                    }
+                    placeholder="192.168.1.120"
+                    inputMode="numeric"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    required
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-printer-credential">
+                    {PRINTER_PROFILES[printer.profile].credentialLabel}
+                  </Label>
+                  <Input
+                    id="edit-printer-credential"
+                    type="password"
+                    value={editDraft.apiKeyHeader}
+                    onChange={(event) =>
+                      setEditDraft((prev) =>
+                        prev ? { ...prev, apiKeyHeader: event.target.value } : prev,
+                      )
+                    }
+                    placeholder={PRINTER_PROFILES[printer.profile].credentialPlaceholder}
+                    autoComplete="off"
+                    required
+                  />
+                </div>
+              </div>
+
+              {printer.profile === 'bambulab_a1_mini' && (
+                <div className="space-y-2">
+                  <Label htmlFor="edit-printer-serial">Serial Number</Label>
+                  <Input
+                    id="edit-printer-serial"
+                    value={editDraft.serial}
+                    onChange={(event) =>
+                      setEditDraft((prev) =>
+                        prev ? { ...prev, serial: event.target.value.trim() } : prev,
+                      )
+                    }
+                    placeholder="e.g. 0309CA000000000"
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    required
+                  />
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="edit-printer-maintenance">Last Maintenance</Label>
+                <Input
+                  id="edit-printer-maintenance"
+                  type="date"
+                  value={editDraft.lastMaintenance}
+                  onChange={(event) =>
+                    setEditDraft((prev) =>
+                      prev ? { ...prev, lastMaintenance: event.target.value } : prev,
+                    )
+                  }
+                />
+              </div>
+
+              {editError && (
+                <Alert variant="destructive" className="py-2">
+                  {editError}
+                </Alert>
+              )}
+
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsEditOpen(false)}
+                  disabled={editSaving}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={editSaving}>
+                  {editSaving ? 'Saving...' : 'Save Changes'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
