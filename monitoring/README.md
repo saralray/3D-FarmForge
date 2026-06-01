@@ -165,6 +165,11 @@ All series are namespaced `printfarm_*`. Per-printer metrics carry `id` and
 |--------|--------|---------|
 | `printfarm_printers_total` | — | Total printers. |
 | `printfarm_printers_by_status` | `status` | Printer count per status. |
+| `printfarm_printer_online` | — | Count of printers that are **not** offline (matches the UI "Online": `status != 'offline'`). |
+| `printfarm_printer_offline` | — | Count of printers with status `offline`. |
+| `printfarm_printer_printing` | — | Count of printers with status `printing`. |
+| `printfarm_printer_pause` | — | Count of printers with status `paused`. |
+| `printfarm_printer_error` | — | Count of printers with status `error`. |
 | `printfarm_queue_jobs` | `state` (`queued`/`completed`) | Print-queue depth by state (3D-print form rows, soft-deleted excluded). |
 | `printfarm_jobs_completed_today` | — | Completed jobs today. |
 | `printfarm_jobs_failed_today` | — | Failed jobs today. |

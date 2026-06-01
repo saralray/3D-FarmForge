@@ -1,0 +1,20 @@
+# Grafana dashboard provisioning for the STEM Lab Print Farm.
+#
+# Mount this file into Grafana at
+#   /etc/grafana/provisioning/dashboards/printfarm.yml
+# and mount the dashboard JSON folder (monitoring/grafana/dashboards) at the
+# `path` below, so Grafana imports the dashboards on startup.
+apiVersion: 1
+
+providers:
+  - name: printfarm
+    orgId: 1
+    folder: Print Farm
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

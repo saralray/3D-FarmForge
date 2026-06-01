@@ -159,8 +159,27 @@ class PrintFarmCollector:
         for status, count in status_counts.items():
             by_status.add_metric([status], count)
 
+        # Per-state printer counts as individually named gauges, mirroring the
+        # dashboard's status summary (src/app/pages/Dashboard.tsx:62-67).
+        # "online" counts every printer that is not offline (so a
+        # printing/paused/error printer is still online), matching the UI's
+        # `status !== 'offline'`; the rest are exact status matches.
+        offline_count = status_counts.get(OFFLINE_STATUS, 0)
+        state_gauges = [
+            self._gauge("printfarm_printer_online",
+                        "Printers that are not offline", printer_total - offline_count),
+            self._gauge("printfarm_printer_offline",
+                        "Printers with status 'offline'", offline_count),
+            self._gauge("printfarm_printer_printing",
+                        "Printers with status 'printing'", status_counts.get("printing", 0)),
+            self._gauge("printfarm_printer_pause",
+                        "Printers with status 'paused'", status_counts.get("paused", 0)),
+            self._gauge("printfarm_printer_error",
+                        "Printers with status 'error'", status_counts.get("error", 0)),
+        ]
+
         return [printer_info, printer_up, nozzle_temp, bed_temp, progress,
-                print_time, success_rate, printers_total, by_status]
+                print_time, success_rate, printers_total, by_status, *state_gauges]
 
     def _analytics_metrics(self, conn):
         with conn.cursor() as cur:
