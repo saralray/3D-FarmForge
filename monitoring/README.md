@@ -153,13 +153,13 @@ All series are namespaced `printfarm_*`. Per-printer metrics carry `id` and
 
 | Metric | Labels | Meaning |
 |--------|--------|---------|
-| `printfarm_printer_info` | `id, name, model, profile, status` | Metadata series; value always `1`. |
-| `printfarm_printer_up` | `id, name` | `1` unless the printer status is `offline`. |
-| `printfarm_printer_nozzle_temperature_celsius` | `id, name` | Current nozzle temperature. |
-| `printfarm_printer_bed_temperature_celsius` | `id, name` | Current bed temperature. |
-| `printfarm_printer_progress_percent` | `id, name` | Current job progress, 0–100. |
-| `printfarm_printer_total_print_time_hours` | `id, name` | Lifetime print-time counter for the printer, in hours. |
-| `printfarm_printer_success_rate_percent` | `id, name` | Reported success rate, 0–100. |
+| `printfarm_printer_info` | `id, name, model, profile, status` | Metadata series; value always `1`. The only series carrying the internal `id` — join on `name` when you need it. |
+| `printfarm_printer_up` | `name` | `1` unless the printer status is `offline`. |
+| `printfarm_printer_nozzle_temperature_celsius` | `name` | Current nozzle temperature. |
+| `printfarm_printer_bed_temperature_celsius` | `name` | Current bed temperature. |
+| `printfarm_printer_progress_percent` | `name` | Current job progress, 0–100. |
+| `printfarm_printer_total_print_time_hours` | `name` | Lifetime print-time counter for the printer, in hours. |
+| `printfarm_printer_success_rate_percent` | `name` | Reported success rate, 0–100. |
 
 ### Farm-wide (gauge)
 

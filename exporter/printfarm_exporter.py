@@ -82,6 +82,11 @@ class PrintFarmCollector:
         return metrics
 
     def _printer_metrics(self, conn):
+        # Per-printer value metrics are labelled by the human-readable `name`
+        # alone, so Grafana legends read "Bambu A1 #1" instead of being cluttered
+        # with the opaque internal id. The id (and the rest of the metadata) lives
+        # only on printfarm_printer_info, which can be joined on `name` when the
+        # id is genuinely needed.
         printer_info = GaugeMetricFamily(
             "printfarm_printer_info",
             "Printer metadata; value is always 1",
@@ -90,32 +95,32 @@ class PrintFarmCollector:
         printer_up = GaugeMetricFamily(
             "printfarm_printer_up",
             "1 if the printer is not offline, else 0",
-            labels=["id", "name"],
+            labels=["name"],
         )
         nozzle_temp = GaugeMetricFamily(
             "printfarm_printer_nozzle_temperature_celsius",
             "Current nozzle temperature in Celsius",
-            labels=["id", "name"],
+            labels=["name"],
         )
         bed_temp = GaugeMetricFamily(
             "printfarm_printer_bed_temperature_celsius",
             "Current bed temperature in Celsius",
-            labels=["id", "name"],
+            labels=["name"],
         )
         progress = GaugeMetricFamily(
             "printfarm_printer_progress_percent",
             "Current print progress, 0-100",
-            labels=["id", "name"],
+            labels=["name"],
         )
         print_time = GaugeMetricFamily(
             "printfarm_printer_total_print_time_hours",
             "Lifetime print-time counter for the printer, in hours",
-            labels=["id", "name"],
+            labels=["name"],
         )
         success_rate = GaugeMetricFamily(
             "printfarm_printer_success_rate_percent",
             "Reported print success rate, 0-100",
-            labels=["id", "name"],
+            labels=["name"],
         )
 
         status_counts = {}
@@ -132,12 +137,14 @@ class PrintFarmCollector:
             )
             for (pid, name, model, profile, status, t_nozzle, t_bed, prog,
                  total_pt, succ) in cur:
-                name = name or ""
+                # Fall back to the id only if a printer somehow has no name, so
+                # the value metrics always carry a usable, non-empty label.
+                name = name or pid
                 status = status or "unknown"
                 printer_total += 1
                 status_counts[status] = status_counts.get(status, 0) + 1
 
-                labels = [pid, name]
+                labels = [name]
                 printer_info.add_metric([pid, name, model or "", profile or "", status], 1)
                 printer_up.add_metric(labels, 0 if status == OFFLINE_STATUS else 1)
                 nozzle_temp.add_metric(labels, float(t_nozzle or 0))
