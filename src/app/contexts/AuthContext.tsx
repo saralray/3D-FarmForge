@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { PUBLIC_VIEWER_MODE, PUBLIC_VIEWER_USER } from '../lib/runtimeConfig';
+import { generateId } from '../lib/id';
 
 interface User {
   id: string;
@@ -433,7 +434,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const passwordHash = await hashPassword(trimmedPassword);
     const nextUser: StoredUserRecord = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       name: normalizedName,
       username: normalizedUsername,
       passwordHash,
