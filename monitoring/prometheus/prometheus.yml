@@ -9,7 +9,13 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
+  # Printer state (printfarm_printer_online/printing/pause/error/offline, temps,
+  # progress) is scraped fast so the dashboard tracks the poller in near-real
+  # time. The poller refreshes the DB every PRINTER_POLL_INTERVAL_MS (2s default),
+  # so a 1s scrape always picks up the latest state within ~1s.
   - job_name: printfarm
+    scrape_interval: 1s
+    scrape_timeout: 1s
     static_configs:
       - targets: ["exporter:9180"]
 

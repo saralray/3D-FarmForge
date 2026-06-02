@@ -38,6 +38,8 @@ global:
 
 scrape_configs:
   - job_name: printfarm
+    scrape_interval: 1s              # near-real-time printer state (poller updates DB ~2s)
+    scrape_timeout: 1s
     static_configs:
       - targets: ["exporter:9180"]   # the print-farm metrics
   - job_name: prometheus
