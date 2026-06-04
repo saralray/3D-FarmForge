@@ -551,6 +551,9 @@ export function PrinterDetail() {
   const isFilamentReady = canControlFilament && isOnline && printer.status === 'idle';
   const filamentControlsDisabled = !isFilamentReady || filamentInFlight !== null;
   const canViewSensitiveInfo = user?.role !== 'viewer';
+  // The printer's IP is a connection secret operators shouldn't need, so it is
+  // admin-only — a tighter gate than the rest of the sensitive info block.
+  const canViewIpAddress = user?.role === 'admin';
   const supportsWebcamStream = printerSupportsWebcamStream(printer);
   const webcamSnapshotUrl = `${buildPrinterWebcamSnapshotUrl(printer)}?t=${snapshotNonce}`;
   const webcamPlayerUrl = buildPrinterWebcamPlayerUrl(printer);
@@ -1358,7 +1361,7 @@ export function PrinterDetail() {
           <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
             <h2 className="text-xl font-semibold mb-4 dark:text-white">Information</h2>
             <div className="space-y-3">
-              {canViewSensitiveInfo && (
+              {canViewIpAddress && (
                 <div className="flex items-start gap-2">
                   <Network className="size-4 mt-0.5 text-gray-400" />
                   <div className="flex-1">

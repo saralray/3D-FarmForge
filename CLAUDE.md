@@ -42,13 +42,15 @@ Before applying, edit `k8s/secret.yaml` (fill in `CHANGE_ME` values). The Google
 Sheet/Form URLs are no longer build/deploy config — admins set them at runtime in
 Settings → Integrations (stored in the DB).
 
-Build and push the custom images (`web`, `poller`, and `exporter` — nginx uses the upstream image directly, and `prometheus` runs the upstream `prom/prometheus` image):
+Build and push the custom images (`web`, `poller`, `slicer-proxy`, and `exporter` — nginx uses the upstream image directly, and `prometheus` runs the upstream `prom/prometheus` image):
 ```bash
 docker build \
   --build-arg VITE_PUBLIC_VIEWER_MODE=false \
   -f Dockerfile.web -t stemlab-printfarm/web:latest .
 
 docker build -f Dockerfile.poller -t stemlab-printfarm/poller:latest .
+
+docker build -f Dockerfile.slicer-proxy -t stemlab-printfarm/slicer-proxy:latest .
 
 docker build -f Dockerfile.exporter -t stemlab-printfarm/exporter:latest .
 
@@ -68,13 +70,14 @@ kubectl -n stemlab-printfarm get svc nginx   # check EXTERNAL-IP for LoadBalance
 
 ## Architecture
 
-Six services orchestrated via Docker Compose:
+Seven services orchestrated via Docker Compose:
 
 | Service | Tech | Role |
 |---------|------|------|
 | `web` | Node.js 20 | Serves React SPA from `/dist`, hosts all `/api/*` endpoints, proxies printer HTTP/webcam requests |
 | `db` | PostgreSQL 16 | Stores printers, queue jobs, analytics, Discord webhooks |
 | `poller` | Python 3.12 + psycopg | Polls each printer every `PRINTER_POLL_INTERVAL_MS` ms, upserts state into `db` |
+| `slicer-proxy` | Node.js 20 | OctoPrint-compatible upload endpoint on `SLICER_PROXY_PORT` (default 8091); accepts sliced files from a slicer and auto-starts the print on the chosen printer. Authenticated with named API keys |
 | `nginx` | Nginx 1.27 | Reverse proxy on `HTTP_PORT` (default 8080), adds security headers |
 | `exporter` | Python 3.12 + prometheus-client | Read-only Prometheus exporter; serves `printfarm_*` metrics from `db` on `:9180/metrics` (internal only) |
 | `prometheus` | Prometheus 2.55 | Scrapes `exporter`, stores the time series; an external Grafana reads it on `PROMETHEUS_PORT` (default 9090) |
@@ -108,6 +111,8 @@ Browser → nginx:8080 → Node web:5173
 **Viewer mode:** When `VITE_PUBLIC_VIEWER_MODE="true"`, the app auto-enters the viewer session, printer list responses server-side redact sensitive connection fields (IP, API key, profile), and viewers cannot pause/resume/cancel/reorder printers.
 
 **Metrics / monitoring:** The `exporter` service (`exporter/printfarm_exporter.py`, a `prometheus_client` custom collector) exposes the print-farm data as Prometheus metrics under the `printfarm_*` namespace on `:9180/metrics`. It is read-only, queries PostgreSQL fresh on each scrape (printers, `analytics_daily`, `queue_jobs`), never creates schema, and reports a database failure as `printfarm_scrape_success 0` instead of crashing. Cumulative job/print-time/filament series are counters (`_total`); per-printer temps/progress/status and queue depth are gauges. The `prometheus` service scrapes it and retains the series for an external Grafana — point Grafana at `http://<host>:PROMETHEUS_PORT` (or provision the datasource from `monitoring/grafana/provisioning/datasources/prometheus.yml`, mounted into Grafana's `/etc/grafana/provisioning/datasources/`) and import `monitoring/grafana-dashboard.json`. The exporter is deliberately **not** proxied through nginx, so metrics are never reachable on the public `:8080` site; only Prometheus publishes a host port. Connection secrets (IP, API key, serial) are never emitted as metrics.
+
+**Slicer upload:** The `slicer-proxy` service (`slicer-proxy/index.js`) emulates the OctoPrint HTTP API so a slicer (Orca / PrusaSlicer / Cura, host type "OctoPrint") can push a sliced file to a printer and auto-start it. The slicer points at a per-printer base URL — `http://<host>:SLICER_PROXY_PORT/printers/<printerId>` — and authenticates with the `X-Api-Key` header. One key reaches any printer; the printer is selected by the base URL path. Keys are minted/revoked in Settings → Slicer Upload (admin only), stored in `slicer_api_keys` as a **sha256 hash only** (plaintext shown once at creation), and the management CRUD lives on the `web` server (`/api/slicer-keys`); the proxy validates by hashing the presented key and stamps `last_used_at`. Dispatch is by printer profile: `snapmaker_u1` → Moonraker `POST /server/files/upload` with `print=true`; `bambulab_a1_mini` → upload the `.3mf` over implicit FTPS (port 990, user `bblp`, pass = LAN access code) then publish an MQTT `project_file` command to `device/<serial>/request` (reuses the Bambu MQTT pattern from `server/app.js`). The Bambu `project_file` params and file URL are device-specific and need live tuning. The proxy is deliberately **not** behind nginx — uploads are large and bypass the web server's `MAX_BODY_BYTES` cap; restrict `SLICER_PROXY_PORT` to the lab network since the API key is the only guard. Connection secrets are read from the DB inside the container and never returned to the slicer.
 
 **Numeric formatting:** All printer and analytics values shown in the frontend must use no more than two decimal places.
 

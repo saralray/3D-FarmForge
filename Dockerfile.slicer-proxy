@@ -1,0 +1,27 @@
+FROM node:20-bookworm-slim AS runtime
+
+ENV NODE_ENV=production
+ENV SLICER_PROXY_PORT=8091
+
+WORKDIR /app
+
+RUN groupadd --system printfarm \
+  && useradd --system --gid printfarm --home-dir /app printfarm
+
+COPY package.json ./
+
+# Runtime deps for the proxy: pg (DB), mqtt (Bambu print command), busboy
+# (multipart upload parsing), basic-ftp (Bambu .3mf upload over FTPS). Keep these
+# versions in sync with package.json.
+RUN npm install pg@8.21.0 mqtt@5.15.1 busboy@1.6.0 basic-ftp@5.3.1 --no-save --no-audit --no-fund \
+  && npm cache clean --force
+
+# The proxy reuses server/postgres.js for DB access.
+COPY server ./server
+COPY slicer-proxy ./slicer-proxy
+
+USER printfarm
+
+EXPOSE 8091
+
+CMD ["node", "slicer-proxy/index.js"]

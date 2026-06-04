@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value JSONB NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS slicer_api_keys (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  key_hash TEXT NOT NULL UNIQUE,
+  key_prefix TEXT NOT NULL,
+  last_used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 SELECT pg_advisory_unlock(90210);
 `;
 
@@ -614,6 +622,62 @@ export async function createDiscordWebhook(webhook) {
 export async function deleteDiscordWebhook(id) {
   await ensureSchema();
   await query('DELETE FROM discord_webhooks WHERE id = $1;', [id]);
+}
+
+// Named API keys for the slicer-upload proxy. Only the sha256 hash is stored —
+// the plaintext key is shown to the admin once at creation and never again.
+// listSlicerApiKeys never returns the hash; the prefix is for display only.
+export async function listSlicerApiKeys() {
+  await ensureSchema();
+
+  const result = await query(`
+    SELECT COALESCE(
+      json_agg(
+        json_build_object(
+          'id', id,
+          'name', name,
+          'keyPrefix', key_prefix,
+          'lastUsedAt', to_char(last_used_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+          'createdAt', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        )
+        ORDER BY created_at ASC
+      ),
+      '[]'::json
+    ) AS data
+    FROM slicer_api_keys;
+  `);
+
+  return result.rows[0].data;
+}
+
+export async function createSlicerApiKey({ id, name, keyHash, keyPrefix }) {
+  await ensureSchema();
+  await query(
+    `INSERT INTO slicer_api_keys (id, name, key_hash, key_prefix)
+     VALUES ($1, $2, $3, $4);`,
+    [id, name, keyHash, keyPrefix],
+  );
+}
+
+export async function deleteSlicerApiKey(id) {
+  await ensureSchema();
+  await query('DELETE FROM slicer_api_keys WHERE id = $1;', [id]);
+}
+
+// Used by the proxy to authenticate an upload. Returns the matching key row
+// (id/name) or null; the caller stamps last_used_at via touchSlicerApiKey.
+export async function findSlicerApiKeyByHash(keyHash) {
+  await ensureSchema();
+  const result = await query(
+    'SELECT id, name FROM slicer_api_keys WHERE key_hash = $1;',
+    [keyHash],
+  );
+  return result.rows.length > 0 ? result.rows[0] : null;
+}
+
+export async function touchSlicerApiKey(id) {
+  await ensureSchema();
+  await query('UPDATE slicer_api_keys SET last_used_at = NOW() WHERE id = $1;', [id]);
 }
 
 // Generic key/value store for app-wide preferences (e.g. the shared printer

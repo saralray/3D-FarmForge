@@ -64,6 +64,24 @@ services:
       PRINTER_REQUEST_TIMEOUT_MS: ${PRINTER_REQUEST_TIMEOUT_MS:-3000}
       PRINTER_OFFLINE_GRACE_SECONDS: ${PRINTER_OFFLINE_GRACE_SECONDS:-30}
 
+  # Slicer-upload proxy: an OctoPrint-compatible endpoint a slicer (Orca etc.)
+  # can push sliced files to. Authenticated with named API keys (managed in
+  # Settings → Slicer Upload). Published on its own host port — uploads are large
+  # and bypass nginx. Point the slicer at http://<host>:SLICER_PROXY_PORT/printers/<id>.
+  slicer-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.slicer-proxy
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      SLICER_PROXY_PORT: ${SLICER_PROXY_PORT:-8091}
+    ports:
+      - "${SLICER_PROXY_PORT:-8091}:8091"
+
   # Read-only Prometheus exporter: exposes the PostgreSQL print-farm data as
   # metrics on :9180/metrics. Not published to the host — Prometheus scrapes it
   # over the internal network, so metrics never reach the public site.

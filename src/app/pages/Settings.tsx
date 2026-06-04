@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bell, Link2, Plus, Settings as SettingsIcon, Shield, Trash2, Users } from 'lucide-react';
+import { Bell, Check, Copy, KeyRound, Link2, Plus, Settings as SettingsIcon, Shield, Trash2, Users } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { useAuth } from '../contexts/AuthContext';
 import { Printer, PrinterProfile } from '../types';
 import { DiscordWebhook, fetchDiscordWebhooks, removeDiscordWebhook, saveDiscordWebhook } from '../lib/notificationsApi';
+import { CreatedSlicerKey, SlicerApiKey, createSlicerKey, fetchSlicerKeys, removeSlicerKey } from '../lib/slicerKeysApi';
 import { fetchPrinters, savePrinter } from '../lib/printersApi';
 import { generateId, slugifyPrinterId } from '../lib/id';
 import { normalizePrinter, PRINTER_PROFILES } from '../lib/printerProfiles';
@@ -52,6 +53,14 @@ export function Settings() {
   const [integrationError, setIntegrationError] = useState('');
   const [integrationSuccess, setIntegrationSuccess] = useState('');
   const [savingIntegrations, setSavingIntegrations] = useState(false);
+  const [slicerKeys, setSlicerKeys] = useState<SlicerApiKey[]>([]);
+  const [slicerKeyName, setSlicerKeyName] = useState('');
+  const [slicerError, setSlicerError] = useState('');
+  const [slicerSuccess, setSlicerSuccess] = useState('');
+  const [savingSlicerKey, setSavingSlicerKey] = useState(false);
+  const [removingSlicerKeyId, setRemovingSlicerKeyId] = useState<string | null>(null);
+  const [createdSlicerKey, setCreatedSlicerKey] = useState<CreatedSlicerKey | null>(null);
+  const [copiedKey, setCopiedKey] = useState(false);
 
   useEffect(() => {
     fetchPrinters()
@@ -73,6 +82,12 @@ export function Settings() {
       })
       .catch(() => {
         setIntegrationError('Unable to load integration URLs.');
+      });
+
+    fetchSlicerKeys()
+      .then(setSlicerKeys)
+      .catch(() => {
+        setSlicerError('Unable to load slicer API keys.');
       });
   }, []);
 
@@ -264,6 +279,72 @@ export function Settings() {
     }
   };
 
+  const refreshSlicerKeys = async () => {
+    setSlicerKeys(await fetchSlicerKeys());
+  };
+
+  const handleCreateSlicerKey = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSlicerError('');
+    setSlicerSuccess('');
+    setCreatedSlicerKey(null);
+    setCopiedKey(false);
+
+    if (user?.role !== 'admin') {
+      setSlicerError('Only admins can manage slicer API keys.');
+      return;
+    }
+
+    const normalizedName = slicerKeyName.trim();
+    if (!normalizedName) {
+      setSlicerError('Key name is required.');
+      return;
+    }
+
+    setSavingSlicerKey(true);
+
+    try {
+      const created = await createSlicerKey(normalizedName);
+      await refreshSlicerKeys();
+      setSlicerKeyName('');
+      setCreatedSlicerKey(created);
+      setSlicerSuccess('Key created. Copy it now — it will not be shown again.');
+    } catch (error) {
+      setSlicerError(error instanceof Error ? error.message : 'Unable to create slicer API key.');
+    } finally {
+      setSavingSlicerKey(false);
+    }
+  };
+
+  const handleCopyCreatedKey = async () => {
+    if (!createdSlicerKey) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(createdSlicerKey.key);
+      setCopiedKey(true);
+      setTimeout(() => setCopiedKey(false), 2000);
+    } catch {
+      setSlicerError('Unable to copy to clipboard — select and copy the key manually.');
+    }
+  };
+
+  const handleRemoveSlicerKey = async (keyId: string) => {
+    setSlicerError('');
+    setSlicerSuccess('');
+    setRemovingSlicerKeyId(keyId);
+
+    try {
+      await removeSlicerKey(keyId);
+      await refreshSlicerKeys();
+      setSlicerSuccess('Slicer API key revoked.');
+    } catch (error) {
+      setSlicerError(error instanceof Error ? error.message : 'Unable to revoke slicer API key.');
+    } finally {
+      setRemovingSlicerKeyId(null);
+    }
+  };
+
   const handleRemoveWebhook = async (webhookId: string) => {
     setNotificationError('');
     setNotificationSuccess('');
@@ -350,6 +431,10 @@ export function Settings() {
           <TabsTrigger value="integrations" className="min-w-max">
             <Link2 className="size-4" />
             Integrations
+          </TabsTrigger>
+          <TabsTrigger value="slicer-upload" className="min-w-max">
+            <KeyRound className="size-4" />
+            Slicer Upload
           </TabsTrigger>
         </TabsList>
 
@@ -793,6 +878,125 @@ export function Settings() {
                 {savingIntegrations ? 'Saving...' : 'Save Integration URLs'}
               </Button>
             </form>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="slicer-upload">
+          <Card className="p-6 dark:bg-gray-900 dark:border-gray-800">
+            <div className="mb-5">
+              <div className="flex items-center gap-2">
+                <KeyRound className="size-5 text-blue-500" />
+                <h2 className="text-xl font-semibold dark:text-white">Slicer Upload</h2>
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                Generate named API keys for the slicer-upload proxy. In your slicer (Orca / PrusaSlicer / Cura),
+                add a <span className="font-medium">Physical Printer</span> with host type{' '}
+                <span className="font-medium">OctoPrint</span>, host{' '}
+                <code className="rounded bg-gray-100 px-1 dark:bg-gray-800">
+                  http://{typeof window !== 'undefined' ? window.location.hostname : 'host'}:8091/printers/&lt;printerId&gt;
+                </code>
+                , and paste a key below as the API key. One key works for every printer.
+              </p>
+            </div>
+
+            <form onSubmit={handleCreateSlicerKey} className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="slicer-key-name">Key Name</Label>
+                  <Input
+                    id="slicer-key-name"
+                    value={slicerKeyName}
+                    onChange={(event) => setSlicerKeyName(event.target.value)}
+                    placeholder="Orca on lab laptop"
+                    required
+                  />
+                </div>
+              </div>
+
+              {slicerError && (
+                <Alert variant="destructive" className="py-2">
+                  {slicerError}
+                </Alert>
+              )}
+
+              {slicerSuccess && <Alert className="py-2">{slicerSuccess}</Alert>}
+
+              {createdSlicerKey && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-4 dark:border-amber-700/60 dark:bg-amber-950/40">
+                  <div className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                    Copy this key now — it will not be shown again.
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <code className="min-w-0 flex-1 truncate rounded bg-white px-3 py-2 font-mono text-sm dark:bg-gray-950">
+                      {createdSlicerKey.key}
+                    </code>
+                    <Button type="button" variant="outline" size="sm" onClick={handleCopyCreatedKey}>
+                      {copiedKey ? <Check className="size-4 mr-2" /> : <Copy className="size-4 mr-2" />}
+                      {copiedKey ? 'Copied' : 'Copy'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              <Button type="submit" disabled={savingSlicerKey}>
+                {savingSlicerKey ? 'Generating...' : 'Generate API Key'}
+              </Button>
+            </form>
+
+            <div className="mt-6 space-y-3">
+              {slicerKeys.length > 0 ? (
+                slicerKeys.map((key) => (
+                  <div
+                    key={key.id}
+                    className="flex items-center justify-between gap-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-950"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-semibold text-gray-900 dark:text-white">{key.name}</div>
+                      <div className="mt-1 font-mono text-sm text-gray-500 dark:text-gray-400">
+                        {key.keyPrefix}…
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {key.createdAt ? `Created ${new Date(key.createdAt).toLocaleDateString()}` : 'Created —'}
+                        {' · '}
+                        {key.lastUsedAt ? `Last used ${new Date(key.lastUsedAt).toLocaleString()}` : 'Never used'}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={removingSlicerKeyId !== null}
+                      onClick={() => handleRemoveSlicerKey(key.id)}
+                    >
+                      <Trash2 className="size-4 mr-2" />
+                      {removingSlicerKeyId === key.id ? 'Revoking...' : 'Revoke'}
+                    </Button>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400">
+                  No slicer API keys yet.
+                </div>
+              )}
+            </div>
+
+            {printers.filter((printer) => printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini').length > 0 && (
+              <div className="mt-6 rounded-md border border-gray-200 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-900">
+                <div className="text-sm font-medium text-gray-900 dark:text-white">Printer IDs for slicer host URLs</div>
+                <div className="mt-2 space-y-1">
+                  {printers
+                    .filter((printer) => printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini')
+                    .map((printer) => (
+                      <div key={printer.id} className="flex items-baseline gap-2 text-sm">
+                        <span className="text-gray-600 dark:text-gray-300">{printer.name}</span>
+                        <code className="rounded bg-white px-1 font-mono text-xs dark:bg-gray-950">
+                          /printers/{printer.id}
+                        </code>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
           </Card>
         </TabsContent>
       </Tabs>

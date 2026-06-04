@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slicer-proxy
+  namespace: printfarm
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: slicer-proxy
+
+  template:
+    metadata:
+      labels:
+        app: slicer-proxy
+
+    spec:
+      containers:
+        - name: slicer-proxy
+          image: saralray/printfarm-slicer-proxy:latest
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8091
+
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: printfarm-secret
+                  key: DATABASE_URL
+
+            - name: SLICER_PROXY_PORT
+              value: "8091"
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            initialDelaySeconds: 20
+            periodSeconds: 20
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+
+---
+# Exposed directly (not via nginx/ingress) — slicer uploads are large and the
+# slicer points its OctoPrint host straight at this service. Restrict access to
+# the lab network; the API key is the only other guard.
+apiVersion: v1
+kind: Service
+metadata:
+  name: slicer-proxy
+  namespace: printfarm
+
+spec:
+  type: LoadBalancer
+  selector:
+    app: slicer-proxy
+
+  ports:
+    - port: 8091
+      targetPort: 8091

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -9,15 +9,18 @@ import { fileURLToPath } from 'node:url';
 import mqtt from 'mqtt';
 import {
   createDiscordWebhook,
+  createSlicerApiKey,
   deleteDiscordWebhook,
   deletePrinter,
   deleteQueueJob,
+  deleteSlicerApiKey,
   ensureSchema,
   getAppSetting,
   getPrinterById,
   listDailyAnalytics,
   listDiscordWebhooks,
   listPrinters,
+  listSlicerApiKeys,
   listQueueData,
   markQueueJobPrinted,
   resetDailyAnalytics,
@@ -673,6 +676,39 @@ async function handleApi(req, res, requestUrl) {
 
   if (requestUrl.pathname.startsWith('/api/notifications/discord-webhooks/') && req.method === 'DELETE') {
     await deleteDiscordWebhook(decodeURIComponent(requestUrl.pathname.slice('/api/notifications/discord-webhooks/'.length)));
+    sendEmpty(res);
+    return true;
+  }
+
+  // Named API keys for the slicer-upload proxy. The plaintext key is generated
+  // here and returned only once (POST response); only its sha256 hash is stored,
+  // so listing keys never exposes the secret again.
+  if (requestUrl.pathname === '/api/slicer-keys') {
+    if (req.method === 'GET') {
+      sendJson(res, 200, await listSlicerApiKeys());
+      return true;
+    }
+    if (req.method === 'POST') {
+      const { name } = await readJsonBody(req);
+      if (typeof name !== 'string' || !name.trim()) {
+        sendJson(res, 400, { error: 'name is required' });
+        return true;
+      }
+      const key = randomBytes(24).toString('base64url');
+      const id = randomUUID();
+      await createSlicerApiKey({
+        id,
+        name: name.trim(),
+        keyHash: hash(key),
+        keyPrefix: key.slice(0, 8),
+      });
+      sendJson(res, 201, { id, name: name.trim(), key });
+      return true;
+    }
+  }
+
+  if (requestUrl.pathname.startsWith('/api/slicer-keys/') && req.method === 'DELETE') {
+    await deleteSlicerApiKey(decodeURIComponent(requestUrl.pathname.slice('/api/slicer-keys/'.length)));
     sendEmpty(res);
     return true;
   }
