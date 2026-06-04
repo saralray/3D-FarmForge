@@ -69,10 +69,9 @@ services:
 
   # Slicer-upload proxy: an OctoPrint-compatible endpoint a slicer (Orca etc.)
   # can push sliced files to. Authenticated with named API keys (managed in
-  # Settings → Slicer Upload). nginx routes /printers/ to it on the main site, so
-  # the slicer uses the same domain as the dashboard:
-  # http://<domain>/printers/<id>. The host port below is also published for
-  # direct/legacy access; drop the mapping if you only use the nginx route.
+  # Settings → Slicer Upload). Not published to the host — nginx routes /printers/
+  # to it over the internal network, so the slicer reaches it on the same domain
+  # as the dashboard: http://<domain>/printers/<id>.
   slicer-proxy:
     build:
       context: .
@@ -87,8 +86,6 @@ services:
       # Used to redirect a slicer's "Device" tab to the dashboard's printer page.
       HTTP_PORT: ${HTTP_PORT:-8080}
       APP_BASE_URL: ${APP_BASE_URL:-}
-    ports:
-      - "${SLICER_PROXY_PORT:-8091}:8091"
 
   # Read-only Prometheus exporter: exposes the PostgreSQL print-farm data as
   # metrics on :9180/metrics. Not published to the host — Prometheus scrapes it
