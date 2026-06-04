@@ -1,5 +1,11 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { PUBLIC_VIEWER_MODE, PUBLIC_VIEWER_USER } from '../lib/runtimeConfig';
+import {
+  PUBLIC_VIEWER_MODE,
+  PUBLIC_VIEWER_USER,
+  SLICER_OPERATOR_GRANT_PARAM,
+  SLICER_OPERATOR_GRANT_VALUE,
+  SLICER_OPERATOR_USER,
+} from '../lib/runtimeConfig';
 import { generateId } from '../lib/id';
 
 interface User {
@@ -171,6 +177,27 @@ function createViewerSession() {
   return PUBLIC_VIEWER_USER;
 }
 
+// When the dashboard is opened from a slicer's "Device" tab, the slicer-proxy
+// redirects here with `?slicer_access=operator`. Detect that grant, strip the
+// param from the URL so it does not linger or get bookmarked, and report it so
+// the caller can establish an operator session.
+function consumeSlicerOperatorGrant() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get(SLICER_OPERATOR_GRANT_PARAM) !== SLICER_OPERATOR_GRANT_VALUE) {
+    return false;
+  }
+
+  params.delete(SLICER_OPERATOR_GRANT_PARAM);
+  const query = params.toString();
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
+  window.history.replaceState({}, '', nextUrl);
+  return true;
+}
+
 function sha256Fallback(message: string) {
   const encoder = new TextEncoder();
   const bytes = Array.from(encoder.encode(message));
@@ -303,6 +330,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const storedUsers = readStoredUsers();
     setUsers(storedUsers.map(sanitizeUser));
+
+    // A slicer "Device" link grants operator access for the printer it opens.
+    if (consumeSlicerOperatorGrant()) {
+      setUser(SLICER_OPERATOR_USER);
+      writeStoredSession(SLICER_OPERATOR_USER);
+      setIsLoading(false);
+      return;
+    }
 
     const storedSession = readStoredSession();
     if (storedSession) {

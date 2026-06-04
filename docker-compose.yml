@@ -79,6 +79,9 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
       SLICER_PROXY_PORT: ${SLICER_PROXY_PORT:-8091}
+      # Used to redirect a slicer's "Device" tab to the dashboard's printer page.
+      HTTP_PORT: ${HTTP_PORT:-8080}
+      APP_BASE_URL: ${APP_BASE_URL:-}
     ports:
       - "${SLICER_PROXY_PORT:-8091}:8091"
 

@@ -34,12 +34,33 @@ import {
 const port = Number.parseInt(process.env.SLICER_PROXY_PORT || '8091', 10);
 const host = process.env.HOST || '0.0.0.0';
 
+// Where the dashboard lives, for the slicer's "Device" tab redirect. Prefer an
+// explicit APP_BASE_URL; otherwise reuse the request's hostname with the
+// dashboard's HTTP_PORT (nginx), since the proxy is published on a sibling port.
+const httpPort = process.env.HTTP_PORT || '8080';
+const appBaseUrl = (process.env.APP_BASE_URL || '').trim();
+
 function hash(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
 function md5(buffer) {
   return createHash('md5').update(buffer).digest('hex');
+}
+
+// The slicer's "Device" tab loads the OctoPrint host base URL in an embedded
+// browser. Point it at the dashboard's printer-management page, granting
+// operator access (pause/resume/cancel) instead of a read-only viewer.
+function buildDeviceUrl(req, printerId) {
+  const base = appBaseUrl || defaultAppBase(req);
+  const id = encodeURIComponent(printerId);
+  return `${base.replace(/\/+$/, '')}/printer/${id}?slicer_access=operator`;
+}
+
+function defaultAppBase(req) {
+  const hostHeader = req.headers.host || `localhost:${port}`;
+  const hostname = hostHeader.split(':')[0];
+  return `http://${hostname}:${httpPort}`;
 }
 
 function sendJson(res, statusCode, payload) {
@@ -275,6 +296,18 @@ async function handleRequest(req, res) {
 
   if (pathname === '/' || pathname === '/healthz') {
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // The slicer's "Device" tab opens the host base URL (/printers/<id> with no
+  // further path). Redirect it to the dashboard's printer-management page.
+  const deviceMatch = pathname.match(/^\/printers\/([^/]+)\/?$/);
+  if (deviceMatch && req.method === 'GET') {
+    const printerId = decodeURIComponent(deviceMatch[1]);
+    res.statusCode = 302;
+    res.setHeader('Location', buildDeviceUrl(req, printerId));
+    res.setHeader('Cache-Control', 'no-store');
+    res.end();
     return;
   }
 
