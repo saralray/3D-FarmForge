@@ -685,31 +685,33 @@ export function Settings() {
                       </Button>
                     </div>
                   </div>
-                  <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-end">
-                    <div className="flex-1 space-y-2">
-                      <Label htmlFor={`reset-password-${account.id}`}>New Password</Label>
-                      <Input
-                        id={`reset-password-${account.id}`}
-                        type="password"
-                        value={passwordDrafts[account.id] ?? ''}
-                        onChange={(event) =>
-                          setPasswordDrafts((prev) => ({
-                            ...prev,
-                            [account.id]: event.target.value,
-                          }))
-                        }
-                        placeholder="At least 8 characters"
-                        autoComplete="new-password"
-                      />
+                  {account.id === user?.id && (
+                    <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-end">
+                      <div className="flex-1 space-y-2">
+                        <Label htmlFor={`reset-password-${account.id}`}>New Password</Label>
+                        <Input
+                          id={`reset-password-${account.id}`}
+                          type="password"
+                          value={passwordDrafts[account.id] ?? ''}
+                          onChange={(event) =>
+                            setPasswordDrafts((prev) => ({
+                              ...prev,
+                              [account.id]: event.target.value,
+                            }))
+                          }
+                          placeholder="Enter a new password"
+                          autoComplete="new-password"
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        disabled={changingPasswordUserId !== null}
+                        onClick={() => handleChangeUserPassword(account.id)}
+                      >
+                        {changingPasswordUserId === account.id ? 'Saving...' : 'Change Password'}
+                      </Button>
                     </div>
-                    <Button
-                      type="button"
-                      disabled={changingPasswordUserId !== null}
-                      onClick={() => handleChangeUserPassword(account.id)}
-                    >
-                      {changingPasswordUserId === account.id ? 'Saving...' : 'Change Password'}
-                    </Button>
-                  </div>
+                  )}
                 </div>
               ))}
             </div>

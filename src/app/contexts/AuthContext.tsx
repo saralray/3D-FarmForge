@@ -540,10 +540,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
     }
 
-    if (!user || user.role !== 'admin') {
+    if (!user) {
       return {
         success: false,
-        error: 'Only admins can change passwords.',
+        error: 'You must be signed in to change your password.',
+      };
+    }
+
+    if (user.id !== userId) {
+      return {
+        success: false,
+        error: 'You can only change your own password.',
       };
     }
 
@@ -552,13 +559,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return {
         success: false,
         error: 'User and password are required.',
-      };
-    }
-
-    if (trimmedPassword.length < 8) {
-      return {
-        success: false,
-        error: 'Password must be at least 8 characters.',
       };
     }
 
