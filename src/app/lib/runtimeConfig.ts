@@ -4,11 +4,11 @@ export const PUBLIC_VIEWER_MODE = import.meta.env.VITE_PUBLIC_VIEWER_MODE === 't
 // time to your own hash so a publicly known default isn't shipped in the bundle.
 // Generate one with:
 //   node -e "console.log(require('node:crypto').createHash('sha256').update(process.argv[1]).digest('hex'))" "your-password"
-// Falls back to the legacy default ("stemlab") when unset so existing deploys
-// keep working until they configure their own.
+// Falls back to the default first-run credentials (admin / "admin") when unset so
+// a fresh build can log in; set your own hash for any real deployment.
 export const ADMIN_PASSWORD_HASH =
   (import.meta.env.VITE_ADMIN_PASSWORD_HASH as string | undefined) ||
-  '247be42a8460b48531c8e35c3e494a0c86dd70b65b4f234ed4bc73474b76d994';
+  '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918';
 
 export const PUBLIC_VIEWER_USER = {
   id: 'public-viewer',
