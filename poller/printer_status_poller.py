@@ -4,6 +4,7 @@ import os
 import ssl
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from typing import Any
 
@@ -1139,6 +1140,26 @@ def prune_print_time_tracking(active_ids: set[str]) -> None:
             _PRINTING_SINCE.pop(printer_id, None)
 
 
+def compute_next_printer(printer: dict[str, Any]) -> dict[str, Any]:
+    """Refresh one printer's live status — network/MQTT I/O only, no DB access.
+
+    Safe to run in a worker thread: it never touches the psycopg connection or the
+    main-thread-only print-time tracker. Any failure falls back to the offline
+    grace-period state, mirroring the previous inline behaviour.
+    """
+    try:
+        return refresh_status(printer)
+    except Exception:
+        return apply_offline_grace_period(printer)
+
+
+# Refresh printers concurrently. Snapmaker/generic polling is blocking HTTP (each
+# up to REQUEST_TIMEOUT_SECONDS), so doing them in series let one slow/offline
+# printer stall the whole cycle; a small thread pool bounds the cycle to roughly
+# one printer's timeout instead of the sum. DB writes stay on the main thread.
+_REFRESH_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="poller-refresh")
+
+
 def run() -> None:
     while True:
         try:
@@ -1149,11 +1170,15 @@ def run() -> None:
                 prune_bambu_clients(active_ids)
                 prune_print_time_tracking(active_ids)
                 webhooks = list_discord_webhooks(conn)
-                for printer in printers:
-                    try:
-                        next_printer = refresh_status(printer)
-                    except Exception:
-                        next_printer = apply_offline_grace_period(printer)
+
+                # Concurrent, side-effect-free refresh; DB writes and the
+                # _PRINTING_SINCE tracker run sequentially on this thread below
+                # (psycopg connections and that dict are not shared across threads).
+                next_printers = (
+                    list(_REFRESH_POOL.map(compute_next_printer, printers)) if printers else []
+                )
+
+                for printer, next_printer in zip(printers, next_printers):
                     next_printer["totalPrintTime"] = accumulate_total_print_time(next_printer)
                     collect_analytics_for_transition(conn, printer, next_printer)
                     notify_for_transition(webhooks, printer, next_printer)

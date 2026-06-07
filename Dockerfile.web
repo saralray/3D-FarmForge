@@ -10,6 +10,11 @@ COPY . .
 ARG VITE_PUBLIC_VIEWER_MODE=false
 ENV VITE_PUBLIC_VIEWER_MODE=$VITE_PUBLIC_VIEWER_MODE
 
+# Optional: override the default admin password hash (sha256 hex) baked into the
+# bundle. Leave empty to keep the legacy default.
+ARG VITE_ADMIN_PASSWORD_HASH=
+ENV VITE_ADMIN_PASSWORD_HASH=$VITE_ADMIN_PASSWORD_HASH
+
 RUN npm run build
 
 FROM node:20-bookworm-slim AS runtime

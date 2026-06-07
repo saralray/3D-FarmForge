@@ -231,7 +231,11 @@ function mapSheetRowsToQueue(rows) {
       const noteParts = [studentId ? `Student ID: ${studentId}` : '', course ? `Course: ${course}` : '', notes || '']
         .filter(Boolean)
       const estimatedTime = Math.max(30, Number.isFinite(quantity) ? quantity * 60 : 60)
-      const idSource = row.map((value) => value ?? '').join('|')
+      // Stable identity keyed by form timestamp + student id (see server/app.js).
+      const idSource =
+        submittedAt || studentId
+          ? `${submittedAt ?? ''}|${studentId ?? ''}`
+          : row.map((value) => value ?? '').join('|')
       const id = `queue-${createHash('sha1').update(idSource).digest('hex').slice(0, 16)}`
 
       return {

@@ -17,6 +17,7 @@ import {
   ensureSchema,
   getAppSetting,
   getPrinterById,
+  getPublicPrinterById,
   listDailyAnalytics,
   listDiscordWebhooks,
   listPrinters,
@@ -300,7 +301,15 @@ function mapSheetRowsToQueue(rows) {
       const noteParts = [studentId ? `Student ID: ${studentId}` : '', course ? `Course: ${course}` : '', notes || '']
         .filter(Boolean);
       const estimatedTime = Math.max(30, Number.isFinite(quantity) ? quantity * 60 : 60);
-      const idSource = row.map((value) => value ?? '').join('|');
+      // Stable identity: a submission is uniquely keyed by its form timestamp and
+      // student id. Editable fields (notes, quantity, file, name) are deliberately
+      // excluded so editing a row in the sheet updates the existing job instead of
+      // creating a duplicate — and never resurrects a soft-deleted one. Fall back
+      // to the full-row hash only when both identity fields are missing.
+      const idSource =
+        submittedAt || studentId
+          ? `${submittedAt ?? ''}|${studentId ?? ''}`
+          : row.map((value) => value ?? '').join('|');
       const id = `queue-${createHash('sha1').update(idSource).digest('hex').slice(0, 16)}`;
 
       return {
@@ -602,6 +611,20 @@ async function handleApi(req, res, requestUrl) {
   if (requestUrl.pathname.startsWith('/api/printers/') && req.method === 'DELETE') {
     await deletePrinter(decodeURIComponent(requestUrl.pathname.slice('/api/printers/'.length)));
     sendEmpty(res);
+    return true;
+  }
+
+  // Single printer by id — lets the detail page refresh one printer instead of
+  // pulling the whole list every poll. Redacts sensitive connection fields in
+  // public viewer mode, exactly like the list endpoint.
+  if (requestUrl.pathname.startsWith('/api/printers/') && req.method === 'GET') {
+    const id = decodeURIComponent(requestUrl.pathname.slice('/api/printers/'.length));
+    const printer = await getPublicPrinterById(id);
+    if (!printer) {
+      sendJson(res, 404, { error: 'Printer not found' });
+      return true;
+    }
+    sendJson(res, 200, printer);
     return true;
   }
 

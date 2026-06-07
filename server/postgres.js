@@ -64,6 +64,11 @@ ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS file_count INTEGER NOT NULL DEFA
 ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS form_type TEXT NOT NULL DEFAULT '';
 ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS printed_status INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE queue_jobs ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+-- Supports the queue/history reads, which filter on (form_type, printed_status)
+-- among non-deleted rows. Partial index keeps it small and skips soft-deleted jobs.
+CREATE INDEX IF NOT EXISTS queue_jobs_active_idx
+  ON queue_jobs (form_type, printed_status)
+  WHERE deleted_at IS NULL;
 CREATE TABLE IF NOT EXISTS discord_webhooks (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -228,6 +233,21 @@ export async function getPrinterById(id) {
   return result.rows[0]?.printer ?? null;
 }
 
+// Public-facing single-printer read for the API. Unlike getPrinterById (which
+// always returns the connection secrets the proxy/command paths need), this
+// redacts sensitive fields in public viewer mode, matching listPrinters.
+export async function getPublicPrinterById(id) {
+  await ensureSchema();
+  const includeSensitive = !isPublicViewerMode();
+
+  const result = await query(
+    `SELECT ${buildPrinterListSelect(includeSensitive)} AS printer FROM printers WHERE id = $1;`,
+    [id],
+  );
+
+  return result.rows[0]?.printer ?? null;
+}
+
 export async function upsertPrinter(printer) {
   await ensureSchema();
 
@@ -281,6 +301,13 @@ export async function upsertPrinter(printer) {
       (data->>'offlineSince')::double precision
     FROM input
     ON CONFLICT (id) DO UPDATE SET
+      -- This INSERT path is the web API's only writer (admin create/edit, dashboard
+      -- reorder). It updates configuration fields only. Live telemetry — status,
+      -- temperatures, progress, success_rate, current_job, nozzle_temperatures,
+      -- spools, offline_since, total_print_time — is owned by the poller and is
+      -- deliberately NOT overwritten here: the browser's payload can be several
+      -- seconds stale (or API-rounded), so writing it back would clobber the
+      -- poller's fresh values and flicker the UI until the next poll corrects it.
       name = EXCLUDED.name,
       model = EXCLUDED.model,
       sort_order = EXCLUDED.sort_order,
@@ -289,20 +316,7 @@ export async function upsertPrinter(printer) {
       ip_address = EXCLUDED.ip_address,
       api_key_header = EXCLUDED.api_key_header,
       serial = EXCLUDED.serial,
-      status = EXCLUDED.status,
-      temperature_nozzle = EXCLUDED.temperature_nozzle,
-      temperature_bed = EXCLUDED.temperature_bed,
-      progress = EXCLUDED.progress,
-      last_maintenance = EXCLUDED.last_maintenance,
-      -- total_print_time is deliberately omitted: the poller owns this lifetime
-      -- counter and is its sole writer. Re-saving a printer from the API (e.g.
-      -- dashboard reorder) carries an API-rounded value that would round the
-      -- counter down on every write, so we keep the existing DB value here.
-      success_rate = EXCLUDED.success_rate,
-      current_job = EXCLUDED.current_job,
-      nozzle_temperatures = EXCLUDED.nozzle_temperatures,
-      spools = EXCLUDED.spools,
-      offline_since = EXCLUDED.offline_since;
+      last_maintenance = EXCLUDED.last_maintenance;
   `,
     [JSON.stringify(printer)],
   );

@@ -3,11 +3,13 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Navigation } from '../components/Navigation';
 import { PrinterStatusNotifier } from '../components/PrinterStatusNotifier';
 import { useSidebar } from '../contexts/SidebarContext';
+import { PrintersProvider } from '../contexts/PrintersContext';
 
 export function Root() {
   const { isCollapsed, toggleSidebar } = useSidebar();
 
   return (
+    <PrintersProvider>
     <div className="relative flex h-screen bg-gray-50 dark:bg-gray-950">
       <Navigation />
       <button
@@ -28,5 +30,6 @@ export function Root() {
       </main>
       <PrinterStatusNotifier />
     </div>
+    </PrintersProvider>
   );
 }

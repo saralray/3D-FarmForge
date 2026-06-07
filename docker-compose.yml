@@ -20,6 +20,7 @@ services:
       dockerfile: Dockerfile.web
       args:
         VITE_PUBLIC_VIEWER_MODE: ${VITE_PUBLIC_VIEWER_MODE:-false}
+        VITE_ADMIN_PASSWORD_HASH: ${VITE_ADMIN_PASSWORD_HASH:-}
     restart: unless-stopped
     depends_on:
       db:

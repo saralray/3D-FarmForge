@@ -1,13 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Printer } from '../types';
-import { fetchPrinters } from '../lib/printersApi';
-import { normalizePrinter } from '../lib/printerProfiles';
 import { fetchQueueJobs } from '../lib/queueApi';
+import { usePrinters } from '../contexts/PrintersContext';
 
 type PrinterSnapshot = Pick<Printer, 'id' | 'name' | 'status' | 'currentJob' | 'progress'>;
 
-const PRINTER_POLL_INTERVAL_MS = 5000;
 const QUEUE_POLL_INTERVAL_MS = 10000;
 const SEEN_QUEUE_JOB_IDS_KEY = 'printfarm_seen_queue_job_ids';
 
@@ -130,45 +128,32 @@ function showNewQueueJobToast(job: { filename: string; fileCount?: number; submi
 }
 
 export function PrinterStatusNotifier() {
+  const { printers, loaded } = usePrinters();
   const previousPrintersRef = useRef<Map<string, PrinterSnapshot> | null>(null);
   const previousQueueJobIdsRef = useRef<Set<string> | null>(null);
 
+  // Diff each shared-poll snapshot against the previous one to surface status/job
+  // transition toasts. Driven by the central PrintersContext, so this no longer
+  // runs its own /api/printers interval.
   useEffect(() => {
-    let isCancelled = false;
+    if (!loaded) {
+      return;
+    }
 
-    const refreshPrinters = async () => {
-      try {
-        const printers = (await fetchPrinters()).map(normalizePrinter);
-        if (isCancelled) {
-          return;
+    const nextPrinters = toPrinterMap(printers);
+    const previousPrinters = previousPrintersRef.current;
+
+    if (previousPrinters) {
+      for (const [printerId, nextPrinter] of nextPrinters) {
+        const previousPrinter = previousPrinters.get(printerId);
+        if (previousPrinter) {
+          notifyPrinterTransition(previousPrinter, nextPrinter);
         }
-
-        const nextPrinters = toPrinterMap(printers);
-        const previousPrinters = previousPrintersRef.current;
-
-        if (previousPrinters) {
-          for (const [printerId, nextPrinter] of nextPrinters) {
-            const previousPrinter = previousPrinters.get(printerId);
-            if (previousPrinter) {
-              notifyPrinterTransition(previousPrinter, nextPrinter);
-            }
-          }
-        }
-
-        previousPrintersRef.current = nextPrinters;
-      } catch {
-        // Keep notifications quiet when the printer API is temporarily unavailable.
       }
-    };
+    }
 
-    refreshPrinters();
-    const interval = window.setInterval(refreshPrinters, PRINTER_POLL_INTERVAL_MS);
-
-    return () => {
-      isCancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
+    previousPrintersRef.current = nextPrinters;
+  }, [printers, loaded]);
 
   useEffect(() => {
     let isCancelled = false;

@@ -64,7 +64,7 @@ import {
   DialogTitle,
 } from '../components/ui/dialog';
 import { Alert } from '../components/ui/alert';
-import { fetchPrinters, removePrinter, savePrinter } from '../lib/printersApi';
+import { fetchPrinter, removePrinter, savePrinter } from '../lib/printersApi';
 import { useAuth } from '../contexts/AuthContext';
 import { formatMaxTwoDecimals } from '../lib/numberFormat';
 import { PrinterCardLayout } from '../components/PrinterCardLayout';
@@ -280,9 +280,13 @@ export function PrinterDetail() {
   const [layoutError, setLayoutError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchPrinters()
-      .then((printers) => {
-        setPrinter(printers.map(normalizePrinter).find((candidate) => candidate.id === id) || null);
+    if (!id) {
+      setPrinter(null);
+      return;
+    }
+    fetchPrinter(id)
+      .then((fetched) => {
+        setPrinter(fetched ? normalizePrinter(fetched) : null);
       })
       .catch(() => {
         setPrinter(null);
@@ -321,8 +325,8 @@ export function PrinterDetail() {
 
     const refreshFromServer = async () => {
       try {
-        const printers = await fetchPrinters();
-        const nextPrinter = printers.map(normalizePrinter).find((candidate) => candidate.id === id) || null;
+        const fetched = await fetchPrinter(id);
+        const nextPrinter = fetched ? normalizePrinter(fetched) : null;
         if (!isCancelled) {
           setPrinter(nextPrinter);
         }

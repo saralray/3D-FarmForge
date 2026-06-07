@@ -34,6 +34,22 @@ export async function fetchPrinters(): Promise<Printer[]> {
   return readJsonResponse<Printer[]>(response);
 }
 
+export async function fetchPrinter(printerId: string): Promise<Printer | null> {
+  const response = await fetch(`/api/printers/${encodeURIComponent(printerId)}`, {
+    cache: 'no-store',
+    headers: {
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+    },
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  return readJsonResponse<Printer>(response);
+}
+
 export async function savePrinter(printer: Printer) {
   const response = await fetch('/api/printers', {
     method: 'POST',

@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import {
+  ADMIN_PASSWORD_HASH,
   PUBLIC_VIEWER_MODE,
   PUBLIC_VIEWER_USER,
   SLICER_OPERATOR_GRANT_PARAM,
@@ -76,7 +77,7 @@ const DEFAULT_USERS: StoredUserRecord[] = [
   {
     id: '1',
     username: 'admin',
-    passwordHash: '247be42a8460b48531c8e35c3e494a0c86dd70b65b4f234ed4bc73474b76d994',
+    passwordHash: ADMIN_PASSWORD_HASH,
     name: 'Print Farm Admin',
     role: 'admin' as const,
   },
@@ -381,15 +382,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     const availableUsers = readStoredUsers();
-    if (
-      normalizedUsername === DEFAULT_ADMIN.username &&
-      trimmedPassword === 'stemlab'
-    ) {
-      const userData = sanitizeUser(DEFAULT_ADMIN);
-      setUser(userData);
-      writeStoredSession(userData);
-      return { success: true };
-    }
     const passwordHash = await hashPassword(trimmedPassword);
     const foundUser = availableUsers.find(
       (candidate) =>

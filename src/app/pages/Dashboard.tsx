@@ -1,33 +1,38 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Printer } from '../types';
 import { PrinterCard } from '../components/PrinterCard';
 import { Activity, AlertCircle, CheckCircle, Pause, WifiOff } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { useAuth } from '../contexts/AuthContext';
-import { normalizePrinter } from '../lib/printerProfiles';
-import { fetchPrinters, savePrinter } from '../lib/printersApi';
+import { savePrinter } from '../lib/printersApi';
+import { usePrinters } from '../contexts/PrintersContext';
 import { toast } from 'sonner';
 
 export function Dashboard() {
-  const [printers, setPrinters] = useState<Printer[]>([]);
+  const { printers: livePrinters, error: loadError, refresh } = usePrinters();
+  const [printers, setPrinters] = useState<Printer[]>(livePrinters);
   const [draggedPrinterId, setDraggedPrinterId] = useState<string | null>(null);
   const { user } = useAuth();
   const loadErrorToastShownRef = useRef(false);
 
-  const loadPrinters = useCallback(async () => {
-    try {
-      const nextPrinters = (await fetchPrinters()).map(normalizePrinter);
-      setPrinters(nextPrinters);
-      loadErrorToastShownRef.current = false;
-    } catch {
-      if (!loadErrorToastShownRef.current) {
-        toast.error('Unable to load printer status from the server.', {
-          id: 'dashboard-load-printers-error',
-        });
-        loadErrorToastShownRef.current = true;
-      }
+  // Adopt the shared poll's data except while a drag is in progress, so the
+  // background refresh doesn't clobber the optimistic reorder mid-drag.
+  useEffect(() => {
+    if (!draggedPrinterId) {
+      setPrinters(livePrinters);
     }
-  }, []);
+  }, [livePrinters, draggedPrinterId]);
+
+  useEffect(() => {
+    if (loadError && !loadErrorToastShownRef.current) {
+      toast.error('Unable to load printer status from the server.', {
+        id: 'dashboard-load-printers-error',
+      });
+      loadErrorToastShownRef.current = true;
+    } else if (!loadError) {
+      loadErrorToastShownRef.current = false;
+    }
+  }, [loadError]);
 
   const persistPrinterOrder = async (nextPrinters: Printer[]) => {
     await Promise.all(
@@ -39,24 +44,6 @@ export function Dashboard() {
       )
     );
   };
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    const refreshFromServer = async () => {
-      if (!isCancelled) {
-        await loadPrinters();
-      }
-    };
-
-    refreshFromServer();
-    const interval = window.setInterval(refreshFromServer, 5000);
-
-    return () => {
-      isCancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [loadPrinters]);
 
   const stats = {
     total: printers.length,
@@ -122,9 +109,10 @@ export function Dashboard() {
     try {
       await persistPrinterOrder(nextPrinters);
       toast.success('Dashboard order updated.');
+      await refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Unable to save dashboard order.');
-      await loadPrinters();
+      await refresh();
     }
   };
 

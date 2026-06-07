@@ -5,17 +5,17 @@ import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { List, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
-import { fetchPrinters } from '../lib/printersApi';
 import { deleteQueueJob, fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
 import { useAuth } from '../contexts/AuthContext';
+import { usePrinters } from '../contexts/PrintersContext';
 import { useIntegrationSettings } from '../lib/settingsApi';
 
 export function Queue() {
   const { user } = useAuth();
   const { googleSheetQueueUrl } = useIntegrationSettings();
+  const { printers } = usePrinters();
   const [queue, setQueue] = useState<PrintJob[]>([]);
   const [history, setHistory] = useState<PrintJob[]>([]);
-  const [availablePrinters, setAvailablePrinters] = useState(0);
   const [resetInFlight, setResetInFlight] = useState(false);
 
   useEffect(() => {
@@ -33,29 +33,12 @@ export function Queue() {
       }
     };
 
-    const refreshPrinters = async () => {
-      try {
-        const printers = await fetchPrinters();
-        if (active) {
-          setAvailablePrinters(
-            printers.filter((printer) => printer.status === 'idle').length,
-          );
-        }
-      } catch (error) {
-        console.error('Failed to load printer availability for queue page', error);
-      }
-    };
-
     refreshQueue();
-    refreshPrinters();
-
     const queueInterval = window.setInterval(refreshQueue, 30000);
-    const printerInterval = window.setInterval(refreshPrinters, 10000);
 
     return () => {
       active = false;
       window.clearInterval(queueInterval);
-      window.clearInterval(printerInterval);
     };
   }, []);
 
@@ -147,6 +130,7 @@ export function Queue() {
     toast.success('Started file download');
   };
 
+  const availablePrinters = printers.filter((printer) => printer.status === 'idle').length;
   const totalFiles = queue.reduce((acc, job) => acc + (job.fileCount ?? 1), 0);
   const canManageQueue = user?.role === 'admin' || user?.role === 'operator';
   const canDeleteQueueJobs = user?.role === 'admin';

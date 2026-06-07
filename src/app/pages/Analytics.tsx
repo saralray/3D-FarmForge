@@ -16,9 +16,8 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { TrendingUp, Package, Clock, CheckCircle, Timer, LayoutGrid, Check } from 'lucide-react';
-import { AnalyticsData, Printer } from '../types';
-import { fetchPrinters } from '../lib/printersApi';
-import { normalizePrinter } from '../lib/printerProfiles';
+import { AnalyticsData } from '../types';
+import { usePrinters } from '../contexts/PrintersContext';
 import { Button } from '../components/ui/button';
 import { useAuth } from '../contexts/AuthContext';
 import { formatMaxTwoDecimals, roundToMaxTwoDecimals } from '../lib/numberFormat';
@@ -34,7 +33,7 @@ import {
 
 export function Analytics() {
   const { user } = useAuth();
-  const [printers, setPrinters] = useState<Printer[]>([]);
+  const { printers } = usePrinters();
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData[]>([]);
   const [resetInFlight, setResetInFlight] = useState(false);
   const [layout, setLayout] = useState<AnalyticsLayout>(DEFAULT_ANALYTICS_LAYOUT);
@@ -62,29 +61,6 @@ export function Analytics() {
 
     refreshAnalytics();
     const interval = window.setInterval(refreshAnalytics, 10000);
-
-    return () => {
-      isCancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    const refreshFromServer = async () => {
-      try {
-        const nextPrinters = (await fetchPrinters()).map(normalizePrinter);
-        if (!isCancelled) {
-          setPrinters(nextPrinters);
-        }
-      } catch {
-        // Leave the last good snapshot on screen if the refresh fails.
-      }
-    };
-
-    refreshFromServer();
-    const interval = window.setInterval(refreshFromServer, 10000);
 
     return () => {
       isCancelled = true;
