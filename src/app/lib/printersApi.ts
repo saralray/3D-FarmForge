@@ -1,4 +1,5 @@
 import { Printer } from '../types';
+import { logAuditEvent } from './auditApi';
 
 async function readJsonResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -50,7 +51,9 @@ export async function fetchPrinter(printerId: string): Promise<Printer | null> {
   return readJsonResponse<Printer>(response);
 }
 
-export async function savePrinter(printer: Printer) {
+// `silent` skips the audit entry for bulk writes (e.g. dashboard reorder, which
+// saves every printer at once); the caller logs a single summarizing event.
+export async function savePrinter(printer: Printer, options: { silent?: boolean } = {}) {
   const response = await fetch('/api/printers', {
     method: 'POST',
     headers: {
@@ -60,6 +63,9 @@ export async function savePrinter(printer: Printer) {
   });
 
   await readJsonResponse<void>(response);
+  if (!options.silent) {
+    logAuditEvent('printer.save', printer.name, { id: printer.id, profile: printer.profile });
+  }
 }
 
 export async function removePrinter(printerId: string) {
@@ -68,4 +74,5 @@ export async function removePrinter(printerId: string) {
   });
 
   await readJsonResponse<void>(response);
+  logAuditEvent('printer.delete', printerId);
 }

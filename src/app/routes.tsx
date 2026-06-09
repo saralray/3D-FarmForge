@@ -18,6 +18,9 @@ const Analytics = lazy(() =>
 const Settings = lazy(() =>
   import('./pages/Settings').then((module) => ({ default: module.Settings }))
 );
+const Logs = lazy(() =>
+  import('./pages/Logs').then((module) => ({ default: module.Logs }))
+);
 const Login = lazy(() =>
   import('./pages/Login').then((module) => ({ default: module.Login }))
 );
@@ -63,6 +66,14 @@ export const router = createBrowserRouter([
         element: withSuspense(
           <AdminRoute>
             <Settings />
+          </AdminRoute>
+        ),
+      },
+      {
+        path: 'logs',
+        element: withSuspense(
+          <AdminRoute>
+            <Logs />
           </AdminRoute>
         ),
       },

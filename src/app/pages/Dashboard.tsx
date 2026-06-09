@@ -5,6 +5,7 @@ import { Activity, AlertCircle, CheckCircle, Pause, WifiOff } from 'lucide-react
 import { Card } from '../components/ui/card';
 import { useAuth } from '../contexts/AuthContext';
 import { savePrinter } from '../lib/printersApi';
+import { logAuditEvent } from '../lib/auditApi';
 import { usePrinters } from '../contexts/PrintersContext';
 import { toast } from 'sonner';
 
@@ -37,12 +38,16 @@ export function Dashboard() {
   const persistPrinterOrder = async (nextPrinters: Printer[]) => {
     await Promise.all(
       nextPrinters.map((printer, index) =>
-        savePrinter({
-          ...printer,
-          sortOrder: index,
-        })
+        savePrinter(
+          {
+            ...printer,
+            sortOrder: index,
+          },
+          { silent: true },
+        )
       )
     );
+    logAuditEvent('printer.reorder', undefined, { count: nextPrinters.length });
   };
 
   const stats = {

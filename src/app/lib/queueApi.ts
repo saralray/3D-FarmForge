@@ -1,4 +1,5 @@
 import { QueueData } from '../types';
+import { logAuditEvent } from './auditApi';
 
 async function readJsonResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -41,6 +42,7 @@ export async function markQueueJobAsPrinted(jobId: string) {
   });
 
   await readJsonResponse<void>(response);
+  logAuditEvent('queue.mark_printed', jobId);
 }
 
 export async function resetQueueJobStatuses() {
@@ -49,6 +51,7 @@ export async function resetQueueJobStatuses() {
   });
 
   await readJsonResponse<void>(response);
+  logAuditEvent('queue.reset');
 }
 
 export async function deleteQueueJob(jobId: string) {
@@ -57,4 +60,5 @@ export async function deleteQueueJob(jobId: string) {
   });
 
   await readJsonResponse<void>(response);
+  logAuditEvent('queue.delete', jobId);
 }

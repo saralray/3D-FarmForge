@@ -21,9 +21,11 @@ import {
   listDailyAnalytics,
   listDiscordWebhooks,
   listPrinters,
+  listAuditLogs,
   listSlicerApiKeys,
   listQueueData,
   markQueueJobPrinted,
+  recordAuditLog,
   resetDailyAnalytics,
   resetQueueJobs,
   setAppSetting,
@@ -73,6 +75,16 @@ const mimeTypes = {
 
 function hash(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+// Best-effort client IP for the audit trail: prefer the first hop in
+// X-Forwarded-For (nginx sets it) and fall back to the socket address.
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || null;
 }
 
 function setSecurityHeaders(res) {
@@ -744,6 +756,37 @@ async function handleApi(req, res, requestUrl) {
     await deleteSlicerApiKey(decodeURIComponent(requestUrl.pathname.slice('/api/slicer-keys/'.length)));
     sendEmpty(res);
     return true;
+  }
+
+  // Audit log. GET returns the most recent entries (admin-only in the UI); POST
+  // appends an entry reported by the client. Identity travels in the body since
+  // auth is client-side; the server stamps the source ('web') and client IP.
+  if (requestUrl.pathname === '/api/audit-logs') {
+    if (req.method === 'GET') {
+      const limit = requestUrl.searchParams.get('limit') || '200';
+      sendJson(res, 200, await listAuditLogs(limit));
+      return true;
+    }
+    if (req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (typeof body?.action !== 'string' || !body.action.trim()) {
+        sendJson(res, 400, { error: 'action is required' });
+        return true;
+      }
+      const actor = body.actor && typeof body.actor === 'object' ? body.actor : {};
+      await recordAuditLog({
+        actorName: typeof actor.name === 'string' ? actor.name : null,
+        actorUsername: typeof actor.username === 'string' ? actor.username : null,
+        actorRole: typeof actor.role === 'string' ? actor.role : null,
+        action: body.action,
+        target: typeof body.target === 'string' ? body.target : null,
+        details: body.details ?? null,
+        source: 'web',
+        ip: getClientIp(req),
+      });
+      sendEmpty(res, 201);
+      return true;
+    }
   }
 
   // Printer-detail card layout, stored per printer profile so every printer of

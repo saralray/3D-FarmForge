@@ -91,6 +91,24 @@ CREATE TABLE IF NOT EXISTS slicer_api_keys (
   last_used_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Audit trail: one row per staff/operator action (printer control, queue,
+-- user/key/webhook management, logins) and per slicer-proxy API key use. The
+-- actor identity travels from the client (auth is client-side); the source
+-- column distinguishes web actions from slicer-proxy uploads. Connection
+-- secrets are never written here, only descriptions of the action.
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGSERIAL PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  actor_name TEXT,
+  actor_username TEXT,
+  actor_role TEXT,
+  action TEXT NOT NULL,
+  target TEXT,
+  details JSONB,
+  source TEXT NOT NULL DEFAULT 'web',
+  ip TEXT
+);
+CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs (created_at DESC, id DESC);
 SELECT pg_advisory_unlock(90210);
 `;
 
@@ -722,4 +740,82 @@ export async function setAppSetting(key, value) {
            updated_at = NOW();`,
     [key, JSON.stringify(value)],
   );
+}
+
+// Append one entry to the audit trail. `action` is required; everything else is
+// optional. Callers should treat this as best-effort and never block a user
+// action on it failing.
+export async function recordAuditLog(entry) {
+  await ensureSchema();
+
+  const {
+    actorName = null,
+    actorUsername = null,
+    actorRole = null,
+    action,
+    target = null,
+    details = null,
+    source = 'web',
+    ip = null,
+  } = entry || {};
+
+  if (typeof action !== 'string' || !action.trim()) {
+    throw new Error('audit log action is required');
+  }
+
+  await query(
+    `INSERT INTO audit_logs
+       (actor_name, actor_username, actor_role, action, target, details, source, ip)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
+    [
+      actorName,
+      actorUsername,
+      actorRole,
+      action.trim(),
+      target,
+      details == null ? null : JSON.stringify(details),
+      source,
+      ip,
+    ],
+  );
+}
+
+// Most recent audit entries first. `limit` is clamped to a sane window so a
+// stray query can never ask the database for the entire table.
+export async function listAuditLogs(limit = 200) {
+  await ensureSchema();
+
+  const safeLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 200, 1), 1000);
+
+  const result = await query(
+    `
+    SELECT COALESCE(
+      json_agg(entry ORDER BY created_at DESC, id DESC),
+      '[]'::json
+    ) AS data
+    FROM (
+      SELECT
+        id,
+        created_at,
+        json_build_object(
+          'id', id,
+          'createdAt', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+          'actorName', actor_name,
+          'actorUsername', actor_username,
+          'actorRole', actor_role,
+          'action', action,
+          'target', target,
+          'details', details,
+          'source', source,
+          'ip', ip
+        ) AS entry
+      FROM audit_logs
+      ORDER BY created_at DESC, id DESC
+      LIMIT $1
+    ) recent;
+  `,
+    [safeLimit],
+  );
+
+  return result.rows[0].data;
 }

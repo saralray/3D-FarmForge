@@ -28,6 +28,7 @@ import mqtt from 'mqtt';
 import {
   findSlicerApiKeyByHash,
   getPrinterById,
+  recordAuditLog,
   touchSlicerApiKey,
 } from '../server/postgres.js';
 
@@ -46,6 +47,22 @@ function hash(value) {
 
 function md5(buffer) {
   return createHash('md5').update(buffer).digest('hex');
+}
+
+// Best-effort client IP for the audit trail (nginx sets X-Forwarded-For).
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || null;
+}
+
+// Append an audit entry without ever letting a logging failure break the upload.
+function audit(entry) {
+  recordAuditLog(entry).catch((error) => {
+    console.error('Failed to record slicer audit log', error);
+  });
 }
 
 // The slicer's "Device" tab loads the OctoPrint host base URL in an embedded
@@ -268,8 +285,17 @@ function publishBambuPrint(printer, serial, remoteName, checksum) {
 }
 
 async function handleUpload(req, res, printerId) {
+  const ip = getClientIp(req);
   const key = await authenticate(req);
   if (!key) {
+    // Record rejected attempts so an admin can spot a misconfigured or abused key.
+    audit({
+      action: 'slicer.upload_rejected',
+      target: printerId,
+      details: { reason: 'invalid or missing API key' },
+      source: 'slicer',
+      ip,
+    });
     sendJson(res, 401, { error: 'Invalid or missing API key' });
     return;
   }
@@ -294,6 +320,18 @@ async function handleUpload(req, res, printerId) {
     sendJson(res, 415, { error: `Upload is not supported for printer profile "${printer.profile}"` });
     return;
   }
+
+  // A successful slicer upload counts as the key actor performing the print.
+  audit({
+    actorName: key.name,
+    actorUsername: `slicer-key:${key.name}`,
+    actorRole: 'operator',
+    action: 'slicer.upload',
+    target: printer.name,
+    details: { keyName: key.name, filename: file.filename, printerId: printer.id, profile: printer.profile },
+    source: 'slicer',
+    ip,
+  });
 
   // OctoPrint upload response shape, so the slicer reports success.
   sendJson(res, 201, { done: true, files: { local: { name: file.filename } } });

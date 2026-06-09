@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { logAuditEvent } from './auditApi';
 
 export interface IntegrationSettings {
   googleSheetQueueUrl: string;
@@ -41,6 +42,7 @@ export async function saveIntegrationSettings(
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
+  logAuditEvent('settings.integrations');
   return response.json() as Promise<IntegrationSettings>;
 }
 

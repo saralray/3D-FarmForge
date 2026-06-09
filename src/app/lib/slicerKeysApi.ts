@@ -1,3 +1,5 @@
+import { logAuditEvent } from './auditApi';
+
 export interface SlicerApiKey {
   id: string;
   name: string;
@@ -45,7 +47,9 @@ export async function createSlicerKey(name: string): Promise<CreatedSlicerKey> {
     throw new Error(await parseError(response));
   }
 
-  return response.json() as Promise<CreatedSlicerKey>;
+  const created = (await response.json()) as CreatedSlicerKey;
+  logAuditEvent('slicer_key.create', created.name, { id: created.id });
+  return created;
 }
 
 export async function removeSlicerKey(keyId: string) {
@@ -56,4 +60,6 @@ export async function removeSlicerKey(keyId: string) {
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
+
+  logAuditEvent('slicer_key.delete', keyId);
 }

@@ -1,3 +1,5 @@
+import { logAuditEvent } from './auditApi';
+
 export interface DiscordWebhook {
   id: string;
   name: string;
@@ -64,6 +66,8 @@ export async function saveDiscordWebhook(webhook: DiscordWebhook) {
   if (!response.ok) {
     throw new Error(await parseError(response))
   }
+
+  logAuditEvent('webhook.save', webhook.name, { id: webhook.id })
 }
 
 export async function removeDiscordWebhook(webhookId: string) {
@@ -74,4 +78,6 @@ export async function removeDiscordWebhook(webhookId: string) {
   if (!response.ok) {
     throw new Error(await parseError(response))
   }
+
+  logAuditEvent('webhook.delete', webhookId)
 }

@@ -1,5 +1,6 @@
 import { PrintJob, Printer, PrinterProfile, PrinterStatus } from '../types';
 import { normalizeMaxTwoDecimals } from './numberFormat';
+import { logAuditEvent } from './auditApi';
 
 export const PRINTER_STORAGE_KEY = 'printfarm_printers';
 
@@ -353,6 +354,8 @@ export async function sendPrinterCommand(
 
     throw new Error(message);
   }
+
+  logAuditEvent('printer.command', printer.name, { command });
 }
 
 export function printerSupportsLight(printer: Printer) {
@@ -415,6 +418,8 @@ export async function setPrinterTemperature(
 
     throw new Error(message);
   }
+
+  logAuditEvent('printer.temperature', printer.name, { heater, target: value, nozzleIndex });
 }
 
 export async function setPrinterLight(printer: Printer, on: boolean) {
@@ -451,6 +456,8 @@ export async function setPrinterLight(printer: Printer, on: boolean) {
 
     throw new Error(message);
   }
+
+  logAuditEvent('printer.light', printer.name, { on });
 }
 
 export function printerSupportsFilamentControl(printer: Printer) {
@@ -507,6 +514,8 @@ async function sendFilamentCommand(
 
     throw new Error(message);
   }
+
+  logAuditEvent('printer.filament', printer.name, { action, slot, trayId });
 }
 
 export async function loadPrinterFilament(printer: Printer, slot: number, trayId?: number) {
@@ -576,6 +585,8 @@ async function sendMotionGcode(printer: Printer, gcode: string) {
 
     throw new Error(message);
   }
+
+  logAuditEvent('printer.motion', printer.name);
 }
 
 // Jog one axis by a signed distance (mm) relative to its current position.

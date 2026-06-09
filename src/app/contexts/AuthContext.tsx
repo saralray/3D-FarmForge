@@ -8,6 +8,7 @@ import {
   SLICER_OPERATOR_USER,
 } from '../lib/runtimeConfig';
 import { generateId } from '../lib/id';
+import { logAuditEvent, setAuditActor } from '../lib/auditApi';
 
 interface User {
   id: string;
@@ -364,6 +365,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(interval);
   }, [user]);
 
+  // Keep the audit logger's notion of "who is acting" in sync with the signed-in
+  // user so action sites can attribute entries without threading the user through.
+  useEffect(() => {
+    setAuditActor(user);
+  }, [user]);
+
   const login = async (username: string, password: string): Promise<LoginResult> => {
     if (PUBLIC_VIEWER_MODE) {
       return { success: true };
@@ -397,6 +404,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
       setUser(userData);
       writeStoredSession(userData);
+      // Attribute the login (and any immediate follow-up action) to this user
+      // right away, ahead of the actor-sync effect that runs after render.
+      setAuditActor(userData);
+      logAuditEvent('auth.login', userData.username, { role: userData.role });
       return { success: true };
     }
 
@@ -472,6 +483,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     writeStoredUsers(nextUsers);
     setUsers(nextUsers.map(sanitizeUser));
 
+    logAuditEvent('user.create', normalizedUsername, { role });
+
     return { success: true };
   };
 
@@ -525,6 +538,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const nextUsers = availableUsers.filter((candidate) => candidate.id !== userId);
     writeStoredUsers(nextUsers);
     setUsers(nextUsers.map(sanitizeUser));
+
+    logAuditEvent('user.delete', targetUser.username, { role: targetUser.role });
 
     return { success: true };
   };
@@ -582,12 +597,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     writeStoredUsers(nextUsers);
     setUsers(nextUsers.map(sanitizeUser));
 
+    logAuditEvent('user.password_change', nextUsers[targetIndex].username);
+
     return { success: true };
   };
 
   const logout = () => {
     if (PUBLIC_VIEWER_MODE) {
       return;
+    }
+
+    // Log before swapping to the viewer session so the entry is attributed to the
+    // user who is signing out, not the anonymous viewer.
+    if (user && user.role !== 'viewer') {
+      logAuditEvent('auth.logout', user.username, { role: user.role });
     }
 
     const viewerUser = createViewerSession();

@@ -22,6 +22,7 @@ import { Button } from '../components/ui/button';
 import { useAuth } from '../contexts/AuthContext';
 import { formatMaxTwoDecimals, roundToMaxTwoDecimals } from '../lib/numberFormat';
 import { AnalyticsCardGrid } from '../components/AnalyticsCardGrid';
+import { logAuditEvent } from '../lib/auditApi';
 import {
   DEFAULT_ANALYTICS_LAYOUT,
   fetchAnalyticsLayout,
@@ -133,6 +134,8 @@ export function Analytics() {
       if (!response.ok) {
         throw new Error(`Reset failed with ${response.status}`);
       }
+
+      logAuditEvent('analytics.reset');
 
       const refreshed = await fetch('/api/analytics/daily', { cache: 'no-store' });
       if (!refreshed.ok) {

@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router';
-import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ExternalLink } from 'lucide-react';
+import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ExternalLink, ScrollText } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
@@ -20,7 +20,10 @@ export function Navigation() {
     { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   ];
   const adminNavItems = !PUBLIC_VIEWER_MODE && user?.role === 'admin'
-    ? [{ path: '/settings', label: 'Settings', icon: Settings }]
+    ? [
+        { path: '/settings', label: 'Settings', icon: Settings },
+        { path: '/logs', label: 'Activity Log', icon: ScrollText },
+      ]
     : [];
   const showUserProfile = user && user.role !== 'viewer';
 
