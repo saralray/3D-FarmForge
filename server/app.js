@@ -246,6 +246,16 @@ function buildQueueAddedEmbed(job) {
   };
 }
 
+// A webhook with events === null receives every event (historical default); an
+// array restricts it to the listed event keys.
+function webhookWantsEvent(webhook, eventKey) {
+  const { events } = webhook;
+  if (!Array.isArray(events)) {
+    return true;
+  }
+  return events.includes(eventKey);
+}
+
 async function sendQueueAddedNotifications(jobs) {
   if (!Array.isArray(jobs) || jobs.length === 0) {
     return;
@@ -260,13 +270,13 @@ async function sendQueueAddedNotifications(jobs) {
     const embed = buildQueueAddedEmbed(job);
     await Promise.allSettled(
       webhooks
-        .filter((webhook) => webhook.webhookUrl)
+        .filter((webhook) => webhook.webhookUrl && webhookWantsEvent(webhook, 'queue_added'))
         .map((webhook) =>
           fetch(webhook.webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              username: 'PrintFarm Bot',
+              username: webhook.name || 'PrintFarm Bot',
               embeds: [embed],
             }),
           }).then((response) => {

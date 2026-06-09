@@ -2,8 +2,34 @@ export interface DiscordWebhook {
   id: string;
   name: string;
   webhookUrl: string;
+  // null/undefined => every event is sent (historical default). An array
+  // restricts the webhook to the listed event keys.
+  events?: string[] | null;
   createdAt?: string;
 }
+
+// Canonical catalog of notification events a webhook can subscribe to. Keys must
+// match those emitted by the poller (printer status/job transitions, filament,
+// temperature) and the web server (queue submissions).
+export interface NotificationEvent {
+  key: string;
+  label: string;
+}
+
+export const NOTIFICATION_EVENTS: NotificationEvent[] = [
+  { key: 'print_started', label: 'Print started' },
+  { key: 'print_completed', label: 'Print completed / stopped' },
+  { key: 'print_cancelled', label: 'Print cancelled' },
+  { key: 'print_paused', label: 'Print paused' },
+  { key: 'print_resumed', label: 'Print resumed' },
+  { key: 'filament_runout', label: 'Out of filament' },
+  { key: 'temp_target_reached', label: 'Temperature reached target' },
+  { key: 'printer_online', label: 'Printer online' },
+  { key: 'printer_offline', label: 'Printer offline' },
+  { key: 'queue_added', label: 'New queue submission' },
+];
+
+export const NOTIFICATION_EVENT_KEYS = NOTIFICATION_EVENTS.map((event) => event.key);
 
 async function parseError(response: Response) {
   try {

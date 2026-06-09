@@ -7,9 +7,20 @@ import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Alert } from '../components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover';
+import { Checkbox } from '../components/ui/checkbox';
+import { buttonVariants } from '../components/ui/button';
+import { cn } from '../components/ui/utils';
 import { useAuth } from '../contexts/AuthContext';
 import { Printer, PrinterProfile } from '../types';
-import { DiscordWebhook, fetchDiscordWebhooks, removeDiscordWebhook, saveDiscordWebhook } from '../lib/notificationsApi';
+import {
+  DiscordWebhook,
+  fetchDiscordWebhooks,
+  NOTIFICATION_EVENTS,
+  NOTIFICATION_EVENT_KEYS,
+  removeDiscordWebhook,
+  saveDiscordWebhook,
+} from '../lib/notificationsApi';
 import { CreatedSlicerKey, SlicerApiKey, createSlicerKey, fetchSlicerKeys, removeSlicerKey } from '../lib/slicerKeysApi';
 import { fetchPrinters, savePrinter } from '../lib/printersApi';
 import { generateId, slugifyPrinterId } from '../lib/id';
@@ -48,6 +59,9 @@ export function Settings() {
   const [notificationSuccess, setNotificationSuccess] = useState('');
   const [savingWebhook, setSavingWebhook] = useState(false);
   const [removingWebhookId, setRemovingWebhookId] = useState<string | null>(null);
+  const [eventsWebhookId, setEventsWebhookId] = useState<string | null>(null);
+  const [eventsDraft, setEventsDraft] = useState<string[]>([]);
+  const [savingEvents, setSavingEvents] = useState(false);
   const [googleSheetQueueUrl, setGoogleSheetQueueUrl] = useState('');
   const [googleFormUrl, setGoogleFormUrl] = useState('');
   const [integrationError, setIntegrationError] = useState('');
@@ -358,6 +372,56 @@ export function Settings() {
       setNotificationError(error instanceof Error ? error.message : 'Unable to remove Discord webhook.');
     } finally {
       setRemovingWebhookId(null);
+    }
+  };
+
+  // events === null/undefined means the webhook receives every event, so the
+  // editor starts with every checkbox ticked.
+  const resolveWebhookEvents = (webhook: DiscordWebhook): string[] =>
+    Array.isArray(webhook.events) ? webhook.events : NOTIFICATION_EVENT_KEYS;
+
+  const handleEventsOpenChange = (webhook: DiscordWebhook, open: boolean) => {
+    if (open) {
+      setNotificationError('');
+      setNotificationSuccess('');
+      setEventsWebhookId(webhook.id);
+      setEventsDraft(resolveWebhookEvents(webhook));
+    } else if (eventsWebhookId === webhook.id) {
+      setEventsWebhookId(null);
+    }
+  };
+
+  const toggleEventDraft = (key: string, checked: boolean) => {
+    setEventsDraft((current) =>
+      checked
+        ? Array.from(new Set([...current, key]))
+        : current.filter((eventKey) => eventKey !== key),
+    );
+  };
+
+  const handleSaveEvents = async (webhook: DiscordWebhook) => {
+    setNotificationError('');
+    setNotificationSuccess('');
+
+    if (user?.role !== 'admin') {
+      setNotificationError('Only admins can manage Discord notifications.');
+      return;
+    }
+
+    setSavingEvents(true);
+
+    try {
+      // Persist the explicit list (canonical order); an empty list means the
+      // webhook is muted for every event.
+      const events = NOTIFICATION_EVENT_KEYS.filter((key) => eventsDraft.includes(key));
+      await saveDiscordWebhook({ ...webhook, events });
+      await refreshDiscordWebhooks();
+      setEventsWebhookId(null);
+      setNotificationSuccess('Notification settings updated.');
+    } catch (error) {
+      setNotificationError(error instanceof Error ? error.message : 'Unable to update notification settings.');
+    } finally {
+      setSavingEvents(false);
     }
   };
 
@@ -726,7 +790,7 @@ export function Settings() {
                 <h2 className="text-xl font-semibold dark:text-white">Notifications</h2>
               </div>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                Admins can add multiple Discord webhooks. The background poller sends printer status and job transition notifications to all saved webhooks.
+                Admins can add multiple Discord webhooks. Use each webhook's <span className="font-medium">Notifications</span> button to choose which events it receives (print start/stop/pause/resume/cancel, out of filament, temperature reached target, printer online/offline, and new queue submissions). New webhooks receive every event by default.
               </p>
             </div>
 
@@ -779,37 +843,98 @@ export function Settings() {
                     className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-950"
                   >
                     <div className="flex items-start gap-3">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#5865f2] font-semibold text-white">
-                        PF
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#5865f2] font-semibold text-white uppercase">
+                        {webhook.name.trim().slice(0, 2) || 'PF'}
                       </div>
                       <div className="flex min-w-0 flex-1 items-start justify-between gap-4">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline gap-2">
-                            <div className="font-semibold text-gray-900 dark:text-white">PrintFarm Bot</div>
+                            <div className="font-semibold text-gray-900 dark:text-white">{webhook.name}</div>
                             <div className="text-xs text-gray-500 dark:text-gray-400">Webhook Target</div>
                           </div>
                           <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-900">
                             <div className="flex items-start gap-3">
                               <div className="h-full w-1 shrink-0 rounded-full bg-[#5865f2]" />
                               <div className="min-w-0 flex-1">
-                                <div className="font-medium text-gray-900 dark:text-white">{webhook.name}</div>
-                                <div className="mt-2 truncate font-mono text-sm text-gray-600 dark:text-gray-300">
+                                <div className="truncate font-mono text-sm text-gray-600 dark:text-gray-300">
                                   {webhook.webhookUrl}
                                 </div>
                               </div>
                             </div>
                           </div>
                         </div>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={removingWebhookId !== null}
-                          onClick={() => handleRemoveWebhook(webhook.id)}
-                        >
-                          <Trash2 className="size-4 mr-2" />
-                          {removingWebhookId === webhook.id ? 'Removing...' : 'Remove'}
-                        </Button>
+                        <div className="flex shrink-0 flex-col gap-2">
+                          <Popover
+                            open={eventsWebhookId === webhook.id}
+                            onOpenChange={(open) => handleEventsOpenChange(webhook, open)}
+                          >
+                            <PopoverTrigger
+                              type="button"
+                              className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
+                            >
+                              <Bell className="size-4 mr-2" />
+                              Notifications
+                            </PopoverTrigger>
+                            <PopoverContent align="end" className="w-80">
+                              <div className="space-y-3">
+                                <div>
+                                  <div className="font-medium text-gray-900 dark:text-white">
+                                    Notifications sent
+                                  </div>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    Choose which events this webhook receives.
+                                  </p>
+                                </div>
+                                <div className="space-y-2">
+                                  {NOTIFICATION_EVENTS.map((notificationEvent) => (
+                                    <label
+                                      key={notificationEvent.key}
+                                      htmlFor={`${webhook.id}-${notificationEvent.key}`}
+                                      className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200"
+                                    >
+                                      <Checkbox
+                                        id={`${webhook.id}-${notificationEvent.key}`}
+                                        checked={eventsDraft.includes(notificationEvent.key)}
+                                        onCheckedChange={(checked) =>
+                                          toggleEventDraft(notificationEvent.key, checked === true)
+                                        }
+                                      />
+                                      {notificationEvent.label}
+                                    </label>
+                                  ))}
+                                </div>
+                                <div className="flex justify-end gap-2 pt-1">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setEventsWebhookId(null)}
+                                  >
+                                    Cancel
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={savingEvents}
+                                    onClick={() => handleSaveEvents(webhook)}
+                                  >
+                                    {savingEvents ? 'Saving...' : 'Save'}
+                                  </Button>
+                                </div>
+                              </div>
+                            </PopoverContent>
+                          </Popover>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={removingWebhookId !== null}
+                            onClick={() => handleRemoveWebhook(webhook.id)}
+                          >
+                            <Trash2 className="size-4 mr-2" />
+                            {removingWebhookId === webhook.id ? 'Removing...' : 'Remove'}
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </div>

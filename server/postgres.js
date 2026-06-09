@@ -75,6 +75,9 @@ CREATE TABLE IF NOT EXISTS discord_webhooks (
   webhook_url TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Per-webhook event subscription. NULL means "all events enabled" (historical
+-- behaviour); a JSON array of event keys restricts the webhook to those events.
+ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS events JSONB;
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value JSONB NOT NULL,
@@ -595,6 +598,7 @@ export async function listDiscordWebhooks() {
           'id', id,
           'name', name,
           'webhookUrl', webhook_url,
+          'events', events,
           'createdAt', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
         )
         ORDER BY created_at ASC
@@ -618,16 +622,22 @@ export async function createDiscordWebhook(webhook) {
     INSERT INTO discord_webhooks (
       id,
       name,
-      webhook_url
+      webhook_url,
+      events
     )
     SELECT
       data->>'id',
       data->>'name',
-      data->>'webhookUrl'
+      data->>'webhookUrl',
+      CASE
+        WHEN jsonb_typeof(data->'events') = 'array' THEN data->'events'
+        ELSE NULL
+      END
     FROM input
     ON CONFLICT (id) DO UPDATE SET
       name = EXCLUDED.name,
-      webhook_url = EXCLUDED.webhook_url;
+      webhook_url = EXCLUDED.webhook_url,
+      events = EXCLUDED.events;
   `,
     [JSON.stringify(webhook)],
   );

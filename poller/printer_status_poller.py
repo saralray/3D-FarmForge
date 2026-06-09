@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS discord_webhooks (
   webhook_url TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Per-webhook event subscription. NULL means "all events enabled" (the historical
+-- behaviour); a JSON array of event keys restricts the webhook to those events.
+ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS events JSONB;
 SELECT pg_advisory_unlock(90210);
 """
 
@@ -256,7 +259,8 @@ def list_discord_webhooks(conn: psycopg.Connection) -> list[dict[str, Any]]:
             SELECT
               id,
               name,
-              webhook_url AS "webhookUrl"
+              webhook_url AS "webhookUrl",
+              events
             FROM discord_webhooks
             ORDER BY created_at ASC
             """
@@ -887,17 +891,30 @@ def fetch_printer_snapshot(printer: dict[str, Any]) -> bytes | None:
         return None
 
 
+def webhook_wants(webhook: dict[str, Any], event_key: str) -> bool:
+    """A webhook with events == None receives every event (historical default);
+    a list restricts it to the listed event keys."""
+    events = webhook.get("events")
+    if not isinstance(events, list):
+        return True
+    return event_key in events
+
+
 def send_discord_embed(
-    webhooks: list[dict[str, Any]], embed: dict[str, Any], snapshot_bytes: bytes | None = None
+    webhooks: list[dict[str, Any]],
+    embed: dict[str, Any],
+    event_key: str,
+    snapshot_bytes: bytes | None = None,
 ) -> None:
     if not embed:
         return
 
     for webhook in webhooks:
         webhook_url = webhook.get("webhookUrl")
-        if not webhook_url:
+        if not webhook_url or not webhook_wants(webhook, event_key):
             continue
 
+        username = webhook.get("name") or "PrintFarm Bot"
         try:
             if snapshot_bytes:
                 embed_with_image = {**embed, "image": {"url": "attachment://snapshot.jpg"}}
@@ -906,7 +923,7 @@ def send_discord_embed(
                     data={
                         "payload_json": json.dumps(
                             {
-                                "username": "PrintFarm Bot",
+                                "username": username,
                                 "embeds": [embed_with_image],
                             }
                         )
@@ -918,7 +935,7 @@ def send_discord_embed(
                 requests.post(
                     webhook_url,
                     json={
-                        "username": "PrintFarm Bot",
+                        "username": username,
                         "embeds": [embed],
                     },
                     timeout=REQUEST_TIMEOUT_SECONDS,
@@ -940,23 +957,28 @@ def build_status_transition_embed(previous_printer: dict[str, Any], next_printer
         description = "Connection restored"
         status_value = "online"
         color = discord_color_for_status("completed")
+        event_key = "printer_online"
     elif previous_status != "offline" and next_status == "offline":
         title = f"{printer_name} Offline"
         description = "Connection lost"
         status_value = "offline"
         color = discord_color_for_status("offline")
+        event_key = "printer_offline"
     else:
         return None
 
     return {
-        "title": title,
-        "description": description,
-        "color": color,
-        "fields": [
-            {"name": "Printer", "value": printer_name, "inline": True},
-            {"name": "Status", "value": status_value, "inline": True},
-        ],
-        "timestamp": iso_timestamp(),
+        "event": event_key,
+        "embed": {
+            "title": title,
+            "description": description,
+            "color": color,
+            "fields": [
+                {"name": "Printer", "value": printer_name, "inline": True},
+                {"name": "Status", "value": status_value, "inline": True},
+            ],
+            "timestamp": iso_timestamp(),
+        },
     }
 
 
@@ -974,6 +996,7 @@ def build_job_transition_event(
 
     if not previous_filename and next_filename:
         return {
+            "event": "print_started",
             "embed": {
                 "title": f"{printer_name} Print Started",
                 "description": str(next_filename),
@@ -993,14 +1016,17 @@ def build_job_transition_event(
             description = f"{previous_filename}\nCancelled by printer state"
             color = discord_color_for_status("failed")
             include_snapshot = True
+            event_key = "print_cancelled"
         else:
             next_status = next_printer.get("status")
             title = f"{printer_name} Print Completed" if next_status != "error" else f"{printer_name} Print Stopped"
             description = str(previous_filename)
             color = discord_color_for_status("failed" if next_status == "error" else "completed")
             include_snapshot = next_status != "error"
+            event_key = "print_completed"
 
         return {
+            "event": event_key,
             "embed": {
                 "title": title,
                 "description": description,
@@ -1020,6 +1046,7 @@ def build_job_transition_event(
 
     if previous_filename != next_filename:
         return {
+            "event": "print_started",
             "embed": {
                 "title": f"{printer_name} Print Job Switched",
                 "description": f"{previous_filename} -> {next_filename}",
@@ -1037,13 +1064,16 @@ def build_job_transition_event(
     if previous_job_status == "paused" and next_job_status == "printing":
         title = f"{printer_name} Print Resumed"
         status_color = "printing"
+        event_key = "print_resumed"
     elif previous_job_status == "printing" and next_job_status == "paused":
         title = f"{printer_name} Print Paused"
         status_color = "paused"
+        event_key = "print_paused"
     else:
         return None
 
     return {
+        "event": event_key,
         "embed": {
             "title": title,
             "description": str(next_filename),
@@ -1084,22 +1114,137 @@ def collect_analytics_for_transition(
     finalize_job_analytics(conn, previous_job, outcome)
 
 
+# A heater counts as "at target" once it is within this many °C of the setpoint.
+TEMP_REACHED_TOLERANCE = 2
+
+# Spool ids seen while each printer was last printing. A loaded spool that vanishes
+# between two printing cycles means filament ran out (or was removed). This is the
+# clean signal for Snapmaker U1 (its spool list is built straight from
+# print_task_config.filament_exist). For Bambu the list falls back to the last-known
+# spools when a report is momentarily empty (see build_bambu_spools), so Bambu
+# runout is not reliably detected here yet — it would need the HMS/print_error codes.
+_PRINTING_SPOOLS: dict[str, set[str]] = {}
+
+
+def spool_ids(printer: dict[str, Any]) -> set[str]:
+    return {
+        spool["id"]
+        for spool in (printer.get("spools") or [])
+        if isinstance(spool, dict) and spool.get("id")
+    }
+
+
+def check_filament_runout(next_printer: dict[str, Any]) -> bool:
+    """Edge-detect a loaded spool disappearing while a printer is printing."""
+    printer_id = next_printer.get("id")
+    if printer_id is None:
+        return False
+
+    if next_printer.get("status") != "printing":
+        _PRINTING_SPOOLS.pop(printer_id, None)
+        return False
+
+    current_ids = spool_ids(next_printer)
+    previous_ids = _PRINTING_SPOOLS.get(printer_id)
+    _PRINTING_SPOOLS[printer_id] = current_ids
+
+    if previous_ids is None:
+        return False
+    return bool(previous_ids - current_ids)
+
+
+def build_filament_runout_embed(printer: dict[str, Any]) -> dict[str, Any]:
+    printer_name = printer.get("name") or "Printer"
+    job = printer.get("currentJob") or {}
+    filename = job.get("filename")
+    fields = [{"name": "Printer", "value": printer_name, "inline": True}]
+    if filename:
+        fields.append({"name": "Job", "value": str(filename), "inline": True})
+    return {
+        "title": f"{printer_name} Out of Filament",
+        "description": "A loaded filament was depleted or removed during printing.",
+        "color": discord_color_for_status("failed"),
+        "fields": fields,
+        "timestamp": iso_timestamp(),
+    }
+
+
+def build_temp_reached_embed(
+    previous_printer: dict[str, Any], next_printer: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Edge-detect a heater crossing into its target band (fires once per heat-up)."""
+    printer_name = next_printer.get("name") or previous_printer.get("name") or "Printer"
+    reached: list[tuple[str, float, float]] = []
+
+    prev_nozzles = previous_printer.get("nozzleTemperatures") or []
+    next_nozzles = next_printer.get("nozzleTemperatures") or []
+    next_targets = next_printer.get("nozzleTargets") or []
+    multi_nozzle = len([t for t in next_targets if isinstance(t, (int, float)) and t > 0]) > 1
+
+    for index, target in enumerate(next_targets):
+        if not isinstance(target, (int, float)) or target <= 0:
+            continue
+        next_temp = next_nozzles[index] if index < len(next_nozzles) else None
+        prev_temp = prev_nozzles[index] if index < len(prev_nozzles) else None
+        if not isinstance(next_temp, (int, float)) or not isinstance(prev_temp, (int, float)):
+            continue
+        threshold = target - TEMP_REACHED_TOLERANCE
+        if prev_temp < threshold <= next_temp:
+            label = f"Nozzle {index + 1}" if multi_nozzle else "Nozzle"
+            reached.append((label, next_temp, target))
+
+    bed_target = next_printer.get("bedTarget")
+    next_bed = (next_printer.get("temperature") or {}).get("bed")
+    prev_bed = (previous_printer.get("temperature") or {}).get("bed")
+    if (
+        isinstance(bed_target, (int, float))
+        and bed_target > 0
+        and isinstance(next_bed, (int, float))
+        and isinstance(prev_bed, (int, float))
+    ):
+        threshold = bed_target - TEMP_REACHED_TOLERANCE
+        if prev_bed < threshold <= next_bed:
+            reached.append(("Bed", next_bed, bed_target))
+
+    if not reached:
+        return None
+
+    fields = [{"name": "Printer", "value": printer_name, "inline": False}]
+    for label, temp, target in reached:
+        fields.append({"name": label, "value": f"{temp}°C / {target}°C", "inline": True})
+
+    return {
+        "title": f"{printer_name} Reached Target Temperature",
+        "description": ", ".join(label for label, _, _ in reached),
+        "color": discord_color_for_status("printing"),
+        "fields": fields,
+        "timestamp": iso_timestamp(),
+    }
+
+
 def notify_for_transition(
     webhooks: list[dict[str, Any]], previous_printer: dict[str, Any], next_printer: dict[str, Any]
 ) -> None:
     if not webhooks:
         return
 
-    status_embed = build_status_transition_embed(previous_printer, next_printer)
-    if status_embed:
-        send_discord_embed(webhooks, status_embed)
+    status_event = build_status_transition_embed(previous_printer, next_printer)
+    if status_event:
+        send_discord_embed(webhooks, status_event["embed"], status_event["event"])
+
+    temp_embed = build_temp_reached_embed(previous_printer, next_printer)
+    if temp_embed:
+        send_discord_embed(webhooks, temp_embed, "temp_target_reached")
+
+    if check_filament_runout(next_printer):
+        send_discord_embed(webhooks, build_filament_runout_embed(next_printer), "filament_runout")
 
     job_event = build_job_transition_event(previous_printer, next_printer)
     if not job_event:
         return
 
     snapshot_bytes = fetch_printer_snapshot(previous_printer) if job_event.get("includeSnapshot") else None
-    send_discord_embed(webhooks, job_event["embed"], snapshot_bytes)
+    send_discord_embed(webhooks, job_event["embed"], job_event["event"], snapshot_bytes)
 
 
 # The lifetime print-hours counter (printers.total_print_time) is owned by the
@@ -1134,10 +1279,13 @@ def accumulate_total_print_time(printer: dict[str, Any], now: float | None = Non
 
 
 def prune_print_time_tracking(active_ids: set[str]) -> None:
-    """Forget print-time timestamps for printers that no longer exist."""
+    """Forget per-printer in-memory tracking for printers that no longer exist."""
     for printer_id in list(_PRINTING_SINCE.keys()):
         if printer_id not in active_ids:
             _PRINTING_SINCE.pop(printer_id, None)
+    for printer_id in list(_PRINTING_SPOOLS.keys()):
+        if printer_id not in active_ids:
+            _PRINTING_SPOOLS.pop(printer_id, None)
 
 
 def compute_next_printer(printer: dict[str, Any]) -> dict[str, Any]:
