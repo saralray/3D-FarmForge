@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ExternalLink, ScrollText } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
@@ -14,6 +14,11 @@ export function Navigation() {
   const { user, logout } = useAuth();
   const { isCollapsed, toggleSidebar } = useSidebar();
   const [logoWave, setLogoWave] = useState(false);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('rgb-wave-active', logoWave);
+    return () => document.documentElement.classList.remove('rgb-wave-active');
+  }, [logoWave]);
   const { googleFormUrl } = useIntegrationSettings();
 
   const navItems = [
@@ -49,7 +54,7 @@ export function Navigation() {
             onClick={() => setLogoWave((prev) => !prev)}
             aria-pressed={logoWave}
             aria-label="Toggle logo RGB wave effect"
-            className="block cursor-pointer"
+            className={`block cursor-pointer ${logoWave ? 'logo-rgb-glow' : ''}`}
           >
             {logoWave ? (
               <div
