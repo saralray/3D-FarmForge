@@ -319,3 +319,27 @@
   mask-composite: exclude;
   pointer-events: none;
 }
+
+/* Progress bars go RGB too while the wave is on: scroll the rainbow
+   gradient through the filled indicator. Own keyframes (not the logo's):
+   the negative background-position makes the wave travel left-to-right. */
+.rgb-wave-active [data-slot='progress-indicator'] {
+  background-image: linear-gradient(
+    90deg,
+    #ff0000,
+    #ffff00,
+    #00ff00,
+    #00ffff,
+    #0000ff,
+    #ff00ff,
+    #ff0000
+  );
+  background-size: 200% 100%;
+  animation: progress-rgb-wave 2s linear infinite;
+}
+
+@keyframes progress-rgb-wave {
+  to {
+    background-position: -200% center;
+  }
+}
