@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ExternalLink, ScrollText } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
@@ -12,6 +13,7 @@ export function Navigation() {
   const location = useLocation();
   const { user, logout } = useAuth();
   const { isCollapsed, toggleSidebar } = useSidebar();
+  const [logoWave, setLogoWave] = useState(false);
   const { googleFormUrl } = useIntegrationSettings();
 
   const navItems = [
@@ -42,11 +44,28 @@ export function Navigation() {
     >
       <div className="p-6 border-b border-gray-200 dark:border-gray-700">
         <div className="space-y-3 overflow-hidden">
-          <img
-            src={stemlabLogo}
-            alt="CUD Stemlab PrintFarm logo"
-            className={`w-auto max-w-full dark:invert dark:brightness-200 ${isCollapsed ? 'h-9' : 'h-14'}`}
-          />
+          <button
+            type="button"
+            onClick={() => setLogoWave((prev) => !prev)}
+            aria-pressed={logoWave}
+            aria-label="Toggle logo RGB wave effect"
+            className="block cursor-pointer"
+          >
+            {logoWave ? (
+              <div
+                role="img"
+                aria-label="CUD Stemlab PrintFarm logo"
+                className={`logo-rgb-wave aspect-[1774/486] max-w-full ${isCollapsed ? 'h-9' : 'h-14'}`}
+                style={{ WebkitMaskImage: `url(${stemlabLogo})`, maskImage: `url(${stemlabLogo})` }}
+              />
+            ) : (
+              <img
+                src={stemlabLogo}
+                alt="CUD Stemlab PrintFarm logo"
+                className={`w-auto max-w-full dark:invert dark:brightness-200 ${isCollapsed ? 'h-9' : 'h-14'}`}
+              />
+            )}
+          </button>
           {!isCollapsed && (
             <p className="text-xs text-gray-500 dark:text-gray-400">
               Manager v1.0

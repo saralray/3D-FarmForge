@@ -179,3 +179,34 @@
     line-height: 1.5;
   }
 }
+
+/* Sidebar logo RGB wave (toggled by clicking the logo in Navigation).
+   The grayscale logo SVG is used as a mask over a scrolling rainbow
+   gradient, so the colors are fully saturated regardless of the original
+   artwork's colors. The mask image URL is set inline from the JS import. */
+.logo-rgb-wave {
+  background-image: linear-gradient(
+    90deg,
+    #ff0000,
+    #ffff00,
+    #00ff00,
+    #00ffff,
+    #0000ff,
+    #ff00ff,
+    #ff0000
+  );
+  background-size: 200% 100%;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: left center;
+  mask-position: left center;
+  animation: logo-rgb-wave 2s linear infinite;
+}
+
+@keyframes logo-rgb-wave {
+  to {
+    background-position: 200% center;
+  }
+}
