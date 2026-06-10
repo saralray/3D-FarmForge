@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import {
-  ADMIN_PASSWORD_HASH,
+  ADMIN_USERNAME,
   PUBLIC_VIEWER_MODE,
   PUBLIC_VIEWER_USER,
   SLICER_OPERATOR_GRANT_PARAM,
@@ -9,6 +9,11 @@ import {
 import { generateId } from '../lib/id';
 import { logAuditEvent, setAuditActor } from '../lib/auditApi';
 import { verifySlicerGrant } from '../lib/slicerGrantApi';
+import {
+  changeAdminCredential,
+  setupAdminCredential,
+  verifyAdminCredential,
+} from '../lib/adminCredentialApi';
 
 interface User {
   id: string;
@@ -21,6 +26,11 @@ interface AuthContextType {
   user: User | null;
   login: (username: string, password: string) => Promise<LoginResult>;
   loginAsViewer: () => Promise<LoginResult>;
+  setupAdminPassword: (password: string) => Promise<ChangePasswordResult>;
+  changeAdminPassword: (
+    currentPassword: string,
+    newPassword: string,
+  ) => Promise<ChangePasswordResult>;
   createUser: (input: CreateUserInput) => Promise<CreateUserResult>;
   removeUser: (userId: string) => Promise<RemoveUserResult>;
   changeUserPassword: (userId: string, password: string) => Promise<ChangePasswordResult>;
@@ -74,11 +84,14 @@ const SESSION_STORAGE_KEY = 'printfarm_session';
 const USER_STORAGE_KEY = 'printfarm_users';
 const SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
 
+// The admin's password is not stored client-side — it lives server-side and is
+// set on first run (see lib/adminCredentialApi.ts), so this record carries no
+// usable hash. Admin login is verified against the server, not this value.
 const DEFAULT_USERS: StoredUserRecord[] = [
   {
     id: '1',
-    username: 'admin',
-    passwordHash: ADMIN_PASSWORD_HASH,
+    username: ADMIN_USERNAME,
+    passwordHash: '',
     name: 'Print Farm Admin',
     role: 'admin' as const,
   },
@@ -406,8 +419,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     await new Promise((resolve) => setTimeout(resolve, 500));
 
-    const availableUsers = readStoredUsers();
     const passwordHash = await hashPassword(trimmedPassword);
+
+    // The admin account is verified against the server-stored credential, not a
+    // client-side hash. (Operators/viewers remain client-side below.)
+    if (normalizedUsername === ADMIN_USERNAME) {
+      const valid = await verifyAdminCredential(passwordHash);
+      if (!valid) {
+        return { success: false, error: 'Invalid credentials.' };
+      }
+      const userData = sanitizeUser(DEFAULT_ADMIN);
+      setUser(userData);
+      writeStoredSession(userData);
+      setAuditActor(userData);
+      logAuditEvent('auth.login', userData.username, { role: userData.role });
+      return { success: true };
+    }
+
+    const availableUsers = readStoredUsers();
     const foundUser = availableUsers.find(
       (candidate) =>
         candidate.username === normalizedUsername && candidate.passwordHash === passwordHash
@@ -439,6 +468,68 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const viewerUser = PUBLIC_VIEWER_USER;
     setUser(viewerUser);
     writeStoredSession(viewerUser);
+    return { success: true };
+  };
+
+  // First-run setup: choose the admin password through the website. Succeeds only
+  // while no admin password exists server-side; on success the admin is signed in.
+  const setupAdminPassword = async (password: string): Promise<ChangePasswordResult> => {
+    if (PUBLIC_VIEWER_MODE) {
+      return { success: false, error: 'Admin setup is disabled in public viewer mode.' };
+    }
+
+    const trimmedPassword = password.trim();
+    if (trimmedPassword.length < 8) {
+      return { success: false, error: 'Password must be at least 8 characters.' };
+    }
+
+    const passwordHash = await hashPassword(trimmedPassword);
+    const result = await setupAdminCredential(passwordHash);
+    if (!result.ok) {
+      return { success: false, error: result.error ?? 'Unable to set the admin password.' };
+    }
+
+    const userData = sanitizeUser(DEFAULT_ADMIN);
+    setUser(userData);
+    writeStoredSession(userData);
+    setAuditActor(userData);
+    logAuditEvent('admin.password_setup', userData.username);
+    return { success: true };
+  };
+
+  // Change the admin password. The server requires the current password to
+  // authorize the change, so it is collected and sent (hashed) alongside the new.
+  const changeAdminPassword = async (
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<ChangePasswordResult> => {
+    if (PUBLIC_VIEWER_MODE) {
+      return { success: false, error: 'User management is disabled in public viewer mode.' };
+    }
+
+    if (!user || user.username !== ADMIN_USERNAME) {
+      return { success: false, error: 'Only the admin account can change the admin password.' };
+    }
+
+    const trimmedCurrent = currentPassword.trim();
+    const trimmedNew = newPassword.trim();
+    if (!trimmedCurrent) {
+      return { success: false, error: 'Enter your current password.' };
+    }
+    if (trimmedNew.length < 8) {
+      return { success: false, error: 'Password must be at least 8 characters.' };
+    }
+
+    const [currentHash, newHash] = await Promise.all([
+      hashPassword(trimmedCurrent),
+      hashPassword(trimmedNew),
+    ]);
+    const result = await changeAdminCredential(currentHash, newHash);
+    if (!result.ok) {
+      return { success: false, error: result.error ?? 'Unable to change password.' };
+    }
+
+    logAuditEvent('user.password_change', user.username);
     return { success: true };
   };
 
@@ -642,6 +733,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         users,
         login,
         loginAsViewer,
+        setupAdminPassword,
+        changeAdminPassword,
         createUser,
         removeUser,
         changeUserPassword,

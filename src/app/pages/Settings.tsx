@@ -13,6 +13,7 @@ import { Switch } from '../components/ui/switch';
 import { buttonVariants } from '../components/ui/button';
 import { cn } from '../components/ui/utils';
 import { useAuth } from '../contexts/AuthContext';
+import { ADMIN_USERNAME } from '../lib/runtimeConfig';
 import { Printer, PrinterProfile } from '../types';
 import {
   DiscordWebhook,
@@ -32,7 +33,7 @@ const IPV4_PATTERN =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
 export function Settings() {
-  const { user, users, createUser, removeUser, changeUserPassword } = useAuth();
+  const { user, users, createUser, removeUser, changeUserPassword, changeAdminPassword } = useAuth();
   const [printers, setPrinters] = useState<Printer[]>([]);
   const [printerName, setPrinterName] = useState('');
   const [printerProfile, setPrinterProfile] = useState<PrinterProfile>('generic');
@@ -46,6 +47,9 @@ export function Settings() {
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
+  // The admin account is server-backed and requires the current password to
+  // change it; this holds that "current password" entry for the admin's own row.
+  const [currentPasswordDraft, setCurrentPasswordDraft] = useState('');
   const [changingPasswordUserId, setChangingPasswordUserId] = useState<string | null>(null);
   const [discordWebhooks, setDiscordWebhooks] = useState<DiscordWebhook[]>([]);
   const [webhookName, setWebhookName] = useState('');
@@ -216,10 +220,16 @@ export function Settings() {
   };
 
   const handleChangeUserPassword = async (userId: string) => {
+    const account = users.find((candidate) => candidate.id === userId);
+    const isAdminAccount = account?.username === ADMIN_USERNAME;
     setChangingPasswordUserId(userId);
 
     try {
-      const result = await changeUserPassword(userId, passwordDrafts[userId] ?? '');
+      // The admin password lives server-side and is changed by re-supplying the
+      // current password; other users are updated client-side as before.
+      const result = isAdminAccount
+        ? await changeAdminPassword(currentPasswordDraft, passwordDrafts[userId] ?? '')
+        : await changeUserPassword(userId, passwordDrafts[userId] ?? '');
       if (!result.success) {
         toast.error(result.error ?? 'Unable to change password.');
         return;
@@ -229,6 +239,9 @@ export function Settings() {
         ...prev,
         [userId]: '',
       }));
+      if (isAdminAccount) {
+        setCurrentPasswordDraft('');
+      }
       toast.success('Password updated');
     } finally {
       setChangingPasswordUserId(null);
@@ -738,6 +751,19 @@ export function Settings() {
                   </div>
                   {account.id === user?.id && (
                     <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-end">
+                      {account.username === ADMIN_USERNAME && (
+                        <div className="flex-1 space-y-2">
+                          <Label htmlFor={`current-password-${account.id}`}>Current Password</Label>
+                          <Input
+                            id={`current-password-${account.id}`}
+                            type="password"
+                            value={currentPasswordDraft}
+                            onChange={(event) => setCurrentPasswordDraft(event.target.value)}
+                            placeholder="Enter your current password"
+                            autoComplete="current-password"
+                          />
+                        </div>
+                      )}
                       <div className="flex-1 space-y-2">
                         <Label htmlFor={`reset-password-${account.id}`}>New Password</Label>
                         <Input

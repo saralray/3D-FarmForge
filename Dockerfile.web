@@ -10,10 +10,8 @@ COPY . .
 ARG VITE_PUBLIC_VIEWER_MODE=false
 ENV VITE_PUBLIC_VIEWER_MODE=$VITE_PUBLIC_VIEWER_MODE
 
-# Optional: override the default admin password hash (sha256 hex) baked into the
-# bundle. Leave empty to keep the legacy default.
-ARG VITE_ADMIN_PASSWORD_HASH=
-ENV VITE_ADMIN_PASSWORD_HASH=$VITE_ADMIN_PASSWORD_HASH
+# The admin password is no longer baked into the bundle — it is set through the
+# website on first run and stored server-side (app_settings). No build arg needed.
 
 RUN npm run build
 

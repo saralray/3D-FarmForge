@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -76,6 +76,28 @@ const mimeTypes = {
 
 function hash(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+// The admin bootstrap credential lives in app_settings (DB), not baked into the
+// frontend bundle — it is set once through the website on first run. The stored
+// value is { passwordHash: <sha256 hex> }; the plaintext is never sent or stored.
+const ADMIN_CREDENTIAL_KEY = 'admin_credential';
+
+function isSha256Hex(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
+// Constant-time string compare so credential checks don't leak via timing.
+function timingSafeEqualString(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') {
+    return false;
+  }
+  const aBuffer = Buffer.from(a, 'utf8');
+  const bBuffer = Buffer.from(b, 'utf8');
+  if (aBuffer.length !== bBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(aBuffer, bBuffer);
 }
 
 // Best-effort client IP for the audit trail: prefer the first hop in
@@ -774,6 +796,78 @@ async function handleApi(req, res, requestUrl) {
       return true;
     }
     sendJson(res, 200, { printerId: grant.printerId });
+    return true;
+  }
+
+  // Admin bootstrap credential. The password is set through the website on first
+  // run (no default is shipped in the bundle), stored as a sha256 hash in the DB.
+  //   GET  → { configured }            : has the admin password been set yet?
+  //   POST → first-run set             : allowed only while unconfigured.
+  //   PUT  → change                    : requires the current password hash.
+  if (requestUrl.pathname === '/api/admin/credential') {
+    const stored = await getAppSetting(ADMIN_CREDENTIAL_KEY);
+    const storedHash =
+      stored && typeof stored.passwordHash === 'string' ? stored.passwordHash : '';
+    const configured = storedHash.length > 0;
+
+    if (req.method === 'GET') {
+      // Never return the hash — only whether first-run setup is complete.
+      sendJson(res, 200, { configured });
+      return true;
+    }
+
+    if (req.method === 'POST') {
+      // First-run only: once an admin password exists this open endpoint must
+      // refuse, so it can't be used to overwrite/hijack the existing credential.
+      if (configured) {
+        sendJson(res, 409, { error: 'Admin password is already configured' });
+        return true;
+      }
+      const { passwordHash } = await readJsonBody(req);
+      if (!isSha256Hex(passwordHash)) {
+        sendJson(res, 400, { error: 'passwordHash must be a sha256 hex string' });
+        return true;
+      }
+      await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: passwordHash.toLowerCase() });
+      sendEmpty(res, 201);
+      return true;
+    }
+
+    if (req.method === 'PUT') {
+      if (!configured) {
+        sendJson(res, 409, { error: 'Admin password is not configured yet' });
+        return true;
+      }
+      const { currentPasswordHash, newPasswordHash } = await readJsonBody(req);
+      if (!isSha256Hex(newPasswordHash)) {
+        sendJson(res, 400, { error: 'newPasswordHash must be a sha256 hex string' });
+        return true;
+      }
+      // Knowledge of the current password authorizes the change (there is no
+      // server session to authorize it otherwise).
+      if (!timingSafeEqualString(storedHash, String(currentPasswordHash || '').toLowerCase())) {
+        sendJson(res, 401, { error: 'Current password is incorrect' });
+        return true;
+      }
+      await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: newPasswordHash.toLowerCase() });
+      sendEmpty(res);
+      return true;
+    }
+  }
+
+  // Validates an admin login. Returns { valid } and an HTTP 401 on mismatch so
+  // the client can branch without parsing the body. The hash is compared in
+  // constant time; the stored hash is never echoed back.
+  if (requestUrl.pathname === '/api/admin/credential/verify' && req.method === 'POST') {
+    const stored = await getAppSetting(ADMIN_CREDENTIAL_KEY);
+    const storedHash =
+      stored && typeof stored.passwordHash === 'string' ? stored.passwordHash : '';
+    const { passwordHash } = await readJsonBody(req);
+    const valid =
+      storedHash.length > 0 &&
+      isSha256Hex(passwordHash) &&
+      timingSafeEqualString(storedHash, passwordHash.toLowerCase());
+    sendJson(res, valid ? 200 : 401, { valid });
     return true;
   }
 

@@ -25,10 +25,11 @@ docker compose up --build
 
 There is no `npm test`. Frontend validation = `npm run build`. Full-stack smoke test = `docker compose up --build`, then verify dashboard, queue, analytics, settings, and printer detail views render without console errors.
 
-**Generate a password hash for auth:**
-```bash
-node -e "console.log(require('node:crypto').createHash('sha256').update(process.argv[1]).digest('hex'))" "your-password"
-```
+**Admin password:** not baked into the build. On first run, opening `/admin`
+shows a one-time setup screen; the chosen password is hashed (sha256) and stored
+server-side in `app_settings` (key `admin_credential`) via `/api/admin/credential`.
+Admin login verifies against that endpoint; changing it later requires the current
+password. There is no shipped default — `admin / "admin"` no longer exists.
 
 **Full stack — Kubernetes:**
 
