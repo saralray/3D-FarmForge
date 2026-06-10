@@ -343,3 +343,64 @@
     background-position: -200% center;
   }
 }
+
+/* Music sync (lib/audioRgbSync.ts toggles .rgb-music on <html>). The fixed
+   2s keyframes are switched off and the same visuals read --rgb-hue /
+   --rgb-pos / --rgb-level, which JS updates every frame from live audio.
+   animation: none matters on the root: an animating custom property would
+   otherwise beat the inline style JS sets. */
+.rgb-wave-active.rgb-music {
+  animation: none;
+}
+
+.rgb-music .logo-rgb-wave {
+  animation: none;
+  background-position: var(--rgb-pos, 0%) center;
+}
+
+.rgb-music .logo-rgb-glow {
+  animation: none;
+  /* Glow radius breathes with loudness, beat hits kick it harder, and the
+     whole logo pumps up a few percent on each hit. */
+  filter: drop-shadow(
+      0 0 calc(3px + var(--rgb-level, 0) * 10px + var(--rgb-pulse, 0) * 14px)
+      rgba(255, 0, 0, 0.9)
+    )
+    drop-shadow(
+      0 0 calc(8px + var(--rgb-level, 0) * 26px + var(--rgb-pulse, 0) * 30px)
+      rgba(255, 0, 0, 0.6)
+    )
+    hue-rotate(var(--rgb-hue, 0deg));
+  transform: scale(calc(1 + var(--rgb-pulse, 0) * 0.1));
+}
+
+.rgb-wave-active.rgb-music :is([class*="border"], input, select, textarea) {
+  box-shadow:
+    0 0 calc(2px + var(--rgb-level, 0) * 8px + var(--rgb-pulse, 0) * 10px)
+      hsl(var(--rgb-hue) 100% 60% / calc(0.5 + var(--rgb-level, 0) * 0.5)),
+    0 0 calc(6px + var(--rgb-level, 0) * 22px + var(--rgb-pulse, 0) * 26px)
+      hsl(var(--rgb-hue) 100% 55% / calc(0.25 + var(--rgb-level, 0) * 0.45)),
+    0 0 calc(12px + var(--rgb-level, 0) * 44px + var(--rgb-pulse, 0) * 56px)
+      hsl(var(--rgb-hue) 100% 50% / calc(0.1 + var(--rgb-level, 0) * 0.35)) !important;
+}
+
+/* The big one: a full-screen edge glow (vignette) that breathes with the
+   music and strobes inward on every beat. Fixed overlay on body::after so
+   it sits above the app but never blocks clicks. */
+.rgb-wave-active.rgb-music body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 calc(8px + var(--rgb-level, 0) * 40px + var(--rgb-pulse, 0) * 80px)
+      hsl(var(--rgb-hue) 100% 60% / calc(0.25 + var(--rgb-level, 0) * 0.4 + var(--rgb-pulse, 0) * 0.35)),
+    inset 0 0 calc(40px + var(--rgb-level, 0) * 120px + var(--rgb-pulse, 0) * 220px)
+      hsl(var(--rgb-hue) 100% 55% / calc(0.1 + var(--rgb-level, 0) * 0.25 + var(--rgb-pulse, 0) * 0.3));
+}
+
+.rgb-wave-active.rgb-music [data-slot='progress-indicator'] {
+  animation: none;
+  background-position: calc(var(--rgb-pos, 0%) * -1) center;
+}

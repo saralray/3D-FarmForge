@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router';
-import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ExternalLink, ScrollText } from 'lucide-react';
+import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ExternalLink, ScrollText, Music } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
 import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
 import { useIntegrationSettings } from '../lib/settingsApi';
 import { useSidebar } from '../contexts/SidebarContext';
+import { startAudioRgbSync, stopAudioRgbSync, type AudioRgbSource } from '../lib/audioRgbSync';
 import stemlabLogo from '../../../CUD-STEM-LAB-logoBBGv2.svg';
 
 export function Navigation() {
@@ -14,11 +15,35 @@ export function Navigation() {
   const { user, logout } = useAuth();
   const { isCollapsed, toggleSidebar } = useSidebar();
   const [logoWave, setLogoWave] = useState(false);
+  const [musicSync, setMusicSync] = useState(false);
+  const [musicSource, setMusicSource] = useState<AudioRgbSource | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle('rgb-wave-active', logoWave);
-    return () => document.documentElement.classList.remove('rgb-wave-active');
+    if (!logoWave) {
+      stopAudioRgbSync();
+      setMusicSync(false);
+    }
+    return () => {
+      document.documentElement.classList.remove('rgb-wave-active');
+      stopAudioRgbSync();
+    };
   }, [logoWave]);
+
+  const toggleMusicSync = async () => {
+    if (musicSync) {
+      stopAudioRgbSync();
+      setMusicSync(false);
+      return;
+    }
+    try {
+      const source = await startAudioRgbSync(() => setMusicSync(false));
+      setMusicSource(source);
+      setMusicSync(true);
+    } catch {
+      // Capture refused or unavailable — the steady wave keeps running.
+    }
+  };
   const { googleFormUrl } = useIntegrationSettings();
 
   const navItems = [
@@ -71,6 +96,34 @@ export function Navigation() {
               />
             )}
           </button>
+          {logoWave && (
+            <button
+              type="button"
+              onClick={toggleMusicSync}
+              aria-pressed={musicSync}
+              title={
+                musicSync
+                  ? `Music sync on (${musicSource === 'system' ? 'system audio' : 'microphone'}) — click to stop`
+                  : 'Sync RGB to music: pick a screen/tab and tick "Share audio", or allow the microphone'
+              }
+              className={`flex w-full items-center rounded-lg px-2 py-1.5 text-xs transition-colors ${
+                isCollapsed ? 'justify-center' : 'gap-2'
+              } ${
+                musicSync
+                  ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
+                  : 'text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-800'
+              }`}
+            >
+              <Music className={`size-4 shrink-0 ${musicSync ? 'animate-pulse' : ''}`} />
+              {!isCollapsed && (
+                <span className="truncate">
+                  {musicSync
+                    ? `Synced: ${musicSource === 'system' ? 'system audio' : 'microphone'}`
+                    : 'Sync to music'}
+                </span>
+              )}
+            </button>
+          )}
           {!isCollapsed && (
             <p className="text-xs text-gray-500 dark:text-gray-400">
               Manager v1.0
