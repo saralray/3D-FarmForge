@@ -31,6 +31,7 @@ import {
   recordAuditLog,
   touchSlicerApiKey,
 } from '../server/postgres.js';
+import { mintSlicerGrant } from '../server/slicerGrant.js';
 
 const port = Number.parseInt(process.env.SLICER_PROXY_PORT || '8091', 10);
 const host = process.env.HOST || '0.0.0.0';
@@ -68,10 +69,22 @@ function audit(entry) {
 // The slicer's "Device" tab loads the OctoPrint host base URL in an embedded
 // browser. Point it at the dashboard's printer-management page, granting
 // operator access (pause/resume/cancel) instead of a read-only viewer.
+//
+// The grant is carried as a short-lived, HMAC-signed token (never a constant
+// flag), so the dashboard only promotes to operator after the web server
+// verifies the signature. If no signing secret is configured we still redirect
+// to the printer page, just without a grant — the user stays a viewer.
 function buildDeviceUrl(req, printerId) {
   const base = appBaseUrl || defaultAppBase(req);
   const id = encodeURIComponent(printerId);
-  return `${base.replace(/\/+$/, '')}/printer/${id}?slicer_access=operator`;
+  const target = `${base.replace(/\/+$/, '')}/printer/${id}`;
+  try {
+    const token = mintSlicerGrant(printerId);
+    return `${target}?slicer_grant=${encodeURIComponent(token)}`;
+  } catch (error) {
+    console.error('Slicer operator grant unavailable; redirecting without it', error);
+    return target;
+  }
 }
 
 function defaultAppBase(req) {

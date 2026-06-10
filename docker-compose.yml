@@ -29,6 +29,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
       VITE_PUBLIC_VIEWER_MODE: ${VITE_PUBLIC_VIEWER_MODE:-false}
       MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
+      # Shared with slicer-proxy: verifies the signed slicer operator-grant token.
+      SLICER_GRANT_SECRET: ${SLICER_GRANT_SECRET:-}
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:5173/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
@@ -89,6 +91,9 @@ services:
       # Used to redirect a slicer's "Device" tab to the dashboard's printer page.
       HTTP_PORT: ${HTTP_PORT:-8080}
       APP_BASE_URL: ${APP_BASE_URL:-}
+      # Shared with web: signs the slicer operator-grant token the device-tab
+      # redirect carries. Must match the web service's value exactly.
+      SLICER_GRANT_SECRET: ${SLICER_GRANT_SECRET:-}
 
   # Read-only Prometheus exporter: exposes the PostgreSQL print-farm data as
   # metrics on :9180/metrics. Not published to the host — Prometheus scrapes it

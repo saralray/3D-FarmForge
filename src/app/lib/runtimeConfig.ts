@@ -18,11 +18,12 @@ export const PUBLIC_VIEWER_USER = {
 };
 
 // Identity granted when the dashboard is opened from a slicer's "Device" tab.
-// The slicer-proxy redirects that webview here with `?slicer_access=operator`,
-// landing the lab user as an operator (pause/resume/cancel) on the printer's
-// management page rather than a read-only viewer.
-export const SLICER_OPERATOR_GRANT_PARAM = 'slicer_access';
-export const SLICER_OPERATOR_GRANT_VALUE = 'operator';
+// The slicer-proxy redirects that webview here with `?slicer_grant=<token>`,
+// where the token is a short-lived, HMAC-signed grant the web server verifies
+// before the dashboard promotes the lab user to operator (pause/resume/cancel).
+// A constant flag is deliberately not used — it would let anyone self-promote
+// by appending it to a dashboard URL.
+export const SLICER_OPERATOR_GRANT_PARAM = 'slicer_grant';
 
 export const SLICER_OPERATOR_USER = {
   id: 'slicer-operator',

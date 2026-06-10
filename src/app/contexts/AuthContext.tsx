@@ -4,11 +4,11 @@ import {
   PUBLIC_VIEWER_MODE,
   PUBLIC_VIEWER_USER,
   SLICER_OPERATOR_GRANT_PARAM,
-  SLICER_OPERATOR_GRANT_VALUE,
   SLICER_OPERATOR_USER,
 } from '../lib/runtimeConfig';
 import { generateId } from '../lib/id';
 import { logAuditEvent, setAuditActor } from '../lib/auditApi';
+import { verifySlicerGrant } from '../lib/slicerGrantApi';
 
 interface User {
   id: string;
@@ -180,24 +180,26 @@ function createViewerSession() {
 }
 
 // When the dashboard is opened from a slicer's "Device" tab, the slicer-proxy
-// redirects here with `?slicer_access=operator`. Detect that grant, strip the
-// param from the URL so it does not linger or get bookmarked, and report it so
-// the caller can establish an operator session.
-function consumeSlicerOperatorGrant() {
+// redirects here with `?slicer_grant=<token>`. Pull the token out and strip the
+// param from the URL so it does not linger or get bookmarked. The token itself
+// is meaningless until the server verifies its signature, so this only extracts
+// it — the caller verifies before granting operator access.
+function takeSlicerGrantToken(): string | null {
   if (typeof window === 'undefined') {
-    return false;
+    return null;
   }
 
   const params = new URLSearchParams(window.location.search);
-  if (params.get(SLICER_OPERATOR_GRANT_PARAM) !== SLICER_OPERATOR_GRANT_VALUE) {
-    return false;
+  const token = params.get(SLICER_OPERATOR_GRANT_PARAM);
+  if (!token) {
+    return null;
   }
 
   params.delete(SLICER_OPERATOR_GRANT_PARAM);
   const query = params.toString();
   const nextUrl = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
   window.history.replaceState({}, '', nextUrl);
-  return true;
+  return token;
 }
 
 function sha256Fallback(message: string) {
@@ -330,24 +332,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const storedUsers = readStoredUsers();
-    setUsers(storedUsers.map(sanitizeUser));
+    let cancelled = false;
 
-    // A slicer "Device" link grants operator access for the printer it opens.
-    if (consumeSlicerOperatorGrant()) {
-      setUser(SLICER_OPERATOR_USER);
-      writeStoredSession(SLICER_OPERATOR_USER);
-      setIsLoading(false);
-      return;
-    }
+    const bootstrap = async () => {
+      const storedUsers = readStoredUsers();
+      if (!cancelled) {
+        setUsers(storedUsers.map(sanitizeUser));
+      }
 
-    const storedSession = readStoredSession();
-    if (storedSession) {
-      setUser(storedSession.user);
-    } else {
-      setUser(createViewerSession());
-    }
-    setIsLoading(false);
+      // A slicer "Device" link can grant operator access, but only once the
+      // server verifies the signed grant token — a forged or stale token is
+      // rejected and the user falls through to a normal session. The token is
+      // stripped from the URL up front regardless of the outcome.
+      const grantToken = takeSlicerGrantToken();
+      if (grantToken && (await verifySlicerGrant(grantToken))) {
+        if (!cancelled) {
+          setUser(SLICER_OPERATOR_USER);
+          writeStoredSession(SLICER_OPERATOR_USER);
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      const storedSession = readStoredSession();
+      if (!cancelled) {
+        setUser(storedSession ? storedSession.user : createViewerSession());
+        setIsLoading(false);
+      }
+    };
+
+    bootstrap();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {

@@ -35,6 +35,12 @@ spec:
             - name: SLICER_PROXY_PORT
               value: "8091"
 
+            - name: SLICER_GRANT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: printfarm-secret
+                  key: SLICER_GRANT_SECRET
+
           readinessProbe:
             httpGet:
               path: /healthz

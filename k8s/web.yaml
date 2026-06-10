@@ -47,6 +47,12 @@ spec:
             - name: MAX_BODY_BYTES
               value: "1048576"
 
+            - name: SLICER_GRANT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: printfarm-secret
+                  key: SLICER_GRANT_SECRET
+
           readinessProbe:
             httpGet:
               path: /healthz

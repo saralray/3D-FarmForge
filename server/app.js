@@ -32,6 +32,7 @@ import {
   upsertPrinter,
   upsertQueueJobs,
 } from './postgres.js';
+import { verifySlicerGrant } from './slicerGrant.js';
 
 const PRINTER_CARD_LAYOUT_KEY = 'printer_card_layout';
 const PRINTER_CARD_LAYOUT_PROFILES = new Set(['generic', 'snapmaker_u1', 'bambulab_a1_mini']);
@@ -758,6 +759,21 @@ async function handleApi(req, res, requestUrl) {
   if (requestUrl.pathname.startsWith('/api/slicer-keys/') && req.method === 'DELETE') {
     await deleteSlicerApiKey(decodeURIComponent(requestUrl.pathname.slice('/api/slicer-keys/'.length)));
     sendEmpty(res);
+    return true;
+  }
+
+  // Verifies the operator-grant token a slicer's "Device" tab carries when it
+  // redirects into the dashboard. The token is HMAC-signed by the slicer-proxy
+  // and expires quickly, so a constant URL flag can no longer self-promote to
+  // operator — the session is only granted when this check passes.
+  if (requestUrl.pathname === '/api/slicer-grant/verify' && req.method === 'POST') {
+    const { token } = await readJsonBody(req);
+    const grant = verifySlicerGrant(token);
+    if (!grant) {
+      sendJson(res, 401, { error: 'Invalid or expired slicer grant' });
+      return true;
+    }
+    sendJson(res, 200, { printerId: grant.printerId });
     return true;
   }
 
