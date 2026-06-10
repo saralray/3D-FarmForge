@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { useNavigate, useLocation, Navigate } from 'react-router';
+import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Alert } from '../components/ui/alert';
 import { Eye, EyeOff, ClipboardList } from 'lucide-react';
 import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
 import { useIntegrationSettings } from '../lib/settingsApi';
@@ -23,7 +23,6 @@ export function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const isAdminPage = location.pathname === '/admin';
 
@@ -31,7 +30,6 @@ export function Login() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
     setIsLoading(true);
 
     try {
@@ -39,17 +37,16 @@ export function Login() {
       if (result.success) {
         navigate(from, { replace: true });
       } else {
-        setError(result.error ?? 'Unable to sign in.');
+        toast.error(result.error ?? 'Unable to sign in.');
       }
     } catch {
-      setError('An error occurred. Please try again.');
+      toast.error('An error occurred. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleViewerLogin = async () => {
-    setError('');
     setIsLoading(true);
 
     try {
@@ -57,10 +54,10 @@ export function Login() {
       if (result.success) {
         navigate(from, { replace: true });
       } else {
-        setError(result.error ?? 'Unable to continue as viewer.');
+        toast.error(result.error ?? 'Unable to continue as viewer.');
       }
     } catch {
-      setError('An error occurred. Please try again.');
+      toast.error('An error occurred. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -128,24 +125,12 @@ export function Login() {
                   </div>
                 </div>
 
-                {error && (
-                  <Alert variant="destructive" className="py-2">
-                    {error}
-                  </Alert>
-                )}
-
                 <Button type="submit" className="w-full" disabled={isLoading}>
                   {isLoading ? 'Signing in...' : 'Login as Admin'}
                 </Button>
               </form>
             ) : (
               <div className="space-y-4">
-                {error && (
-                  <Alert variant="destructive" className="py-2">
-                    {error}
-                  </Alert>
-                )}
-
                 <Button
                   type="button"
                   className="h-14 w-full text-base"

@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import { Bell, Check, Copy, KeyRound, Link2, Plus, Settings as SettingsIcon, Shield, Trash2, Users } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Alert } from '../components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover';
 import { Checkbox } from '../components/ui/checkbox';
+import { Switch } from '../components/ui/switch';
 import { buttonVariants } from '../components/ui/button';
 import { cn } from '../components/ui/utils';
 import { useAuth } from '../contexts/AuthContext';
@@ -38,39 +39,28 @@ export function Settings() {
   const [printerIpAddress, setPrinterIpAddress] = useState('');
   const [printerApiKeyHeader, setPrinterApiKeyHeader] = useState('');
   const [printerSerial, setPrinterSerial] = useState('');
-  const [printerFormError, setPrinterFormError] = useState('');
-  const [printerFormSuccess, setPrinterFormSuccess] = useState('');
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<'admin' | 'operator' | 'viewer'>('operator');
-  const [userFormError, setUserFormError] = useState('');
-  const [userFormSuccess, setUserFormSuccess] = useState('');
   const [isCreatingUser, setIsCreatingUser] = useState(false);
-  const [userListError, setUserListError] = useState('');
-  const [userListSuccess, setUserListSuccess] = useState('');
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
   const [changingPasswordUserId, setChangingPasswordUserId] = useState<string | null>(null);
   const [discordWebhooks, setDiscordWebhooks] = useState<DiscordWebhook[]>([]);
   const [webhookName, setWebhookName] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
-  const [notificationError, setNotificationError] = useState('');
-  const [notificationSuccess, setNotificationSuccess] = useState('');
   const [savingWebhook, setSavingWebhook] = useState(false);
   const [removingWebhookId, setRemovingWebhookId] = useState<string | null>(null);
   const [eventsWebhookId, setEventsWebhookId] = useState<string | null>(null);
   const [eventsDraft, setEventsDraft] = useState<string[]>([]);
   const [savingEvents, setSavingEvents] = useState(false);
+  const [togglingWebhookId, setTogglingWebhookId] = useState<string | null>(null);
   const [googleSheetQueueUrl, setGoogleSheetQueueUrl] = useState('');
   const [googleFormUrl, setGoogleFormUrl] = useState('');
-  const [integrationError, setIntegrationError] = useState('');
-  const [integrationSuccess, setIntegrationSuccess] = useState('');
   const [savingIntegrations, setSavingIntegrations] = useState(false);
   const [slicerKeys, setSlicerKeys] = useState<SlicerApiKey[]>([]);
   const [slicerKeyName, setSlicerKeyName] = useState('');
-  const [slicerError, setSlicerError] = useState('');
-  const [slicerSuccess, setSlicerSuccess] = useState('');
   const [savingSlicerKey, setSavingSlicerKey] = useState(false);
   const [removingSlicerKeyId, setRemovingSlicerKeyId] = useState<string | null>(null);
   const [createdSlicerKey, setCreatedSlicerKey] = useState<CreatedSlicerKey | null>(null);
@@ -80,13 +70,13 @@ export function Settings() {
     fetchPrinters()
       .then((storedPrinters) => setPrinters(storedPrinters.map(normalizePrinter)))
       .catch(() => {
-        setPrinterFormError('Unable to load printers from Postgres. Check DATABASE_URL and server access.');
+        toast.error('Unable to load printers from Postgres. Check DATABASE_URL and server access.');
       });
 
     fetchDiscordWebhooks()
       .then(setDiscordWebhooks)
       .catch(() => {
-        setNotificationError('Unable to load Discord webhooks.');
+        toast.error('Unable to load Discord webhooks.');
       });
 
     fetchIntegrationSettings()
@@ -95,13 +85,13 @@ export function Settings() {
         setGoogleFormUrl(settings.googleFormUrl);
       })
       .catch(() => {
-        setIntegrationError('Unable to load integration URLs.');
+        toast.error('Unable to load integration URLs.');
       });
 
     fetchSlicerKeys()
       .then(setSlicerKeys)
       .catch(() => {
-        setSlicerError('Unable to load slicer API keys.');
+        toast.error('Unable to load slicer API keys.');
       });
   }, []);
 
@@ -117,11 +107,9 @@ export function Settings() {
 
   const handleCreatePrinter = async (event: React.FormEvent) => {
     event.preventDefault();
-    setPrinterFormError('');
-    setPrinterFormSuccess('');
 
     if (user?.role !== 'admin') {
-      setPrinterFormError('Only admins can add printers.');
+      toast.error('Only admins can add printers.');
       return;
     }
 
@@ -132,24 +120,22 @@ export function Settings() {
     const profileConfig = PRINTER_PROFILES[printerProfile];
 
     if (!normalizedName || !normalizedIpAddress || !normalizedApiKeyHeader) {
-      setPrinterFormError(
-        `Name, IP address, and ${profileConfig.credentialLabel} are required.`,
-      );
+      toast.error(`Name, IP address, and ${profileConfig.credentialLabel} are required.`);
       return;
     }
 
     if (printerProfile === 'bambulab_a1_mini' && !normalizedSerial) {
-      setPrinterFormError('Bambu Lab printers require the device serial number.');
+      toast.error('Bambu Lab printers require the device serial number.');
       return;
     }
 
     if (!IPV4_PATTERN.test(normalizedIpAddress)) {
-      setPrinterFormError('Enter a valid IPv4 address.');
+      toast.error('Enter a valid IPv4 address.');
       return;
     }
 
     if (printers.some((printer) => printer.ipAddress === normalizedIpAddress)) {
-      setPrinterFormError('That IP address is already assigned to another printer.');
+      toast.error('That IP address is already assigned to another printer.');
       return;
     }
 
@@ -182,22 +168,24 @@ export function Settings() {
       setPrinterIpAddress('');
       setPrinterApiKeyHeader('');
       setPrinterSerial('');
-      setPrinterFormSuccess('Printer added successfully. Status will switch from offline once a live status check succeeds.');
+      toast.success('Printer added', {
+        description: 'Status will switch from offline once a live status check succeeds.',
+      });
     } catch (error) {
-      setPrinterFormError(error instanceof Error ? error.message : 'Unable to save printer.');
+      toast.error('Unable to save printer', {
+        description: error instanceof Error ? error.message : undefined,
+      });
     }
   };
 
   const handleCreateUser = async (event: React.FormEvent) => {
     event.preventDefault();
-    setUserFormError('');
-    setUserFormSuccess('');
     setIsCreatingUser(true);
 
     try {
       const result = await createUser({ name, username, password, role });
       if (!result.success) {
-        setUserFormError(result.error ?? 'Unable to create user.');
+        toast.error(result.error ?? 'Unable to create user.');
         return;
       }
 
@@ -205,39 +193,35 @@ export function Settings() {
       setUsername('');
       setPassword('');
       setRole('operator');
-      setUserFormSuccess('User added successfully.');
+      toast.success('User added', { description: username });
     } finally {
       setIsCreatingUser(false);
     }
   };
 
   const handleRemoveUser = async (userId: string) => {
-    setUserListError('');
-    setUserListSuccess('');
     setRemovingUserId(userId);
 
     try {
       const result = await removeUser(userId);
       if (!result.success) {
-        setUserListError(result.error ?? 'Unable to remove user.');
+        toast.error(result.error ?? 'Unable to remove user.');
         return;
       }
 
-      setUserListSuccess('User removed successfully.');
+      toast.success('User removed');
     } finally {
       setRemovingUserId(null);
     }
   };
 
   const handleChangeUserPassword = async (userId: string) => {
-    setUserListError('');
-    setUserListSuccess('');
     setChangingPasswordUserId(userId);
 
     try {
       const result = await changeUserPassword(userId, passwordDrafts[userId] ?? '');
       if (!result.success) {
-        setUserListError(result.error ?? 'Unable to change password.');
+        toast.error(result.error ?? 'Unable to change password.');
         return;
       }
 
@@ -245,7 +229,7 @@ export function Settings() {
         ...prev,
         [userId]: '',
       }));
-      setUserListSuccess('Password updated successfully.');
+      toast.success('Password updated');
     } finally {
       setChangingPasswordUserId(null);
     }
@@ -253,11 +237,9 @@ export function Settings() {
 
   const handleCreateWebhook = async (event: React.FormEvent) => {
     event.preventDefault();
-    setNotificationError('');
-    setNotificationSuccess('');
 
     if (user?.role !== 'admin') {
-      setNotificationError('Only admins can manage Discord notifications.');
+      toast.error('Only admins can manage Discord notifications.');
       return;
     }
 
@@ -265,12 +247,12 @@ export function Settings() {
     const normalizedWebhookUrl = webhookUrl.trim();
 
     if (!normalizedName || !normalizedWebhookUrl) {
-      setNotificationError('Webhook name and Discord webhook URL are required.');
+      toast.error('Webhook name and Discord webhook URL are required.');
       return;
     }
 
     if (!normalizedWebhookUrl.startsWith('https://discord.com/api/webhooks/')) {
-      setNotificationError('Enter a valid Discord webhook URL.');
+      toast.error('Enter a valid Discord webhook URL.');
       return;
     }
 
@@ -285,9 +267,11 @@ export function Settings() {
       await refreshDiscordWebhooks();
       setWebhookName('');
       setWebhookUrl('');
-      setNotificationSuccess('Discord webhook added successfully.');
+      toast.success('Discord webhook added', { description: normalizedName });
     } catch (error) {
-      setNotificationError(error instanceof Error ? error.message : 'Unable to save Discord webhook.');
+      toast.error('Unable to save Discord webhook', {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setSavingWebhook(false);
     }
@@ -299,19 +283,17 @@ export function Settings() {
 
   const handleCreateSlicerKey = async (event: React.FormEvent) => {
     event.preventDefault();
-    setSlicerError('');
-    setSlicerSuccess('');
     setCreatedSlicerKey(null);
     setCopiedKey(false);
 
     if (user?.role !== 'admin') {
-      setSlicerError('Only admins can manage slicer API keys.');
+      toast.error('Only admins can manage slicer API keys.');
       return;
     }
 
     const normalizedName = slicerKeyName.trim();
     if (!normalizedName) {
-      setSlicerError('Key name is required.');
+      toast.error('Key name is required.');
       return;
     }
 
@@ -322,9 +304,11 @@ export function Settings() {
       await refreshSlicerKeys();
       setSlicerKeyName('');
       setCreatedSlicerKey(created);
-      setSlicerSuccess('Key created. Copy it now — it will not be shown again.');
+      toast.success('Key created', { description: 'Copy it now — it will not be shown again.' });
     } catch (error) {
-      setSlicerError(error instanceof Error ? error.message : 'Unable to create slicer API key.');
+      toast.error('Unable to create slicer API key', {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setSavingSlicerKey(false);
     }
@@ -339,37 +323,37 @@ export function Settings() {
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 2000);
     } catch {
-      setSlicerError('Unable to copy to clipboard — select and copy the key manually.');
+      toast.error('Unable to copy to clipboard — select and copy the key manually.');
     }
   };
 
   const handleRemoveSlicerKey = async (keyId: string) => {
-    setSlicerError('');
-    setSlicerSuccess('');
     setRemovingSlicerKeyId(keyId);
 
     try {
       await removeSlicerKey(keyId);
       await refreshSlicerKeys();
-      setSlicerSuccess('Slicer API key revoked.');
+      toast.success('Slicer API key revoked');
     } catch (error) {
-      setSlicerError(error instanceof Error ? error.message : 'Unable to revoke slicer API key.');
+      toast.error('Unable to revoke slicer API key', {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setRemovingSlicerKeyId(null);
     }
   };
 
   const handleRemoveWebhook = async (webhookId: string) => {
-    setNotificationError('');
-    setNotificationSuccess('');
     setRemovingWebhookId(webhookId);
 
     try {
       await removeDiscordWebhook(webhookId);
       await refreshDiscordWebhooks();
-      setNotificationSuccess('Discord webhook removed successfully.');
+      toast.success('Discord webhook removed');
     } catch (error) {
-      setNotificationError(error instanceof Error ? error.message : 'Unable to remove Discord webhook.');
+      toast.error('Unable to remove Discord webhook', {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setRemovingWebhookId(null);
     }
@@ -382,8 +366,6 @@ export function Settings() {
 
   const handleEventsOpenChange = (webhook: DiscordWebhook, open: boolean) => {
     if (open) {
-      setNotificationError('');
-      setNotificationSuccess('');
       setEventsWebhookId(webhook.id);
       setEventsDraft(resolveWebhookEvents(webhook));
     } else if (eventsWebhookId === webhook.id) {
@@ -400,11 +382,8 @@ export function Settings() {
   };
 
   const handleSaveEvents = async (webhook: DiscordWebhook) => {
-    setNotificationError('');
-    setNotificationSuccess('');
-
     if (user?.role !== 'admin') {
-      setNotificationError('Only admins can manage Discord notifications.');
+      toast.error('Only admins can manage Discord notifications.');
       return;
     }
 
@@ -417,21 +396,50 @@ export function Settings() {
       await saveDiscordWebhook({ ...webhook, events });
       await refreshDiscordWebhooks();
       setEventsWebhookId(null);
-      setNotificationSuccess('Notification settings updated.');
+      toast.success('Notification settings updated', { description: webhook.name });
     } catch (error) {
-      setNotificationError(error instanceof Error ? error.message : 'Unable to update notification settings.');
+      toast.error('Unable to update notification settings', {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setSavingEvents(false);
     }
   };
 
+  // events === null/undefined and enabled === undefined both mean "on" (historical
+  // default), so a webhook is only muted when enabled is explicitly false.
+  const isWebhookEnabled = (webhook: DiscordWebhook): boolean => webhook.enabled !== false;
+
+  const handleToggleEnabled = async (webhook: DiscordWebhook, enabled: boolean) => {
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can manage Discord notifications.');
+      return;
+    }
+
+    setTogglingWebhookId(webhook.id);
+
+    try {
+      await saveDiscordWebhook({ ...webhook, enabled });
+      await refreshDiscordWebhooks();
+      if (enabled) {
+        toast.success('Notifications enabled', { description: webhook.name });
+      } else {
+        toast.warning('Notifications muted', { description: webhook.name });
+      }
+    } catch (error) {
+      toast.error('Unable to update notification settings', {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setTogglingWebhookId(null);
+    }
+  };
+
   const handleSaveIntegrations = async (event: React.FormEvent) => {
     event.preventDefault();
-    setIntegrationError('');
-    setIntegrationSuccess('');
 
     if (user?.role !== 'admin') {
-      setIntegrationError('Only admins can change integration URLs.');
+      toast.error('Only admins can change integration URLs.');
       return;
     }
 
@@ -439,12 +447,12 @@ export function Settings() {
     const normalizedFormUrl = googleFormUrl.trim();
 
     if (normalizedSheetUrl && !/\/spreadsheets\/d\//.test(normalizedSheetUrl)) {
-      setIntegrationError('Enter a valid Google Sheets URL (must contain /spreadsheets/d/).');
+      toast.error('Enter a valid Google Sheets URL (must contain /spreadsheets/d/).');
       return;
     }
 
     if (normalizedFormUrl && !/\/forms\//.test(normalizedFormUrl)) {
-      setIntegrationError('Enter a valid Google Forms URL (must contain /forms/).');
+      toast.error('Enter a valid Google Forms URL (must contain /forms/).');
       return;
     }
 
@@ -457,9 +465,11 @@ export function Settings() {
       });
       setGoogleSheetQueueUrl(saved.googleSheetQueueUrl);
       setGoogleFormUrl(saved.googleFormUrl);
-      setIntegrationSuccess('Integration URLs saved successfully.');
+      toast.success('Integration URLs saved');
     } catch (error) {
-      setIntegrationError(error instanceof Error ? error.message : 'Unable to save integration URLs.');
+      toast.error('Unable to save integration URLs', {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setSavingIntegrations(false);
     }
@@ -601,14 +611,6 @@ export function Settings() {
                 <div>Live status: {PRINTER_PROFILES[printerProfile].pollingDescription}</div>
               </div>
 
-              {printerFormError && (
-                <Alert variant="destructive" className="py-2">
-                  {printerFormError}
-                </Alert>
-              )}
-
-              {printerFormSuccess && <Alert className="py-2">{printerFormSuccess}</Alert>}
-
               <Button type="submit">Add Printer</Button>
             </form>
           </Card>
@@ -685,14 +687,6 @@ export function Settings() {
                 </div>
               </div>
 
-              {userFormError && (
-                <Alert variant="destructive" className="py-2">
-                  {userFormError}
-                </Alert>
-              )}
-
-              {userFormSuccess && <Alert className="py-2">{userFormSuccess}</Alert>}
-
               <Button type="submit" disabled={isCreatingUser}>
                 {isCreatingUser ? 'Adding user...' : 'Add User'}
               </Button>
@@ -712,13 +706,6 @@ export function Settings() {
               </p>
             </div>
 
-            {userListError && (
-              <Alert variant="destructive" className="mb-4 py-2">
-                {userListError}
-              </Alert>
-            )}
-
-            {userListSuccess && <Alert className="mb-4 py-2">{userListSuccess}</Alert>}
 
             <div className="space-y-3">
               {users.map((account) => (
@@ -790,7 +777,7 @@ export function Settings() {
                 <h2 className="text-xl font-semibold dark:text-white">Notifications</h2>
               </div>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                Admins can add multiple Discord webhooks. Use each webhook's <span className="font-medium">Notifications</span> button to choose which events it receives (print start/stop/pause/resume/cancel, out of filament, temperature reached target, printer online/offline, and new queue submissions). New webhooks receive every event by default.
+                Admins can add multiple Discord webhooks. Use each webhook's <span className="font-medium">Notifications</span> button to choose which events it receives (print start/stop/pause/resume/cancel, out of filament, temperature reached target, printer online/offline, and new queue submissions). New webhooks receive every event by default. Use each webhook's toggle to turn its notifications on or off without removing it.
               </p>
             </div>
 
@@ -821,14 +808,6 @@ export function Settings() {
                   />
                 </div>
               </div>
-
-              {notificationError && (
-                <Alert variant="destructive" className="py-2">
-                  {notificationError}
-                </Alert>
-              )}
-
-              {notificationSuccess && <Alert className="py-2">{notificationSuccess}</Alert>}
 
               <Button type="submit" disabled={savingWebhook}>
                 {savingWebhook ? 'Saving webhook...' : 'Add Discord Webhook'}
@@ -877,6 +856,24 @@ export function Settings() {
                             </PopoverTrigger>
                             <PopoverContent align="end" className="w-80">
                               <div className="space-y-3">
+                                <div className="flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-800 dark:bg-gray-900">
+                                  <div className="min-w-0">
+                                    <div className="font-medium text-gray-900 dark:text-white">
+                                      Notifications
+                                    </div>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                                      {isWebhookEnabled(webhook)
+                                        ? 'This webhook is sending notifications.'
+                                        : 'This webhook is muted.'}
+                                    </p>
+                                  </div>
+                                  <Switch
+                                    checked={isWebhookEnabled(webhook)}
+                                    disabled={togglingWebhookId !== null}
+                                    onCheckedChange={(checked) => handleToggleEnabled(webhook, checked === true)}
+                                    aria-label={`Toggle notifications for ${webhook.name}`}
+                                  />
+                                </div>
                                 <div>
                                   <div className="font-medium text-gray-900 dark:text-white">
                                     Notifications sent
@@ -993,14 +990,6 @@ export function Settings() {
                 </p>
               </div>
 
-              {integrationError && (
-                <Alert variant="destructive" className="py-2">
-                  {integrationError}
-                </Alert>
-              )}
-
-              {integrationSuccess && <Alert className="py-2">{integrationSuccess}</Alert>}
-
               <Button type="submit" disabled={savingIntegrations}>
                 {savingIntegrations ? 'Saving...' : 'Save Integration URLs'}
               </Button>
@@ -1039,14 +1028,6 @@ export function Settings() {
                   />
                 </div>
               </div>
-
-              {slicerError && (
-                <Alert variant="destructive" className="py-2">
-                  {slicerError}
-                </Alert>
-              )}
-
-              {slicerSuccess && <Alert className="py-2">{slicerSuccess}</Alert>}
 
               {createdSlicerKey && (
                 <div className="rounded-md border border-amber-300 bg-amber-50 p-4 dark:border-amber-700/60 dark:bg-amber-950/40">

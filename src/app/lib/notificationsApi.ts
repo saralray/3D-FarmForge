@@ -7,6 +7,9 @@ export interface DiscordWebhook {
   // null/undefined => every event is sent (historical default). An array
   // restricts the webhook to the listed event keys.
   events?: string[] | null;
+  // When false, the webhook is muted entirely regardless of its event
+  // subscription. Undefined/true => notifications are sent (historical default).
+  enabled?: boolean;
   createdAt?: string;
 }
 

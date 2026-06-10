@@ -261,6 +261,9 @@ function buildQueueAddedEmbed(job) {
 // A webhook with events === null receives every event (historical default); an
 // array restricts it to the listed event keys.
 function webhookWantsEvent(webhook, eventKey) {
+  if (webhook.enabled === false) {
+    return false;
+  }
   const { events } = webhook;
   if (!Array.isArray(events)) {
     return true;

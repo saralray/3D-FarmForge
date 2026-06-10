@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS discord_webhooks (
 -- Per-webhook event subscription. NULL means "all events enabled" (historical
 -- behaviour); a JSON array of event keys restricts the webhook to those events.
 ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS events JSONB;
+-- Master on/off switch per webhook. TRUE means notifications are sent (the
+-- historical default); FALSE mutes the webhook entirely.
+ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value JSONB NOT NULL,
@@ -617,6 +620,7 @@ export async function listDiscordWebhooks() {
           'name', name,
           'webhookUrl', webhook_url,
           'events', events,
+          'enabled', enabled,
           'createdAt', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
         )
         ORDER BY created_at ASC
@@ -641,7 +645,8 @@ export async function createDiscordWebhook(webhook) {
       id,
       name,
       webhook_url,
-      events
+      events,
+      enabled
     )
     SELECT
       data->>'id',
@@ -650,12 +655,14 @@ export async function createDiscordWebhook(webhook) {
       CASE
         WHEN jsonb_typeof(data->'events') = 'array' THEN data->'events'
         ELSE NULL
-      END
+      END,
+      COALESCE((data->>'enabled')::boolean, TRUE)
     FROM input
     ON CONFLICT (id) DO UPDATE SET
       name = EXCLUDED.name,
       webhook_url = EXCLUDED.webhook_url,
-      events = EXCLUDED.events;
+      events = EXCLUDED.events,
+      enabled = EXCLUDED.enabled;
   `,
     [JSON.stringify(webhook)],
   );

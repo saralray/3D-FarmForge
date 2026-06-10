@@ -63,7 +63,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
-import { Alert } from '../components/ui/alert';
+import { toast } from 'sonner';
 import { fetchPrinter, removePrinter, savePrinter } from '../lib/printersApi';
 import { useAuth } from '../contexts/AuthContext';
 import { formatMaxTwoDecimals } from '../lib/numberFormat';
@@ -233,7 +233,6 @@ export function PrinterDetail() {
   const { user } = useAuth();
   const [printer, setPrinter] = useState<Printer | null>(null);
   const [commandInFlight, setCommandInFlight] = useState<'pause' | 'resume' | 'cancel' | null>(null);
-  const [commandError, setCommandError] = useState<string | null>(null);
   // Snapmaker reports its cavity LED via Moonraker, so the displayed state is
   // synced from the hardware below. Bambu has no HTTP readback, so for it this
   // just tracks the last command sent.
@@ -242,21 +241,17 @@ export function PrinterDetail() {
   // While set in the future, the hardware/poller sync won't overwrite the
   // light state — it covers the command plus the lag before the printer reports.
   const lightSyncBlockedUntil = useRef(0);
-  const [lightError, setLightError] = useState<string | null>(null);
   const [removeInFlight, setRemoveInFlight] = useState(false);
-  const [removeError, setRemoveError] = useState<string | null>(null);
   // Admin "edit printer information" dialog. The draft is held separately from
   // `printer` so the 10s auto-refresh doesn't clobber in-progress edits.
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editDraft, setEditDraft] = useState<PrinterInfoDraft | null>(null);
-  const [editError, setEditError] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   // Temperature target inputs keyed per heater ("nozzle-<index>" or "bed"). The
   // box mirrors the printer's reported target (synced in the effect below) so it
   // reflects changes made from the printer screen or slicer.
   const [tempInputs, setTempInputs] = useState<Record<string, string>>({});
   const [tempInFlight, setTempInFlight] = useState<string | null>(null);
-  const [tempError, setTempError] = useState<string | null>(null);
   // The heater key the user is currently editing — its box isn't overwritten by
   // the hardware sync while focused.
   const [tempEditingKey, setTempEditingKey] = useState<string | null>(null);
@@ -267,17 +262,14 @@ export function PrinterDetail() {
   // in-flight key (e.g. "x+", "home") disables the pad while a command runs.
   const [motionStep, setMotionStep] = useState<number>(10);
   const [motionInFlight, setMotionInFlight] = useState<string | null>(null);
-  const [motionError, setMotionError] = useState<string | null>(null);
   // Keyed "load-<slot>"/"unload-<slot>" while a filament command is in flight.
   const [filamentInFlight, setFilamentInFlight] = useState<string | null>(null);
-  const [filamentError, setFilamentError] = useState<string | null>(null);
   const [snapshotNonce, setSnapshotNonce] = useState(() => Date.now());
   const [taskConfig, setTaskConfig] = useState<PrinterTaskConfig | null>(null);
   const [taskConfigError, setTaskConfigError] = useState<string | null>(null);
   // Shared card layout for every printer detail page; admins reorder it by drag.
   const [cardLayout, setCardLayout] = useState<CardLayout>(DEFAULT_CARD_LAYOUT);
   const [isLayoutEditing, setIsLayoutEditing] = useState(false);
-  const [layoutError, setLayoutError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) {
@@ -590,12 +582,11 @@ export function PrinterDetail() {
 
   const handlePrinterCommand = async (command: 'pause' | 'resume' | 'cancel') => {
     if (!canControlPrinter) {
-      setCommandError('You do not have permission to control this printer.');
+      toast.error('You do not have permission to control this printer.');
       return;
     }
 
     setCommandInFlight(command);
-    setCommandError(null);
 
     try {
       await sendPrinterCommand(printer, command);
@@ -638,7 +629,7 @@ export function PrinterDetail() {
         };
       });
     } catch (error) {
-      setCommandError(error instanceof Error ? error.message : 'Unable to send printer command');
+      toast.error(error instanceof Error ? error.message : 'Unable to send printer command');
     } finally {
       setCommandInFlight(null);
     }
@@ -654,14 +645,13 @@ export function PrinterDetail() {
     setLightInFlight(true);
     // Hold the displayed state through the command and the printer's report lag.
     lightSyncBlockedUntil.current = Date.now() + 12000;
-    setLightError(null);
 
     try {
       await setPrinterLight(printer, next);
     } catch (error) {
       setLightOn(previous);
       lightSyncBlockedUntil.current = 0; // failed — let the real state resync
-      setLightError(error instanceof Error ? error.message : 'Unable to toggle the light');
+      toast.error(error instanceof Error ? error.message : 'Unable to toggle the light');
     } finally {
       setLightInFlight(false);
     }
@@ -676,12 +666,11 @@ export function PrinterDetail() {
     const raw = (tempInputs[key] ?? '').trim();
     const target = Number(raw);
     if (raw === '' || !Number.isFinite(target) || target < 0 || target > 350) {
-      setTempError('Enter a target between 0 and 350°C.');
+      toast.error('Enter a target between 0 and 350°C.');
       return;
     }
 
     setTempInFlight(key);
-    setTempError(null);
 
     try {
       await setPrinterTemperature(printer, heater, target, nozzleIndex);
@@ -690,7 +679,7 @@ export function PrinterDetail() {
       setTempInputs((prev) => ({ ...prev, [key]: formatTargetForInput(target) }));
       tempSyncBlockedUntil.current[key] = Date.now() + 12000;
     } catch (error) {
-      setTempError(error instanceof Error ? error.message : 'Unable to set temperature');
+      toast.error(error instanceof Error ? error.message : 'Unable to set temperature');
     } finally {
       setTempInFlight(null);
     }
@@ -702,12 +691,11 @@ export function PrinterDetail() {
     }
 
     setMotionInFlight(key);
-    setMotionError(null);
 
     try {
       await action();
     } catch (error) {
-      setMotionError(error instanceof Error ? error.message : 'Unable to move the printer');
+      toast.error(error instanceof Error ? error.message : 'Unable to move the printer');
     } finally {
       setMotionInFlight(null);
     }
@@ -729,7 +717,6 @@ export function PrinterDetail() {
     }
 
     setFilamentInFlight(`${action}-${slot.slot}`);
-    setFilamentError(null);
 
     try {
       if (action === 'load') {
@@ -738,7 +725,7 @@ export function PrinterDetail() {
         await unloadPrinterFilament(printer, slot.slot, slot.trayId);
       }
     } catch (error) {
-      setFilamentError(error instanceof Error ? error.message : 'Unable to control filament');
+      toast.error(error instanceof Error ? error.message : 'Unable to control filament');
     } finally {
       setFilamentInFlight(null);
     }
@@ -756,7 +743,6 @@ export function PrinterDetail() {
       serial: printer.serial ?? '',
       lastMaintenance: printer.lastMaintenance,
     });
-    setEditError(null);
     setIsEditOpen(true);
   };
 
@@ -775,22 +761,21 @@ export function PrinterDetail() {
     const profileConfig = PRINTER_PROFILES[printer.profile];
 
     if (!name || !model || !ipAddress || !apiKeyHeader) {
-      setEditError(`Name, model, IP address, and ${profileConfig.credentialLabel} are required.`);
+      toast.error(`Name, model, IP address, and ${profileConfig.credentialLabel} are required.`);
       return;
     }
 
     if (!IPV4_PATTERN.test(ipAddress)) {
-      setEditError('Enter a valid IPv4 address.');
+      toast.error('Enter a valid IPv4 address.');
       return;
     }
 
     if (printer.profile === 'bambulab_a1_mini' && !serial) {
-      setEditError('Bambu Lab printers require the device serial number.');
+      toast.error('Bambu Lab printers require the device serial number.');
       return;
     }
 
     setEditSaving(true);
-    setEditError(null);
 
     // Recompute the base URL from the (possibly changed) IP so the proxy and
     // poller keep reaching the printer. Other runtime fields are preserved.
@@ -809,8 +794,9 @@ export function PrinterDetail() {
       await savePrinter(updatedPrinter);
       setPrinter(updatedPrinter);
       setIsEditOpen(false);
+      toast.success('Printer information saved');
     } catch (error) {
-      setEditError(error instanceof Error ? error.message : 'Unable to save printer information.');
+      toast.error(error instanceof Error ? error.message : 'Unable to save printer information.');
     } finally {
       setEditSaving(false);
     }
@@ -822,13 +808,12 @@ export function PrinterDetail() {
     }
 
     setRemoveInFlight(true);
-    setRemoveError(null);
 
     try {
       await removePrinter(printer.id);
       navigate('/');
     } catch (error) {
-      setRemoveError(error instanceof Error ? error.message : 'Unable to remove printer');
+      toast.error(error instanceof Error ? error.message : 'Unable to remove printer');
     } finally {
       setRemoveInFlight(false);
     }
@@ -836,9 +821,8 @@ export function PrinterDetail() {
 
   const handleCommitLayout = (next: CardLayout) => {
     setCardLayout(next);
-    setLayoutError(null);
     saveCardLayout(printer.profile, next).catch((error) => {
-      setLayoutError(error instanceof Error ? error.message : 'Unable to save layout');
+      toast.error(error instanceof Error ? error.message : 'Unable to save layout');
     });
   };
 
@@ -896,7 +880,6 @@ export function PrinterDetail() {
           Drag the handle on each card to rearrange. Changes apply to every {printer.model} (and other {printer.profile} printers) and save automatically.
         </p>
       )}
-      {layoutError && <p className="text-sm text-red-500">{layoutError}</p>}
 
       <PrinterCardLayout
         layout={cardLayout}
@@ -1029,7 +1012,6 @@ export function PrinterDetail() {
                   </p>
                 )}
 
-                {commandError && <p className="text-sm text-red-500">{commandError}</p>}
               </>
             ) : (
               <div className="text-center py-8 text-gray-500 dark:text-gray-400">
@@ -1102,9 +1084,6 @@ export function PrinterDetail() {
                 </div>
                 <Progress value={(printer.temperature.bed / 100) * 100} className="h-2" />
               </div>
-              {canControlTemp && tempError && (
-                <p className="text-sm text-red-500">{tempError}</p>
-              )}
             </div>
           </Card>
           ),
@@ -1181,9 +1160,6 @@ export function PrinterDetail() {
                 Filament can only be loaded or unloaded while the printer is online and idle.
               </p>
             )}
-            {canControlFilament && filamentError && (
-              <p className="mt-3 text-sm text-red-500">{filamentError}</p>
-            )}
           </Card>
           ),
           light:
@@ -1216,7 +1192,6 @@ export function PrinterDetail() {
                   Connect the printer to control its light.
                 </p>
               )}
-              {lightError && <p className="mt-3 text-sm text-red-500">{lightError}</p>}
             </Card>
           ) : null,
           motion: canControlMotion ? (
@@ -1357,7 +1332,6 @@ export function PrinterDetail() {
                       : 'Connect the printer to control its motion.'}
                   </p>
                 )}
-                {motionError && <p className="text-sm text-red-500">{motionError}</p>}
               </div>
             </Card>
           ) : null,
@@ -1456,7 +1430,6 @@ export function PrinterDetail() {
                     <Trash2 className="mr-2 size-4" />
                     {removeInFlight ? 'Removing...' : 'Remove Printer'}
                   </Button>
-                  {removeError && <p className="mt-2 text-sm text-red-500">{removeError}</p>}
                 </div>
               )}
             </div>
@@ -1575,12 +1548,6 @@ export function PrinterDetail() {
                   }
                 />
               </div>
-
-              {editError && (
-                <Alert variant="destructive" className="py-2">
-                  {editError}
-                </Alert>
-              )}
 
               <DialogFooter>
                 <Button

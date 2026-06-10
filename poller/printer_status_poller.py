@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS discord_webhooks (
 -- Per-webhook event subscription. NULL means "all events enabled" (the historical
 -- behaviour); a JSON array of event keys restricts the webhook to those events.
 ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS events JSONB;
+-- Master on/off switch per webhook. TRUE means notifications are sent (the
+-- historical default); FALSE mutes the webhook entirely.
+ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
 SELECT pg_advisory_unlock(90210);
 """
 
@@ -260,7 +263,8 @@ def list_discord_webhooks(conn: psycopg.Connection) -> list[dict[str, Any]]:
               id,
               name,
               webhook_url AS "webhookUrl",
-              events
+              events,
+              enabled
             FROM discord_webhooks
             ORDER BY created_at ASC
             """
@@ -893,7 +897,10 @@ def fetch_printer_snapshot(printer: dict[str, Any]) -> bytes | None:
 
 def webhook_wants(webhook: dict[str, Any], event_key: str) -> bool:
     """A webhook with events == None receives every event (historical default);
-    a list restricts it to the listed event keys."""
+    a list restricts it to the listed event keys. A webhook with enabled == False
+    is muted entirely."""
+    if webhook.get("enabled") is False:
+        return False
     events = webhook.get("events")
     if not isinstance(events, list):
         return True

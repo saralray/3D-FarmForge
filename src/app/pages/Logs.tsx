@@ -4,7 +4,7 @@ import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
-import { Alert } from '../components/ui/alert';
+import { toast } from 'sonner';
 import {
   Table,
   TableBody,
@@ -77,17 +77,15 @@ type SourceFilter = 'all' | 'web' | 'slicer';
 export function Logs() {
   const [logs, setLogs] = useState<AuditLogEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   const loadLogs = async () => {
     setIsLoading(true);
-    setError('');
     try {
       setLogs(await fetchAuditLogs(500));
     } catch {
-      setError('Unable to load the activity log. Check the server and database connection.');
+      toast.error('Unable to load the activity log. Check the server and database connection.');
     } finally {
       setIsLoading(false);
     }
@@ -147,8 +145,6 @@ export function Logs() {
           Refresh
         </Button>
       </div>
-
-      {error && <Alert variant="destructive">{error}</Alert>}
 
       <Card className="p-4 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
