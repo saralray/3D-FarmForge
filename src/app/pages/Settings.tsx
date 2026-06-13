@@ -26,7 +26,7 @@ import {
 import { CreatedSlicerKey, SlicerApiKey, createSlicerKey, fetchSlicerKeys, removeSlicerKey } from '../lib/slicerKeysApi';
 import { fetchPrinters, savePrinter } from '../lib/printersApi';
 import { generateId, slugifyPrinterId } from '../lib/id';
-import { normalizePrinter, PRINTER_PROFILES } from '../lib/printerProfiles';
+import { isBambuProfile, normalizePrinter, PRINTER_PROFILES } from '../lib/printerProfiles';
 import { fetchIntegrationSettings, saveIntegrationSettings } from '../lib/settingsApi';
 
 const IPV4_PATTERN =
@@ -128,7 +128,7 @@ export function Settings() {
       return;
     }
 
-    if (printerProfile === 'bambulab_a1_mini' && !normalizedSerial) {
+    if (isBambuProfile(printerProfile) && !normalizedSerial) {
       toast.error('Bambu Lab printers require the device serial number.');
       return;
     }
@@ -552,6 +552,7 @@ export function Settings() {
                       <SelectItem value="generic">Generic</SelectItem>
                       <SelectItem value="snapmaker_u1">Snapmaker U1</SelectItem>
                       <SelectItem value="bambulab_a1_mini">Bambu Lab A1 Mini</SelectItem>
+                      <SelectItem value="bambulab_h2s">Bambu Lab H2S</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -600,7 +601,7 @@ export function Settings() {
                 </div>
               </div>
 
-              {printerProfile === 'bambulab_a1_mini' && (
+              {isBambuProfile(printerProfile) && (
                 <div className="space-y-2">
                   <Label htmlFor="printer-serial">Serial Number</Label>
                   <Input
@@ -1114,12 +1115,12 @@ export function Settings() {
               )}
             </div>
 
-            {printers.filter((printer) => printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini').length > 0 && (
+            {printers.filter((printer) => printer.profile === 'snapmaker_u1' || isBambuProfile(printer.profile)).length > 0 && (
               <div className="mt-6 rounded-md border border-gray-200 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-900">
                 <div className="text-sm font-medium text-gray-900 dark:text-white">Printer IDs for slicer host URLs</div>
                 <div className="mt-2 space-y-1">
                   {printers
-                    .filter((printer) => printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini')
+                    .filter((printer) => printer.profile === 'snapmaker_u1' || isBambuProfile(printer.profile))
                     .map((printer) => (
                       <div key={printer.id} className="flex items-baseline gap-2 text-sm">
                         <span className="text-gray-600 dark:text-gray-300">{printer.name}</span>

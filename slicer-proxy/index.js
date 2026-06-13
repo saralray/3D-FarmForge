@@ -14,6 +14,7 @@
 // Dispatch by printer profile:
 //   - snapmaker_u1     → Moonraker HTTP upload (POST /server/files/upload, print=true)
 //   - bambulab_a1_mini → FTPS upload of the .3mf + an MQTT project_file command
+//   - bambulab_h2s     → same Bambu LAN flow as the A1 Mini
 // Generic printers have no upload API and are rejected.
 //
 // Connection secrets (IP, API key, access code, serial) are read from the DB
@@ -327,7 +328,7 @@ async function handleUpload(req, res, printerId) {
 
   if (printer.profile === 'snapmaker_u1') {
     await uploadToMoonraker(printer, file);
-  } else if (printer.profile === 'bambulab_a1_mini') {
+  } else if (printer.profile === 'bambulab_a1_mini' || printer.profile === 'bambulab_h2s') {
     await uploadToBambu(printer, file);
   } else {
     sendJson(res, 415, { error: `Upload is not supported for printer profile "${printer.profile}"` });

@@ -42,6 +42,7 @@ import {
   movePrinterAxis,
   normalizePrinter,
   PRINTER_PROFILES,
+  isBambuProfile,
   printerSupportsFilamentControl,
   printerSupportsLight,
   printerSupportsMotionControl,
@@ -492,7 +493,7 @@ export function PrinterDetail() {
   // Bambu reports its chamber light over MQTT, captured by the poller into the
   // printer record — reflect that persisted state (unless a toggle just ran).
   useEffect(() => {
-    if (!printer || printer.profile !== 'bambulab_a1_mini') {
+    if (!printer || !isBambuProfile(printer.profile)) {
       return;
     }
     if (typeof printer.lightOn === 'boolean' && Date.now() >= lightSyncBlockedUntil.current) {
@@ -770,7 +771,7 @@ export function PrinterDetail() {
       return;
     }
 
-    if (printer.profile === 'bambulab_a1_mini' && !serial) {
+    if (isBambuProfile(printer.profile) && !serial) {
       toast.error('Bambu Lab printers require the device serial number.');
       return;
     }
@@ -1515,7 +1516,7 @@ export function PrinterDetail() {
                 </div>
               </div>
 
-              {printer.profile === 'bambulab_a1_mini' && (
+              {isBambuProfile(printer.profile) && (
                 <div className="space-y-2">
                   <Label htmlFor="edit-printer-serial">Serial Number</Label>
                   <Input

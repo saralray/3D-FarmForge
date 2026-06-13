@@ -34,8 +34,17 @@ import {
 } from './postgres.js';
 import { verifySlicerGrant } from './slicerGrant.js';
 
+// Bambu Lab printers share one LAN integration (MQTT status/commands, port-6000
+// camera), so they're grouped rather than matched by a single model id.
+const BAMBU_PROFILES = new Set(['bambulab_a1_mini', 'bambulab_h2s']);
+
 const PRINTER_CARD_LAYOUT_KEY = 'printer_card_layout';
-const PRINTER_CARD_LAYOUT_PROFILES = new Set(['generic', 'snapmaker_u1', 'bambulab_a1_mini']);
+const PRINTER_CARD_LAYOUT_PROFILES = new Set([
+  'generic',
+  'snapmaker_u1',
+  'bambulab_a1_mini',
+  'bambulab_h2s',
+]);
 
 // Analytics page grid layout: a single shared arrangement (admins drag/resize
 // the cards) stored in app_settings, like the printer-detail card layout above.
@@ -427,23 +436,43 @@ function sanitizeMotionGcode(gcode) {
   return `${lines.join('\n')}\n`;
 }
 
-// Print actions go under `print`; the chamber light is a `system` ledctrl message.
-function buildBambuCommandPayload(command, params = {}) {
+// One `system` ledctrl message for a single LED node.
+function buildBambuLedPayload(node, on, sequenceId) {
+  return {
+    system: {
+      sequence_id: sequenceId,
+      command: 'ledctrl',
+      led_node: node,
+      led_mode: on ? 'on' : 'off',
+      led_on_time: 500,
+      led_off_time: 500,
+      loop_times: 0,
+      interval_time: 0,
+    },
+  };
+}
+
+// The H2 series lights its chamber with two LED bars, each its own ledctrl node,
+// so one toggle has to drive both. Other Bambu models only expose chamber_light.
+const BAMBU_LIGHT_NODES = {
+  bambulab_h2s: ['chamber_light', 'chamber_light2'],
+};
+
+function bambuLightNodes(profile) {
+  return BAMBU_LIGHT_NODES[profile] ?? ['chamber_light'];
+}
+
+// Print actions go under `print`; the chamber light is a `system` ledctrl
+// message. Light commands may return several payloads (one per LED node).
+function buildBambuCommandPayload(command, params = {}, profile) {
   const sequenceId = String(Date.now() % 1000000);
 
   if (command === 'light_on' || command === 'light_off') {
-    return {
-      system: {
-        sequence_id: sequenceId,
-        command: 'ledctrl',
-        led_node: 'chamber_light',
-        led_mode: command === 'light_on' ? 'on' : 'off',
-        led_on_time: 500,
-        led_off_time: 500,
-        loop_times: 0,
-        interval_time: 0,
-      },
-    };
+    const on = command === 'light_on';
+    return bambuLightNodes(profile).map((node, index) =>
+      // Distinct sequence ids so the printer doesn't dedupe the second message.
+      buildBambuLedPayload(node, on, String((Date.now() + index) % 1000000)),
+    );
   }
 
   if (command === 'set_temperature') {
@@ -500,7 +529,8 @@ function buildBambuCommandPayload(command, params = {}) {
 }
 
 function sendBambuCommand(printer, command, params) {
-  const payload = buildBambuCommandPayload(command, params);
+  // A command may expand to several MQTT messages (e.g. one per LED node).
+  const payloads = [].concat(buildBambuCommandPayload(command, params, printer.profile));
   const serial = (printer.serial || '').trim();
   if (!serial) {
     throw new Error('Bambu printer is missing its serial number');
@@ -530,20 +560,22 @@ function sendBambuCommand(printer, command, params) {
       // QoS 0 (the printer's broker isn't guaranteed to PUBACK on this topic, and
       // the poller already proves request-topic commands are honored). The fix for
       // the original dropped command is the graceful close below, not the QoS.
-      client.publish(
-        `device/${serial}/request`,
-        JSON.stringify(payload),
-        { qos: 0 },
-        (error) => {
-          if (error) return fail(error);
-          if (settled) return;
+      const topic = `device/${serial}/request`;
+      let remaining = payloads.length;
+      let firstError = null;
+      payloads.forEach((payload) => {
+        client.publish(topic, JSON.stringify(payload), { qos: 0 }, (error) => {
+          if (error && !firstError) firstError = error;
+          remaining -= 1;
+          if (remaining > 0 || settled) return;
+          if (firstError) return fail(firstError);
           settled = true;
           clearTimeout(timer);
-          // Close gracefully so the queued packet is flushed to the socket before
-          // it closes — a force close here can drop the command in transit.
+          // Close gracefully so the queued packets are flushed to the socket
+          // before it closes — a force close here can drop commands in transit.
           client.end(false, {}, () => resolve());
-        },
-      );
+        });
+      });
     });
   });
 }
@@ -614,8 +646,14 @@ async function handleBambuWebcam(res, printer, pathParts) {
     res.setHeader('Cache-Control', 'no-store');
     res.end(jpeg);
   } catch (error) {
-    // A failed capture is non-fatal: the UI just shows "Webcam offline".
-    sendJson(res, 502, { error: error instanceof Error ? error.message : 'Bambu camera unavailable' });
+    // A failed capture is non-fatal for the UI (it just shows "Webcam offline"),
+    // but the <img> swallows the 502 body — so log the real cause server-side
+    // (visible via `docker compose logs web`) to diagnose camera issues.
+    const message = error instanceof Error ? error.message : 'Bambu camera unavailable';
+    console.error(
+      `bambu camera capture failed (${printer.profile} ${printer.name} @ ${printer.ipAddress}): ${message}`,
+    );
+    sendJson(res, 502, { error: message });
   }
 }
 
@@ -1005,7 +1043,7 @@ async function handlePrinterProxy(req, res, requestUrl, prefix, makeTargetUrl, e
   }
 
   // Bambu's chamber camera isn't an HTTP endpoint — capture it over its TLS socket.
-  if (prefix === '/__printer_webcam/' && printer.profile === 'bambulab_a1_mini') {
+  if (prefix === '/__printer_webcam/' && BAMBU_PROFILES.has(printer.profile)) {
     await handleBambuWebcam(res, printer, pathParts);
     return true;
   }

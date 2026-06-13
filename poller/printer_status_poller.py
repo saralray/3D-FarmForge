@@ -804,7 +804,7 @@ def refresh_status(printer: dict[str, Any]) -> dict[str, Any]:
             live_status["spools"] = fetch_snapmaker_task_config(printer)
         except Exception:
             live_status["spools"] = printer.get("spools")
-    elif profile == "bambulab_a1_mini":
+    elif profile in ("bambulab_a1_mini", "bambulab_h2s"):
         live_status = fetch_bambu_status(printer)
     else:
         live_status = fetch_generic_status(printer)

@@ -47,11 +47,31 @@ export const PRINTER_PROFILES: Record<
     credentialPlaceholder: '8-digit access code from the printer screen',
     pollingDescription: 'Live status via MQTT over TLS (LAN mode)',
   },
+  bambulab_h2s: {
+    label: 'Bambu Lab H2S',
+    // Same Bambu LAN protocol as the A1 Mini — MQTT report, no HTTP status.
+    statusPath: null,
+    defaultModel: 'Bambu Lab H2S',
+    buildBaseUrl: (ipAddress) => `http://${ipAddress}`,
+    credentialLabel: 'LAN Access Code',
+    credentialPlaceholder: '8-digit access code from the printer screen',
+    pollingDescription: 'Live status via MQTT over TLS (LAN mode)',
+  },
 };
+
+// Bambu Lab printers share one LAN integration (MQTT-over-TLS status/commands,
+// FTPS upload, port-6000 camera), so feature checks key off this rather than a
+// single model id.
+export function isBambuProfile(profile: PrinterProfile): boolean {
+  return profile === 'bambulab_a1_mini' || profile === 'bambulab_h2s';
+}
 
 function inferProfileFromDescriptor(descriptor: string): PrinterProfile | null {
   if (descriptor.includes('snapmaker u1')) {
     return 'snapmaker_u1';
+  }
+  if (descriptor.includes('h2s')) {
+    return 'bambulab_h2s';
   }
   if (descriptor.includes('bambu') || descriptor.includes('a1 mini')) {
     return 'bambulab_a1_mini';
@@ -63,7 +83,7 @@ function inferPrinterProfile(printer: Partial<Printer>): PrinterProfile {
   const profile = printer.profile;
   const descriptor = `${printer.name ?? ''} ${printer.model ?? ''}`.toLowerCase();
 
-  if (profile === 'snapmaker_u1' || profile === 'generic' || profile === 'bambulab_a1_mini') {
+  if (profile === 'snapmaker_u1' || profile === 'generic' || isBambuProfile(profile)) {
     // Upgrade legacy entries saved as "generic" that name a known printer.
     if (profile === 'generic') {
       return inferProfileFromDescriptor(descriptor) ?? profile;
@@ -330,7 +350,7 @@ export async function sendPrinterCommand(
   // Bambu printers have no HTTP control API — the server publishes the command
   // over MQTT instead. Other profiles use the Moonraker HTTP proxy.
   const response =
-    printer.profile === 'bambulab_a1_mini'
+    isBambuProfile(printer.profile)
       ? await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -359,11 +379,11 @@ export async function sendPrinterCommand(
 }
 
 export function printerSupportsLight(printer: Printer) {
-  return printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini';
+  return printer.profile === 'snapmaker_u1' || isBambuProfile(printer.profile);
 }
 
 export function printerSupportsTemperatureControl(printer: Printer) {
-  return printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini';
+  return printer.profile === 'snapmaker_u1' || isBambuProfile(printer.profile);
 }
 
 // Set a heater's target temperature. Snapmaker U1 (Klipper/Moonraker) uses a
@@ -381,7 +401,7 @@ export async function setPrinterTemperature(
   }
 
   let response: Response;
-  if (printer.profile === 'bambulab_a1_mini') {
+  if (isBambuProfile(printer.profile)) {
     response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -426,7 +446,7 @@ export async function setPrinterLight(printer: Printer, on: boolean) {
   // Snapmaker U1 (Klipper/Moonraker) toggles its cavity LED via a gcode script;
   // Bambu has no HTTP API, so the server publishes an MQTT ledctrl command.
   let response: Response;
-  if (printer.profile === 'bambulab_a1_mini') {
+  if (isBambuProfile(printer.profile)) {
     response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -461,7 +481,7 @@ export async function setPrinterLight(printer: Printer, on: boolean) {
 }
 
 export function printerSupportsFilamentControl(printer: Printer) {
-  return printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini';
+  return printer.profile === 'snapmaker_u1' || isBambuProfile(printer.profile);
 }
 
 // Load or unload filament for one tool/tray. Snapmaker U1 (Klipper/Moonraker)
@@ -476,7 +496,7 @@ async function sendFilamentCommand(
   trayId?: number,
 ) {
   let response: Response;
-  if (printer.profile === 'bambulab_a1_mini') {
+  if (isBambuProfile(printer.profile)) {
     response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -540,7 +560,7 @@ const MOTION_FEEDRATE_MM_PER_MIN: Record<MotionAxis, number> = {
 };
 
 export function printerSupportsMotionControl(printer: Printer) {
-  return printer.profile === 'snapmaker_u1' || printer.profile === 'bambulab_a1_mini';
+  return printer.profile === 'snapmaker_u1' || isBambuProfile(printer.profile);
 }
 
 // Klipper (Snapmaker) and Bambu firmware both accept the same standard G-code,
@@ -556,7 +576,7 @@ function buildJogGcode(axis: MotionAxis, distance: number) {
 // only accepts a safe motion subset for the `gcode` command).
 async function sendMotionGcode(printer: Printer, gcode: string) {
   let response: Response;
-  if (printer.profile === 'bambulab_a1_mini') {
+  if (isBambuProfile(printer.profile)) {
     response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
