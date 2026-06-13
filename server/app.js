@@ -495,6 +495,26 @@ function buildBambuCommandPayload(command, params = {}, profile) {
     };
   }
 
+  if (command === 'set_fan') {
+    // Bambu addresses its fans by M106 P-index: P1 part cooling, P2 auxiliary,
+    // P3 chamber. Speed is an 8-bit PWM value (0 = off).
+    const port = Number(params.fanPort);
+    const speed = Math.round(Number(params.speed));
+    if (!Number.isInteger(port) || port < 1 || port > 3) {
+      throw new Error('Fan port is out of range');
+    }
+    if (!Number.isFinite(speed) || speed < 0 || speed > 255) {
+      throw new Error('Fan speed is out of range');
+    }
+    return {
+      print: {
+        command: 'gcode_line',
+        param: `M106 P${port} S${speed}\n`,
+        sequence_id: sequenceId,
+      },
+    };
+  }
+
   if (command === 'load_filament' || command === 'unload_filament') {
     // ams_change_filament: `target` is the global tray id (AMS unit * 4 + tray,
     // or 254 for the external spool). 255 tells the printer to unload whatever
@@ -688,8 +708,17 @@ async function handleApi(req, res, requestUrl) {
       sendJson(res, 404, { error: 'Printer not found' });
       return true;
     }
-    const { command, heater, target, nozzleIndex, gcode, trayId } = await readJsonBody(req);
-    await sendBambuCommand(printer, command, { heater, target, nozzleIndex, gcode, trayId });
+    const { command, heater, target, nozzleIndex, gcode, trayId, fanPort, speed } =
+      await readJsonBody(req);
+    await sendBambuCommand(printer, command, {
+      heater,
+      target,
+      nozzleIndex,
+      gcode,
+      trayId,
+      fanPort,
+      speed,
+    });
     sendEmpty(res);
     return true;
   }

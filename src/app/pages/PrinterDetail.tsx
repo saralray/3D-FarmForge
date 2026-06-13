@@ -20,6 +20,7 @@ import {
   CheckCircle,
   Palette,
   Lightbulb,
+  Fan,
   LayoutGrid,
   Check,
   ArrowUp,
@@ -42,18 +43,23 @@ import {
   movePrinterAxis,
   normalizePrinter,
   PRINTER_PROFILES,
+  PRINTER_FANS,
   isBambuProfile,
+  printerSupportsCoolingControl,
   printerSupportsFilamentControl,
   printerSupportsLight,
   printerSupportsMotionControl,
   printerSupportsTemperatureControl,
   printerSupportsWebcamStream,
   sendPrinterCommand,
+  setPrinterFanSpeed,
   setPrinterLight,
   setPrinterTemperature,
   unloadPrinterFilament,
+  type FanDescriptor,
   type MotionAxis,
 } from '../lib/printerProfiles';
+import { Slider } from '../components/ui/slider';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
@@ -265,6 +271,14 @@ export function PrinterDetail() {
   const [motionInFlight, setMotionInFlight] = useState<string | null>(null);
   // Keyed "load-<slot>"/"unload-<slot>" while a filament command is in flight.
   const [filamentInFlight, setFilamentInFlight] = useState<string | null>(null);
+  // Cooling-fan slider positions keyed by fan id ("part"/"aux"/"chamber"), each
+  // a 0–100 percentage. Synced from the printer's reported speeds below unless
+  // the user is dragging or a command is in flight / inside its grace window.
+  const [fanInputs, setFanInputs] = useState<Record<string, number>>({});
+  const [fanInFlight, setFanInFlight] = useState<string | null>(null);
+  // Per-fan timestamps; while set in the future the hardware sync won't overwrite
+  // that slider, covering a just-sent speed plus the printer's report lag.
+  const fanSyncBlockedUntil = useRef<Record<string, number>>({});
   const [snapshotNonce, setSnapshotNonce] = useState(() => Date.now());
   const [taskConfig, setTaskConfig] = useState<PrinterTaskConfig | null>(null);
   const [taskConfigError, setTaskConfigError] = useState<string | null>(null);
@@ -374,6 +388,30 @@ export function PrinterDetail() {
       return changed ? next : prev;
     });
   }, [printer, tempEditingKey, tempInFlight]);
+
+  // Keep each fan slider in sync with the printer's reported speed, unless a
+  // command is in flight for it or it's inside the post-send grace window.
+  useEffect(() => {
+    if (!printer?.fanSpeeds) {
+      return;
+    }
+    const now = Date.now();
+    setFanInputs((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const { id, speed } of printer.fanSpeeds ?? []) {
+        if (fanInFlight === id || now < (fanSyncBlockedUntil.current[id] ?? 0)) {
+          continue;
+        }
+        const value = Math.max(0, Math.min(100, Math.round(speed)));
+        if (next[id] !== value) {
+          next[id] = value;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [printer?.fanSpeeds, fanInFlight]);
 
   useEffect(() => {
     setSnapshotNonce(Date.now());
@@ -537,6 +575,11 @@ export function PrinterDetail() {
   const canControlPrinter = user?.role === 'admin' || user?.role === 'operator';
   const canControlTemp =
     canControlPrinter && isOnline && printerSupportsTemperatureControl(printer);
+  // Fan speed is safe to change mid-print (unlike motion/filament), so it's live
+  // whenever the printer is connected — no idle gate.
+  const canControlCooling =
+    canControlPrinter && isOnline && printerSupportsCoolingControl(printer);
+  const printerFans = PRINTER_FANS[printer.profile] ?? [];
   // Jogging mid-print would wreck the job, so motion is only live when the
   // printer is connected and idle; otherwise the card shows a disabled note.
   const canControlMotion = canControlPrinter && printerSupportsMotionControl(printer);
@@ -683,6 +726,29 @@ export function PrinterDetail() {
       toast.error(error instanceof Error ? error.message : 'Unable to set temperature');
     } finally {
       setTempInFlight(null);
+    }
+  };
+
+  const handleSetFan = async (fan: FanDescriptor, percent: number) => {
+    if (!canControlCooling || !printer) {
+      return;
+    }
+
+    const value = Math.max(0, Math.min(100, Math.round(percent)));
+    const previous = fanInputs[fan.id];
+    setFanInputs((prev) => ({ ...prev, [fan.id]: value })); // optimistic
+    setFanInFlight(fan.id);
+    // Hold the displayed speed through the command and the printer's report lag.
+    fanSyncBlockedUntil.current[fan.id] = Date.now() + 12000;
+
+    try {
+      await setPrinterFanSpeed(printer, fan, value);
+    } catch (error) {
+      setFanInputs((prev) => ({ ...prev, [fan.id]: previous ?? 0 }));
+      fanSyncBlockedUntil.current[fan.id] = 0; // failed — let the real state resync
+      toast.error(error instanceof Error ? error.message : 'Unable to set fan speed');
+    } finally {
+      setFanInFlight(null);
     }
   };
 
@@ -1193,6 +1259,60 @@ export function PrinterDetail() {
                   Connect the printer to control its light.
                 </p>
               )}
+            </Card>
+          ) : null,
+          cooling:
+            canControlPrinter && printerSupportsCoolingControl(printer) ? (
+            <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
+              <h2 className="text-xl font-semibold mb-4 flex items-center gap-2 dark:text-white">
+                <Fan className="size-5" />
+                Cooling
+              </h2>
+              <div className="space-y-5">
+                {printerFans.map((fan) => {
+                  const value = fanInputs[fan.id] ?? 0;
+                  return (
+                    <div key={`${printer.id}-fan-${fan.id}`}>
+                      <div className="flex justify-between items-center gap-2 mb-2">
+                        <span className="text-sm text-gray-600 dark:text-gray-400">{fan.label}</span>
+                        <span className={`font-bold text-lg ${getStatusColor()}`}>
+                          {formatMaxTwoDecimals(value)}%
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Slider
+                          value={[value]}
+                          min={0}
+                          max={100}
+                          step={1}
+                          disabled={!canControlCooling || fanInFlight === fan.id}
+                          aria-label={`${fan.label} fan speed`}
+                          onValueChange={(next) =>
+                            setFanInputs((prev) => ({ ...prev, [fan.id]: next[0] ?? 0 }))
+                          }
+                          onValueCommit={(next) => handleSetFan(fan, next[0] ?? 0)}
+                          className="flex-1"
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className={`h-8 px-3 ${CONTROL_GLOW}`}
+                          disabled={!canControlCooling || fanInFlight === fan.id || value === 0}
+                          onClick={() => handleSetFan(fan, 0)}
+                        >
+                          {fanInFlight === fan.id ? '…' : 'Off'}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {!isOnline && (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Connect the printer to control its cooling fans.
+                  </p>
+                )}
+              </div>
             </Card>
           ) : null,
           motion: canControlMotion ? (

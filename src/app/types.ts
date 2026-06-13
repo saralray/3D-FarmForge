@@ -30,6 +30,10 @@ export interface Printer {
   // sync even when the target is changed from the printer screen or slicer.
   nozzleTargets?: number[];
   bedTarget?: number;
+  // Current cooling-fan speeds reported by the poller, keyed by fan id
+  // ("part" / "aux" / "chamber"); speed is a 0–100 percentage. The set of fans
+  // a printer has is static per profile (see PRINTER_FANS in printerProfiles).
+  fanSpeeds?: { id: string; speed: number }[];
   progress: number;
   lastMaintenance: string;
   totalPrintTime: number; // hours

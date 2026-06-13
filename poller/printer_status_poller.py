@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS printers (
   current_job JSONB,
   nozzle_temperatures JSONB,
   spools JSONB,
+  fan_speeds JSONB,
   offline_since DOUBLE PRECISION,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -53,6 +54,7 @@ ALTER TABLE printers ADD COLUMN IF NOT EXISTS serial TEXT;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS light_on BOOLEAN;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS nozzle_targets JSONB;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS bed_target DOUBLE PRECISION;
+ALTER TABLE printers ADD COLUMN IF NOT EXISTS fan_speeds JSONB;
 CREATE TABLE IF NOT EXISTS analytics_daily (
   analytics_date DATE PRIMARY KEY,
   completed_jobs INTEGER NOT NULL DEFAULT 0,
@@ -81,7 +83,7 @@ SNAPMAKER_STATUS_PATH = (
     "/printer/objects/query?print_stats&extruder=temperature,target"
     "&extruder1=temperature,target&extruder2=temperature,target"
     "&extruder3=temperature,target&heater_bed=temperature,target"
-    "&virtual_sdcard=progress"
+    "&virtual_sdcard=progress&fan=speed"
 )
 
 # Bambu Lab printers report over MQTT-over-TLS in LAN mode (no HTTP status API).
@@ -141,6 +143,7 @@ def list_printers(conn: psycopg.Connection) -> list[dict[str, Any]]:
               nozzle_targets AS "nozzleTargets",
               bed_target AS "bedTarget",
               spools,
+              fan_speeds AS "fanSpeeds",
               light_on AS "lightOn",
               offline_since AS "offlineSince"
             FROM printers
@@ -176,6 +179,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               nozzle_targets,
               bed_target,
               spools,
+              fan_speeds,
               light_on,
               offline_since
             ) VALUES (
@@ -200,6 +204,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               %(nozzleTargets)s::jsonb,
               %(bedTarget)s,
               %(spools)s::jsonb,
+              %(fanSpeeds)s::jsonb,
               %(lightOn)s,
               %(offlineSince)s
             )
@@ -224,6 +229,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               nozzle_targets = EXCLUDED.nozzle_targets,
               bed_target = EXCLUDED.bed_target,
               spools = EXCLUDED.spools,
+              fan_speeds = EXCLUDED.fan_speeds,
               light_on = EXCLUDED.light_on,
               offline_since = EXCLUDED.offline_since
             """,
@@ -249,6 +255,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
                 "nozzleTargets": json.dumps(printer.get("nozzleTargets")),
                 "bedTarget": printer.get("bedTarget"),
                 "spools": json.dumps(printer.get("spools")),
+                "fanSpeeds": json.dumps(printer.get("fanSpeeds")),
                 "lightOn": printer.get("lightOn"),
                 "offlineSince": printer.get("offlineSince"),
             },
@@ -349,6 +356,7 @@ def build_offline_printer_state(printer: dict[str, Any]) -> dict[str, Any]:
         "progress": 0,
         "temperature": {"nozzle": 0, "bed": 0},
         "nozzleTemperatures": [0 for _ in nozzle_temperatures] if nozzle_temperatures else [0],
+        "fanSpeeds": None,
     }
 
 
@@ -446,6 +454,15 @@ def fetch_snapmaker_status(printer: dict[str, Any]) -> dict[str, Any]:
     if isinstance(raw_progress, (int, float)):
         progress = max(0, min(100, round(raw_progress * 100)))
 
+    # Moonraker reports the part-cooling fan speed as a 0–1 fraction.
+    fan = status.get("fan") or {}
+    fan_speed = fan.get("speed")
+    fan_speeds = (
+        [{"id": "part", "speed": max(0, min(100, round(fan_speed * 100)))}]
+        if isinstance(fan_speed, (int, float))
+        else printer.get("fanSpeeds")
+    )
+
     return {
         "status": map_print_state_to_status(raw_print_state),
         "currentJob": build_current_job(print_stats, printer.get("currentJob"), progress),
@@ -458,6 +475,7 @@ def fetch_snapmaker_status(printer: dict[str, Any]) -> dict[str, Any]:
         "nozzleTemperatures": nozzle_temperatures,
         "nozzleTargets": nozzle_targets,
         "bedTarget": round(bed_target),
+        "fanSpeeds": fan_speeds,
     }
 
 
@@ -725,6 +743,37 @@ def build_bambu_spools(print_data: dict[str, Any]) -> list[dict[str, Any]] | Non
     return spools or None
 
 
+# Bambu reports each fan speed as a string on a 0–15 scale (the gear shown on the
+# printer); scale it to a 0–100 percentage. The exact fields/scale are the
+# device-specific bit most likely to need live tuning.
+BAMBU_FAN_FIELDS = {
+    "part": "cooling_fan_speed",
+    "aux": "big_fan1_speed",
+    "chamber": "big_fan2_speed",
+}
+
+# Which fans each Bambu profile physically has (mirrors PRINTER_FANS on the web).
+BAMBU_PROFILE_FANS = {
+    "bambulab_a1_mini": ("part", "aux"),
+    "bambulab_h2s": ("part", "aux", "chamber"),
+}
+
+
+def build_bambu_fan_speeds(
+    print_data: dict[str, Any], profile: str | None
+) -> list[dict[str, Any]] | None:
+    fan_ids = BAMBU_PROFILE_FANS.get(profile or "", ())
+    fan_speeds = []
+    for fan_id in fan_ids:
+        raw = print_data.get(BAMBU_FAN_FIELDS[fan_id])
+        try:
+            percent = round(int(raw) / 15 * 100)
+        except (TypeError, ValueError):
+            continue
+        fan_speeds.append({"id": fan_id, "speed": max(0, min(100, percent))})
+    return fan_speeds or None
+
+
 def fetch_bambu_status(printer: dict[str, Any]) -> dict[str, Any]:
     if not (printer.get("serial") or "").strip():
         raise RuntimeError("Bambu printer is missing its serial number")
@@ -792,6 +841,8 @@ def fetch_bambu_status(printer: dict[str, Any]) -> dict[str, Any]:
         "nozzleTargets": [nozzle_target],
         "bedTarget": bed_target,
         "spools": build_bambu_spools(print_data) or printer.get("spools"),
+        "fanSpeeds": build_bambu_fan_speeds(print_data, printer.get("profile"))
+        or printer.get("fanSpeeds"),
         "lightOn": light_on,
     }
 

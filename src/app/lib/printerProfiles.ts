@@ -66,6 +66,29 @@ export function isBambuProfile(profile: PrinterProfile): boolean {
   return profile === 'bambulab_a1_mini' || profile === 'bambulab_h2s';
 }
 
+// A controllable cooling fan. `id` keys the poller's reported speed; `bambuPort`
+// is the M106 P-index used over MQTT (Bambu only — Snapmaker has one part fan).
+export interface FanDescriptor {
+  id: string;
+  label: string;
+  bambuPort?: number;
+}
+
+// Which fans each profile exposes, in display order. Generic printers have no
+// controllable fans, so they're absent and the cooling card is hidden for them.
+export const PRINTER_FANS: Partial<Record<PrinterProfile, FanDescriptor[]>> = {
+  snapmaker_u1: [{ id: 'part', label: 'Part Cooling' }],
+  bambulab_a1_mini: [
+    { id: 'part', label: 'Part Cooling', bambuPort: 1 },
+    { id: 'aux', label: 'Auxiliary', bambuPort: 2 },
+  ],
+  bambulab_h2s: [
+    { id: 'part', label: 'Part Cooling', bambuPort: 1 },
+    { id: 'aux', label: 'Auxiliary', bambuPort: 2 },
+    { id: 'chamber', label: 'Chamber', bambuPort: 3 },
+  ],
+};
+
 function inferProfileFromDescriptor(descriptor: string): PrinterProfile | null {
   if (descriptor.includes('snapmaker u1')) {
     return 'snapmaker_u1';
@@ -140,6 +163,10 @@ export function normalizePrinter(printer: Partial<Printer>, index: number): Prin
     nozzleTargets: printer.nozzleTargets?.map((target) => normalizeMaxTwoDecimals(target)),
     bedTarget:
       typeof printer.bedTarget === 'number' ? normalizeMaxTwoDecimals(printer.bedTarget) : undefined,
+    fanSpeeds: printer.fanSpeeds?.map((fan) => ({
+      id: fan.id,
+      speed: Math.max(0, Math.min(100, normalizeMaxTwoDecimals(fan.speed))),
+    })),
     progress: normalizeMaxTwoDecimals(printer.progress),
     lastMaintenance: printer.lastMaintenance ?? new Date().toISOString().slice(0, 10),
     totalPrintTime: normalizeMaxTwoDecimals(printer.totalPrintTime),
@@ -440,6 +467,60 @@ export async function setPrinterTemperature(
   }
 
   logAuditEvent('printer.temperature', printer.name, { heater, target: value, nozzleIndex });
+}
+
+export function printerSupportsCoolingControl(printer: Printer) {
+  return (PRINTER_FANS[printer.profile]?.length ?? 0) > 0;
+}
+
+// Set a cooling fan's speed (0–100%). Snapmaker U1 (Klipper/Moonraker) runs an
+// M106/M107 gcode script over the proxy; Bambu has no HTTP API, so the server
+// publishes the M106 as an MQTT gcode_line. A percent of 0 turns the fan off.
+export async function setPrinterFanSpeed(
+  printer: Printer,
+  fan: FanDescriptor,
+  percent: number,
+) {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  if (!Number.isFinite(clamped)) {
+    throw new Error('Fan speed is out of range');
+  }
+  // Firmware fans take an 8-bit PWM value (0–255).
+  const pwm = Math.round((clamped / 100) * 255);
+
+  let response: Response;
+  if (isBambuProfile(printer.profile)) {
+    response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'set_fan', fanPort: fan.bambuPort, speed: pwm }),
+    });
+  } else if (printer.profile === 'snapmaker_u1') {
+    const script = pwm === 0 ? 'M107' : `M106 S${pwm}`;
+    response = await fetch(
+      `/__printer_proxy/${encodeURIComponent(printer.id)}/printer/gcode/script?script=${encodeURIComponent(script)}`,
+      { method: 'POST' },
+    );
+  } else {
+    throw new Error('Cooling control is not available for this printer.');
+  }
+
+  if (!response.ok) {
+    let message = `Fan command failed with ${response.status}`;
+
+    try {
+      const payload = (await response.json()) as { error?: string };
+      if (payload.error) {
+        message = payload.error;
+      }
+    } catch {
+      // Ignore non-JSON proxy responses.
+    }
+
+    throw new Error(message);
+  }
+
+  logAuditEvent('printer.fan', printer.name, { fan: fan.id, percent: clamped });
 }
 
 export async function setPrinterLight(printer: Printer, on: boolean) {
