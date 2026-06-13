@@ -45,6 +45,7 @@ import {
   normalizePrinter,
   PRINTER_PROFILES,
   PRINTER_FANS,
+  profileHasChamberTemp,
   isBambuProfile,
   printerSupportsAirFilter,
   printerSupportsCoolingControl,
@@ -172,6 +173,7 @@ function TemperatureTargetControl({
   onSubmit,
   onFocus,
   onBlur,
+  max = 350,
 }: {
   label: string;
   value: string;
@@ -181,13 +183,14 @@ function TemperatureTargetControl({
   onSubmit: () => void;
   onFocus: () => void;
   onBlur: () => void;
+  max?: number;
 }) {
   return (
     <Input
       type="number"
       inputMode="numeric"
       min={0}
-      max={350}
+      max={max}
       value={value}
       disabled={disabled}
       placeholder={inFlight ? 'Setting…' : 'Set °C'}
@@ -443,6 +446,7 @@ export function PrinterDetail() {
         sync(`nozzle-${index}`, printer.nozzleTargets?.[index]);
       }
       sync('bed', printer.bedTarget);
+      sync('chamber', printer.chamberTarget);
       return changed ? next : prev;
     });
   }, [printer, tempEditingKey, tempInFlight]);
@@ -787,16 +791,21 @@ export function PrinterDetail() {
     }
   };
 
-  const handleSetTemperature = async (heater: 'nozzle' | 'bed', nozzleIndex = 0) => {
+  const handleSetTemperature = async (
+    heater: 'nozzle' | 'bed' | 'chamber',
+    nozzleIndex = 0,
+  ) => {
     if (!canControlPrinter || !printer) {
       return;
     }
 
-    const key = heater === 'bed' ? 'bed' : `nozzle-${nozzleIndex}`;
+    const key = heater === 'bed' || heater === 'chamber' ? heater : `nozzle-${nozzleIndex}`;
     const raw = (tempInputs[key] ?? '').trim();
     const target = Number(raw);
-    if (raw === '' || !Number.isFinite(target) || target < 0 || target > 350) {
-      toast.error('Enter a target between 0 and 350°C.');
+    // The chamber heater tops out far lower than the hotend/bed.
+    const maxTarget = heater === 'chamber' ? 60 : 350;
+    if (raw === '' || !Number.isFinite(target) || target < 0 || target > maxTarget) {
+      toast.error(`Enter a target between 0 and ${maxTarget}°C.`);
       return;
     }
 
@@ -1308,6 +1317,36 @@ export function PrinterDetail() {
                 </div>
                 <Progress value={(printer.temperature.bed / 100) * 100} className="h-2" />
               </div>
+              {profileHasChamberTemp(printer.profile) && (
+                <div>
+                  <div className="flex justify-between items-center gap-2 mb-2">
+                    <span className="text-sm text-gray-600 dark:text-gray-400">Chamber</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`font-bold text-lg ${getStatusColor()}`}>
+                        {formatMaxTwoDecimals(printer.temperature.chamber ?? 0)}°C
+                      </span>
+                      {canControlTemp && (
+                        <TemperatureTargetControl
+                          label="Chamber"
+                          max={60}
+                          value={tempInputs.chamber ?? ''}
+                          inFlight={tempInFlight === 'chamber'}
+                          disabled={tempInFlight !== null}
+                          onChange={(next) =>
+                            setTempInputs((prev) => ({ ...prev, chamber: next }))
+                          }
+                          onSubmit={() => handleSetTemperature('chamber')}
+                          onFocus={() => setTempEditingKey('chamber')}
+                          onBlur={() =>
+                            setTempEditingKey((current) => (current === 'chamber' ? null : current))
+                          }
+                        />
+                      )}
+                    </div>
+                  </div>
+                  <Progress value={((printer.temperature.chamber ?? 0) / 60) * 100} className="h-2" />
+                </div>
+              )}
             </div>
           </Card>
           ),

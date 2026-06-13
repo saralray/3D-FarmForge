@@ -109,6 +109,18 @@ export const PRINTER_FANS: Partial<Record<PrinterProfile, FanDescriptor[]>> = {
   ],
 };
 
+// Profiles that report a chamber temperature sensor. Only the Bambu H2 series
+// exposes one; other printers leave the chamber reading at 0, so the Temperature
+// card hides the row for them.
+export const PROFILES_WITH_CHAMBER_TEMP: PrinterProfile[] = [
+  'bambulab_h2s',
+  'bambulab_h2d',
+];
+
+export function profileHasChamberTemp(profile: PrinterProfile): boolean {
+  return PROFILES_WITH_CHAMBER_TEMP.includes(profile);
+}
+
 function inferProfileFromDescriptor(descriptor: string): PrinterProfile | null {
   if (descriptor.includes('snapmaker u1')) {
     return 'snapmaker_u1';
@@ -148,6 +160,10 @@ export function normalizePrinter(printer: Partial<Printer>, index: number): Prin
   const supportsLiveStatus = PRINTER_PROFILES[profile].statusPath !== null;
   const fallbackNozzleTemperature = normalizeMaxTwoDecimals(printer.temperature?.nozzle);
   const fallbackBedTemperature = normalizeMaxTwoDecimals(printer.temperature?.bed);
+  const fallbackChamberTemperature =
+    typeof printer.temperature?.chamber === 'number'
+      ? normalizeMaxTwoDecimals(printer.temperature.chamber)
+      : undefined;
 
   const currentJob = printer.currentJob
     ? {
@@ -179,6 +195,9 @@ export function normalizePrinter(printer: Partial<Printer>, index: number): Prin
     temperature: {
       nozzle: fallbackNozzleTemperature,
       bed: fallbackBedTemperature,
+      ...(fallbackChamberTemperature !== undefined
+        ? { chamber: fallbackChamberTemperature }
+        : {}),
     },
     nozzleTemperatures:
       printer.nozzleTemperatures?.map((temperature) => normalizeMaxTwoDecimals(temperature)) ??
@@ -186,6 +205,10 @@ export function normalizePrinter(printer: Partial<Printer>, index: number): Prin
     nozzleTargets: printer.nozzleTargets?.map((target) => normalizeMaxTwoDecimals(target)),
     bedTarget:
       typeof printer.bedTarget === 'number' ? normalizeMaxTwoDecimals(printer.bedTarget) : undefined,
+    chamberTarget:
+      typeof printer.chamberTarget === 'number'
+        ? normalizeMaxTwoDecimals(printer.chamberTarget)
+        : undefined,
     fanSpeeds: printer.fanSpeeds?.map((fan) => ({
       id: fan.id,
       speed: Math.max(0, Math.min(100, normalizeMaxTwoDecimals(fan.speed))),
@@ -441,16 +464,21 @@ export function printerSupportsTemperatureControl(printer: Printer) {
 // gcode_line command. A target of 0 turns the heater off.
 export async function setPrinterTemperature(
   printer: Printer,
-  heater: 'nozzle' | 'bed',
+  heater: 'nozzle' | 'bed' | 'chamber',
   target: number,
   nozzleIndex = 0,
 ) {
   const value = Math.round(target);
-  if (!Number.isFinite(value) || value < 0 || value > 350) {
+  // The chamber heater tops out far lower than the hotend/bed.
+  const maxValue = heater === 'chamber' ? 60 : 350;
+  if (!Number.isFinite(value) || value < 0 || value > maxValue) {
     throw new Error('Temperature target is out of range');
   }
 
   let response: Response;
+  if (heater === 'chamber' && !isBambuProfile(printer.profile)) {
+    throw new Error('Chamber temperature control is not available for this printer.');
+  }
   if (isBambuProfile(printer.profile)) {
     response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
       method: 'POST',

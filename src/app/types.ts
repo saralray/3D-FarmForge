@@ -29,12 +29,17 @@ export interface Printer {
   temperature: {
     nozzle: number;
     bed: number;
+    // Chamber temperature, reported only by printers with a chamber sensor
+    // (Bambu H2 series); 0 / absent for everything else.
+    chamber?: number;
   };
   nozzleTemperatures?: number[];
   // Target temps reported by the printer, used to keep the set-temp inputs in
   // sync even when the target is changed from the printer screen or slicer.
   nozzleTargets?: number[];
   bedTarget?: number;
+  // Chamber heater target (Bambu H2 series). 0 / absent means heating off.
+  chamberTarget?: number;
   // Current cooling-fan speeds reported by the poller, keyed by fan id
   // ("part" / "aux" / "chamber"); speed is a 0–100 percentage. The set of fans
   // a printer has is static per profile (see PRINTER_FANS in printerProfiles).

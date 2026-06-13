@@ -422,6 +422,14 @@ function buildBambuTemperatureGcode(heater, target, nozzleIndex = 0) {
   if (heater === 'bed') {
     return `M140 S${value}\n`;
   }
+  if (heater === 'chamber') {
+    // The H2 chamber heater is driven by M141; a valid target is 0–60 °C
+    // (0 turns active chamber heating off).
+    if (value > 60) {
+      throw new Error('Chamber temperature target is out of range');
+    }
+    return `M141 S${value}\n`;
+  }
   throw new Error(`Unsupported heater: ${heater}`);
 }
 

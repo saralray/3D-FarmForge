@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS printers (
   status TEXT NOT NULL,
   temperature_nozzle DOUBLE PRECISION NOT NULL DEFAULT 0,
   temperature_bed DOUBLE PRECISION NOT NULL DEFAULT 0,
+  temperature_chamber DOUBLE PRECISION NOT NULL DEFAULT 0,
   progress INTEGER NOT NULL DEFAULT 0,
   last_maintenance TEXT NOT NULL,
   total_print_time DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -36,6 +37,8 @@ ALTER TABLE printers ADD COLUMN IF NOT EXISTS light_on BOOLEAN;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS nozzle_targets JSONB;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS bed_target DOUBLE PRECISION;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS fan_speeds JSONB;
+ALTER TABLE printers ADD COLUMN IF NOT EXISTS temperature_chamber DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE printers ADD COLUMN IF NOT EXISTS chamber_target DOUBLE PRECISION;
 CREATE TABLE IF NOT EXISTS analytics_daily (
   analytics_date DATE PRIMARY KEY,
   completed_jobs INTEGER NOT NULL DEFAULT 0,
@@ -172,7 +175,8 @@ function buildPrinterListSelect(includeSensitive = true) {
       'status', status,
       'temperature', json_build_object(
         'nozzle', ROUND(temperature_nozzle::numeric, 2),
-        'bed', ROUND(temperature_bed::numeric, 2)
+        'bed', ROUND(temperature_bed::numeric, 2),
+        'chamber', ROUND(temperature_chamber::numeric, 2)
       ),
       'progress', progress,
       'lastMaintenance', last_maintenance,
@@ -182,6 +186,7 @@ function buildPrinterListSelect(includeSensitive = true) {
       'nozzleTemperatures', nozzle_temperatures,
       'nozzleTargets', nozzle_targets,
       'bedTarget', ROUND(bed_target::numeric, 2),
+      'chamberTarget', ROUND(chamber_target::numeric, 2),
       'spools', spools,
       'fanSpeeds', fan_speeds,
       'lightOn', light_on
@@ -238,7 +243,8 @@ export async function getPrinterById(id) {
       'status', status,
       'temperature', json_build_object(
         'nozzle', ROUND(temperature_nozzle::numeric, 2),
-        'bed', ROUND(temperature_bed::numeric, 2)
+        'bed', ROUND(temperature_bed::numeric, 2),
+        'chamber', ROUND(temperature_chamber::numeric, 2)
       ),
       'progress', progress,
       'lastMaintenance', last_maintenance,
@@ -248,6 +254,7 @@ export async function getPrinterById(id) {
       'nozzleTemperatures', nozzle_temperatures,
       'nozzleTargets', nozzle_targets,
       'bedTarget', ROUND(bed_target::numeric, 2),
+      'chamberTarget', ROUND(chamber_target::numeric, 2),
       'spools', spools,
       'fanSpeeds', fan_speeds,
       'lightOn', light_on

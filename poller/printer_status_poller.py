@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS printers (
   status TEXT NOT NULL,
   temperature_nozzle DOUBLE PRECISION NOT NULL DEFAULT 0,
   temperature_bed DOUBLE PRECISION NOT NULL DEFAULT 0,
+  temperature_chamber DOUBLE PRECISION NOT NULL DEFAULT 0,
   progress INTEGER NOT NULL DEFAULT 0,
   last_maintenance TEXT NOT NULL,
   total_print_time DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -55,6 +56,8 @@ ALTER TABLE printers ADD COLUMN IF NOT EXISTS light_on BOOLEAN;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS nozzle_targets JSONB;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS bed_target DOUBLE PRECISION;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS fan_speeds JSONB;
+ALTER TABLE printers ADD COLUMN IF NOT EXISTS temperature_chamber DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE printers ADD COLUMN IF NOT EXISTS chamber_target DOUBLE PRECISION;
 CREATE TABLE IF NOT EXISTS analytics_daily (
   analytics_date DATE PRIMARY KEY,
   completed_jobs INTEGER NOT NULL DEFAULT 0,
@@ -133,7 +136,7 @@ def list_printers(conn: psycopg.Connection) -> list[dict[str, Any]]:
               api_key_header AS "apiKeyHeader",
               serial,
               status,
-              json_build_object('nozzle', temperature_nozzle, 'bed', temperature_bed) AS temperature,
+              json_build_object('nozzle', temperature_nozzle, 'bed', temperature_bed, 'chamber', temperature_chamber) AS temperature,
               progress,
               last_maintenance AS "lastMaintenance",
               total_print_time AS "totalPrintTime",
@@ -142,6 +145,7 @@ def list_printers(conn: psycopg.Connection) -> list[dict[str, Any]]:
               nozzle_temperatures AS "nozzleTemperatures",
               nozzle_targets AS "nozzleTargets",
               bed_target AS "bedTarget",
+              chamber_target AS "chamberTarget",
               spools,
               fan_speeds AS "fanSpeeds",
               light_on AS "lightOn",
@@ -170,6 +174,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               status,
               temperature_nozzle,
               temperature_bed,
+              temperature_chamber,
               progress,
               last_maintenance,
               total_print_time,
@@ -178,6 +183,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               nozzle_temperatures,
               nozzle_targets,
               bed_target,
+              chamber_target,
               spools,
               fan_speeds,
               light_on,
@@ -195,6 +201,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               %(status)s,
               %(temperature_nozzle)s,
               %(temperature_bed)s,
+              %(temperature_chamber)s,
               %(progress)s,
               %(lastMaintenance)s,
               %(totalPrintTime)s,
@@ -203,6 +210,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               %(nozzleTemperatures)s::jsonb,
               %(nozzleTargets)s::jsonb,
               %(bedTarget)s,
+              %(chamberTarget)s,
               %(spools)s::jsonb,
               %(fanSpeeds)s::jsonb,
               %(lightOn)s,
@@ -220,6 +228,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               status = EXCLUDED.status,
               temperature_nozzle = EXCLUDED.temperature_nozzle,
               temperature_bed = EXCLUDED.temperature_bed,
+              temperature_chamber = EXCLUDED.temperature_chamber,
               progress = EXCLUDED.progress,
               last_maintenance = EXCLUDED.last_maintenance,
               total_print_time = EXCLUDED.total_print_time,
@@ -228,6 +237,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               nozzle_temperatures = EXCLUDED.nozzle_temperatures,
               nozzle_targets = EXCLUDED.nozzle_targets,
               bed_target = EXCLUDED.bed_target,
+              chamber_target = EXCLUDED.chamber_target,
               spools = EXCLUDED.spools,
               fan_speeds = EXCLUDED.fan_speeds,
               light_on = EXCLUDED.light_on,
@@ -246,6 +256,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
                 "status": printer["status"],
                 "temperature_nozzle": printer.get("temperature", {}).get("nozzle", 0),
                 "temperature_bed": printer.get("temperature", {}).get("bed", 0),
+                "temperature_chamber": printer.get("temperature", {}).get("chamber", 0),
                 "progress": printer.get("progress", 0),
                 "lastMaintenance": printer["lastMaintenance"],
                 "totalPrintTime": printer.get("totalPrintTime", 0),
@@ -254,6 +265,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
                 "nozzleTemperatures": json.dumps(printer.get("nozzleTemperatures")),
                 "nozzleTargets": json.dumps(printer.get("nozzleTargets")),
                 "bedTarget": printer.get("bedTarget"),
+                "chamberTarget": printer.get("chamberTarget"),
                 "spools": json.dumps(printer.get("spools")),
                 "fanSpeeds": json.dumps(printer.get("fanSpeeds")),
                 "lightOn": printer.get("lightOn"),
@@ -354,7 +366,7 @@ def build_offline_printer_state(printer: dict[str, Any]) -> dict[str, Any]:
         "status": "offline",
         "currentJob": None,
         "progress": 0,
-        "temperature": {"nozzle": 0, "bed": 0},
+        "temperature": {"nozzle": 0, "bed": 0, "chamber": 0},
         "nozzleTemperatures": [0 for _ in nozzle_temperatures] if nozzle_temperatures else [0],
         "fanSpeeds": None,
     }
@@ -775,6 +787,63 @@ def build_bambu_fan_speeds(
     return fan_speeds or None
 
 
+# Decode a single Bambu chamber-temperature reading. On the H2 series the value
+# is *encoded* whenever the chamber heater is engaged: `target * 65536 + current`
+# (current temp in the low 16 bits). A plain reading in the -50..100 range is the
+# direct Celsius value (heater off). Anything else is unusable. Mirrors Bambuddy's
+# BambuMQTT chamber parsing. Returns the current temp in °C, or None.
+def _decode_chamber_value(value: Any) -> float | None:
+    if not isinstance(value, (int, float)):
+        return None
+    if -50 < value < 100:
+        return float(value)
+    if value > 500:
+        current = int(value) % 65536
+        if -50 < current < 100:
+            return float(current)
+    return None
+
+
+# The chamber reading can surface in any of several fields depending on firmware;
+# try them in priority order and return the first that decodes to a sane temp.
+def _chamber_temp_candidates(print_data: dict[str, Any]) -> list[Any]:
+    candidates = [print_data.get("chamber_temper")]
+    ctc = print_data.get("ctc")
+    if isinstance(ctc, dict) and isinstance(ctc.get("info"), dict):
+        candidates.append(ctc["info"].get("temp"))
+    info = print_data.get("info")
+    if isinstance(info, dict):
+        candidates.append(info.get("temp"))
+    return candidates
+
+
+def decode_bambu_chamber_temp(print_data: dict[str, Any]) -> float | None:
+    for value in _chamber_temp_candidates(print_data):
+        decoded = _decode_chamber_value(value)
+        if decoded is not None:
+            return decoded
+    return None
+
+
+# The chamber *target* lives either in the high 16 bits of the same encoded
+# reading (heater on) or in an explicit field. A valid target is 0–60 °C.
+def decode_bambu_chamber_target(print_data: dict[str, Any]) -> float | None:
+    explicit = [print_data.get("mc_target_cham")]
+    ctc = print_data.get("ctc")
+    if isinstance(ctc, dict) and isinstance(ctc.get("info"), dict):
+        explicit.append(ctc["info"].get("target"))
+    for value in explicit:
+        if isinstance(value, (int, float)) and 0 <= value <= 60:
+            return float(value)
+    # Fall back to the target packed into an encoded reading.
+    for value in _chamber_temp_candidates(print_data):
+        if isinstance(value, (int, float)) and value > 500:
+            target = int(value) // 65536
+            if 0 <= target <= 60:
+                return float(target)
+    return None
+
+
 def fetch_bambu_status(printer: dict[str, Any]) -> dict[str, Any]:
     if not (printer.get("serial") or "").strip():
         raise RuntimeError("Bambu printer is missing its serial number")
@@ -789,10 +858,21 @@ def fetch_bambu_status(printer: dict[str, Any]) -> dict[str, Any]:
 
     fallback_nozzle = ((printer.get("temperature") or {}).get("nozzle")) or 0
     fallback_bed = ((printer.get("temperature") or {}).get("bed")) or 0
+    fallback_chamber = ((printer.get("temperature") or {}).get("chamber")) or 0
     raw_nozzle = print_data.get("nozzle_temper")
     raw_bed = print_data.get("bed_temper")
     nozzle_temperature = round(raw_nozzle) if isinstance(raw_nozzle, (int, float)) else fallback_nozzle
     bed_temperature = round(raw_bed) if isinstance(raw_bed, (int, float)) else fallback_bed
+    # The H2 series encodes its chamber reading (see decode_bambu_chamber_temp);
+    # other Bambu models don't report a usable chamber temp, so keep the fallback.
+    decoded_chamber = decode_bambu_chamber_temp(print_data)
+    chamber_temperature = round(decoded_chamber) if decoded_chamber is not None else fallback_chamber
+    decoded_chamber_target = decode_bambu_chamber_target(print_data)
+    chamber_target = (
+        round(decoded_chamber_target)
+        if decoded_chamber_target is not None
+        else (printer.get("chamberTarget") or 0)
+    )
 
     # Target temps keep the set-temp box in sync with the live target.
     existing_nozzle_targets = printer.get("nozzleTargets") or []
@@ -837,10 +917,15 @@ def fetch_bambu_status(printer: dict[str, Any]) -> dict[str, Any]:
         ),
         "progress": progress,
         "rawPrintState": gcode_state.lower() if isinstance(gcode_state, str) else None,
-        "temperature": {"nozzle": nozzle_temperature, "bed": bed_temperature},
+        "temperature": {
+            "nozzle": nozzle_temperature,
+            "bed": bed_temperature,
+            "chamber": chamber_temperature,
+        },
         "nozzleTemperatures": [nozzle_temperature],
         "nozzleTargets": [nozzle_target],
         "bedTarget": bed_target,
+        "chamberTarget": chamber_target,
         "spools": build_bambu_spools(print_data) or printer.get("spools"),
         "fanSpeeds": build_bambu_fan_speeds(print_data, printer.get("profile"))
         or printer.get("fanSpeeds"),
