@@ -529,6 +529,31 @@ function buildBambuCommandPayload(command, params = {}, profile) {
     };
   }
 
+  if (command === 'set_airduct') {
+    // The H2 series routes chamber air through a mode-based "air duct" system
+    // rather than an individually-addressable filter fan, so the activated-carbon
+    // filter is engaged by selecting a mode, not by spinning a fan. Bambu Studio
+    // sets it with a `set_airduct` MQTT command. Modes (from BambuStudio's
+    // AIR_DUCT enum): 0 cooling+filter, 1 heating+filter, 2 exhaust, 3 full
+    // cooling. `submode` defaults to -1, matching Studio.
+    const modeId = Number(params.modeId);
+    if (!Number.isInteger(modeId) || modeId < 0 || modeId > 3) {
+      throw new Error('Air duct mode is out of range');
+    }
+    const submode = params.submode === undefined ? -1 : Number(params.submode);
+    if (!Number.isInteger(submode)) {
+      throw new Error('Air duct submode must be an integer');
+    }
+    return {
+      print: {
+        command: 'set_airduct',
+        modeId,
+        submode,
+        sequence_id: sequenceId,
+      },
+    };
+  }
+
   if (command === 'load_filament' || command === 'unload_filament') {
     // ams_change_filament: `target` is the global tray id (AMS unit * 4 + tray,
     // or 254 for the external spool). 255 tells the printer to unload whatever
@@ -759,7 +784,7 @@ async function handleApi(req, res, requestUrl) {
       sendJson(res, 404, { error: 'Printer not found' });
       return true;
     }
-    const { command, heater, target, nozzleIndex, gcode, trayId, fanPort, speed } =
+    const { command, heater, target, nozzleIndex, gcode, trayId, fanPort, speed, modeId, submode } =
       await readJsonBody(req);
     await sendBambuCommand(printer, command, {
       heater,
@@ -769,6 +794,8 @@ async function handleApi(req, res, requestUrl) {
       trayId,
       fanPort,
       speed,
+      modeId,
+      submode,
     });
     sendEmpty(res);
     return true;

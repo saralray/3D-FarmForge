@@ -546,6 +546,53 @@ export async function setPrinterFanSpeed(
   logAuditEvent('printer.fan', printer.name, { fan: fan.id, percent: clamped });
 }
 
+// The H2 series doesn't expose the activated-carbon filter as a plain M106 fan.
+// It routes chamber air through a mode-based "air duct" system controlled by the
+// `set_airduct` MQTT command. Per BambuStudio (the "Filter" switch) and the
+// Bambuddy project, the filter is a *submode* of cooling mode — not a separate
+// mode: stay in cooling mode (modeId 0) and flip the submode (1 = filtration on,
+// which redirects the right fan to filter chamber gas; 0 = off). modeId 1 is
+// heating, 2 exhaust, 3 full cooling — not used here.
+const H2_AIRDUCT_COOLING_MODE = 0;
+
+export function printerSupportsAirFilter(printer: Printer) {
+  return printer.profile === 'bambulab_h2s' || printer.profile === 'bambulab_h2d';
+}
+
+// Toggle the H2 air filter via the cooling-mode filtration submode.
+export async function setPrinterAirFilter(printer: Printer, on: boolean) {
+  if (!printerSupportsAirFilter(printer)) {
+    throw new Error('Air filter control is not available for this printer.');
+  }
+
+  const response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      command: 'set_airduct',
+      modeId: H2_AIRDUCT_COOLING_MODE,
+      submode: on ? 1 : 0,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = `Air filter command failed with ${response.status}`;
+
+    try {
+      const payload = (await response.json()) as { error?: string };
+      if (payload.error) {
+        message = payload.error;
+      }
+    } catch {
+      // Ignore non-JSON proxy responses.
+    }
+
+    throw new Error(message);
+  }
+
+  logAuditEvent('printer.airFilter', printer.name, { on });
+}
+
 export async function setPrinterLight(printer: Printer, on: boolean) {
   // Snapmaker U1 (Klipper/Moonraker) toggles its cavity LED via a gcode script;
   // Bambu has no HTTP API, so the server publishes an MQTT ledctrl command.

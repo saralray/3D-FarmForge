@@ -13,7 +13,7 @@
 //
 // Dispatch by printer profile:
 //   - snapmaker_u1     → Moonraker HTTP upload (POST /server/files/upload, print=true)
-//   - bambulab_a1_mini → FTPS upload of the .3mf + an MQTT project_file command
+//   - bambulab_a1_mini → FTPS upload of the .3mf to root + MQTT project_file (bambuddy flow)
 //   - bambulab_h2s     → same Bambu LAN flow as the A1 Mini
 //   - bambulab_h2d     → same Bambu LAN flow as the A1 Mini
 // Generic printers have no upload API and are rejected.
@@ -46,10 +46,6 @@ const appBaseUrl = (process.env.APP_BASE_URL || '').trim();
 
 function hash(value) {
   return createHash('sha256').update(value).digest('hex');
-}
-
-function md5(buffer) {
-  return createHash('md5').update(buffer).digest('hex');
 }
 
 // Best-effort client IP for the audit trail (nginx sets X-Forwarded-For).
@@ -204,10 +200,14 @@ async function uploadToMoonraker(printer, file) {
   }
 }
 
-// Bambu A1 Mini: there is no HTTP upload. Push the .3mf over implicit FTPS (port
-// 990, user "bblp", password = LAN access code) then publish a project_file
-// command over MQTT to start it. NOTE: the exact project_file params and the
-// file URL scheme are device-specific and need live tuning against the printer.
+// Bambu LAN print flow (A1 Mini / H2S / H2D), modeled on the bambuddy project
+// (maziggy/bambuddy, backend/app/services/{bambu_ftp,bambu_mqtt}.py).
+//
+// There is no HTTP upload. The sliced .3mf is pushed over implicit FTPS (port
+// 990, user "bblp", password = LAN access code) to the *root* directory, then a
+// `project_file` command is published over MQTT to start it. The print command
+// references the file by name only — `url: ftp://<filename>` — so the file must
+// live at the FTP root, not under a /cache or /mnt/sdcard path.
 async function uploadToBambu(printer, file) {
   const accessCode = (printer.apiKeyHeader || '').trim();
   const serial = (printer.serial || '').trim();
@@ -219,12 +219,17 @@ async function uploadToBambu(printer, file) {
   }
 
   // Bambu's 3mf naming: keep the slicer's name but ensure a .3mf extension.
+  // A sliced Orca/Studio export is "<name>.gcode.3mf", which already ends in
+  // ".3mf" and is preserved as-is.
   const remoteName = file.filename.toLowerCase().endsWith('.3mf')
     ? file.filename
     : `${file.filename.replace(/\.[^.]+$/, '')}.3mf`;
-  const checksum = md5(file.buffer);
 
-  const ftp = new FtpClient(15000);
+  // Generous timeout: basic-ftp waits for the server's 226 "transfer complete"
+  // before resolving, which confirms the file is flushed to the SD card. An H2D
+  // can take 30+ s to send that 226 after the data channel closes; resolving the
+  // print command before the file is fully written triggers SD read errors.
+  const ftp = new FtpClient(60000);
   try {
     await ftp.access({
       host: printer.ipAddress,
@@ -234,35 +239,57 @@ async function uploadToBambu(printer, file) {
       secure: 'implicit',
       secureOptions: { rejectUnauthorized: false },
     });
+    // Upload to the root directory so `ftp://<filename>` resolves on the printer.
     await ftp.uploadFrom(Readable.from(file.buffer), remoteName);
   } finally {
     ftp.close();
   }
 
-  await publishBambuPrint(printer, serial, remoteName, checksum);
+  await publishBambuPrint(printer, serial, remoteName);
 }
 
-function publishBambuPrint(printer, serial, remoteName, checksum) {
+function publishBambuPrint(printer, serial, remoteName) {
+  // Unique per-submission identity. Bambu firmware (notably P1S 01.10) clamps
+  // task identity fields to int32 max and treats a reused id as a continuation
+  // of the prior job, so raw epoch-ms (13 digits) collides every time. Modulo
+  // int32 keeps ids unique within a ~24-day window; `|| 1` guards the zero case
+  // since task_id=0 is rejected. (bambuddy bambu_mqtt.py start_print)
+  const submissionId = String((Date.now() % 2147483647) || 1);
+
+  // project_file payload mirrors Bambu Studio / bambuddy. Notable fields:
+  //   url: ftp://<name>  — file referenced by name at the FTP root (see upload)
+  //   md5: ""            — empty tells firmware to skip md5 validation; a wrong
+  //                        digest can hard-fail the job, so we don't synthesize one
+  //   use_ams: false     — a slicer push carries no AMS mapping; AMS-on with no
+  //                        mapping fails with "Failed to get AMS mapping table"
+  //   bed_leveling       — American spelling is what firmware reads (not "levelling")
+  //   extrude_cali_flag 2 / nozzle_offset_cali 2 — "skip"; we don't drive calibration
+  const subtaskName = remoteName.replace(/\.gcode\.3mf$/i, '').replace(/\.3mf$/i, '');
   const payload = {
     print: {
-      sequence_id: String(Date.now() % 1000000),
+      sequence_id: '20000',
       command: 'project_file',
       param: 'Metadata/plate_1.gcode',
-      project_id: '0',
-      profile_id: '0',
-      task_id: '0',
-      subtask_id: '0',
-      subtask_name: remoteName.replace(/\.3mf$/i, ''),
-      url: `file:///mnt/sdcard/${remoteName}`,
-      md5: checksum,
-      timelapse: false,
+      url: `ftp://${remoteName}`,
+      file: remoteName,
+      md5: '',
       bed_type: 'auto',
-      bed_levelling: true,
+      timelapse: false,
+      bed_leveling: true,
+      auto_bed_leveling: 1,
       flow_cali: false,
       vibration_cali: true,
       layer_inspect: false,
-      ams_mapping: '',
       use_ams: false,
+      cfg: '0',
+      extrude_cali_flag: 2,
+      extrude_cali_manual_mode: 0,
+      nozzle_offset_cali: 2,
+      subtask_name: subtaskName,
+      profile_id: '0',
+      project_id: submissionId,
+      subtask_id: submissionId,
+      task_id: submissionId,
     },
   };
 

@@ -46,6 +46,7 @@ import {
   PRINTER_PROFILES,
   PRINTER_FANS,
   isBambuProfile,
+  printerSupportsAirFilter,
   printerSupportsCoolingControl,
   printerSupportsFilamentControl,
   printerSupportsLight,
@@ -54,6 +55,7 @@ import {
   printerSupportsTemperatureControl,
   printerSupportsWebcamStream,
   sendPrinterCommand,
+  setPrinterAirFilter,
   setPrinterFanSpeed,
   setPrinterLight,
   setPrinterTemperature,
@@ -63,6 +65,7 @@ import {
 } from '../lib/printerProfiles';
 import { fetchCameraHealth, type CameraHealth } from '../lib/cameraApi';
 import { Slider } from '../components/ui/slider';
+import { Switch } from '../components/ui/switch';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
@@ -321,6 +324,10 @@ export function PrinterDetail() {
   // Per-fan timestamps; while set in the future the hardware sync won't overwrite
   // that slider, covering a just-sent speed plus the printer's report lag.
   const fanSyncBlockedUntil = useRef<Record<string, number>>({});
+  // H2-series air filter on/off. The printer doesn't report filter state back, so
+  // this is an optimistic local toggle (reset when switching printers).
+  const [airFilterOn, setAirFilterOn] = useState(false);
+  const [airFilterInFlight, setAirFilterInFlight] = useState(false);
   const [snapshotNonce, setSnapshotNonce] = useState(() => Date.now());
   // Bambu snapshots are refreshed load-driven (see the webcam effect): the next
   // frame is requested only after the current <img> finishes, via this timer.
@@ -467,6 +474,7 @@ export function PrinterDetail() {
   useEffect(() => {
     setSnapshotNonce(Date.now());
     setSnapshotErrored(false);
+    setAirFilterOn(false);
 
     // Snapmaker shows a live MJPEG/H264 stream (iframe), so it doesn't poll
     // snapshots. For snapshot-only profiles (Bambu) the refresh is driven by the
@@ -654,6 +662,7 @@ export function PrinterDetail() {
   const canControlCooling =
     canControlPrinter && isOnline && printerSupportsCoolingControl(printer);
   const printerFans = PRINTER_FANS[printer.profile] ?? [];
+  const supportsAirFilter = printerSupportsAirFilter(printer);
   // Jogging mid-print would wreck the job, so motion is only live when the
   // printer is connected and idle; otherwise the card shows a disabled note.
   const canControlMotion = canControlPrinter && printerSupportsMotionControl(printer);
@@ -836,6 +845,25 @@ export function PrinterDetail() {
       toast.error(error instanceof Error ? error.message : 'Unable to set fan speed');
     } finally {
       setFanInFlight(null);
+    }
+  };
+
+  const handleToggleAirFilter = async (next: boolean) => {
+    if (!canControlCooling || !printer) {
+      return;
+    }
+
+    const previous = airFilterOn;
+    setAirFilterOn(next); // optimistic
+    setAirFilterInFlight(true);
+
+    try {
+      await setPrinterAirFilter(printer, next);
+    } catch (error) {
+      setAirFilterOn(previous);
+      toast.error(error instanceof Error ? error.message : 'Unable to toggle the air filter');
+    } finally {
+      setAirFilterInFlight(false);
     }
   };
 
@@ -1436,6 +1464,22 @@ export function PrinterDetail() {
                     </div>
                   );
                 })}
+                {supportsAirFilter && (
+                  <div className="flex items-center justify-between gap-3 border-t border-gray-200 pt-4 dark:border-gray-700">
+                    <div>
+                      <span className="text-sm text-gray-600 dark:text-gray-400">Air Filter</span>
+                      <p className="text-xs text-gray-400 dark:text-gray-500">
+                        Activated-carbon filtration
+                      </p>
+                    </div>
+                    <Switch
+                      checked={airFilterOn}
+                      disabled={!canControlCooling || airFilterInFlight}
+                      onCheckedChange={handleToggleAirFilter}
+                      aria-label="Air filter"
+                    />
+                  </div>
+                )}
                 {!isOnline && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     Connect the printer to control its cooling fans.
