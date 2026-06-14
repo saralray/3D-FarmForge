@@ -140,6 +140,14 @@ function setSecurityHeaders(res) {
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
 }
 
+function escapeHtml(value) {
+  return String(value).replace(
+    /[&<>"']/g,
+    (char) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
+  );
+}
+
 function sendJson(res, statusCode, payload, cacheControl = 'no-store') {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -761,6 +769,73 @@ async function handleBambuWebcam(req, res, printer, pathParts) {
   }
 }
 
+// Self-contained webcam player page, embeddable in an <iframe src="/webcam/:id">
+// on any site (e.g. a signage screen or a wiki). The page itself is profile-aware
+// and pulls frames from the existing same-origin /__printer_webcam/:id endpoints:
+// printers with a live MJPEG stream (Snapmaker U1, Bambu H2 series) render it in
+// an <img>; everything else falls back to an auto-refreshing snapshot.
+const LIVE_MJPEG_PROFILES = new Set(['snapmaker_u1', 'bambulab_h2s', 'bambulab_h2d']);
+
+async function handleWebcamPage(req, res, requestUrl) {
+  const match = requestUrl.pathname.match(/^\/webcam\/([^/]+)\/?$/);
+  if (!match) {
+    return false;
+  }
+
+  const printerId = decodeURIComponent(match[1]);
+  const printer = await getPrinterById(printerId);
+  if (!printer) {
+    sendJson(res, 404, { error: 'Printer not found' });
+    return true;
+  }
+
+  const live = LIVE_MJPEG_PROFILES.has(printer.profile);
+  const base = `/__printer_webcam/${encodeURIComponent(printer.id)}`;
+  const streamUrl = live ? `${base}/stream.mjpg` : `${base}/snapshot.jpg`;
+  const title = `${printer.name} webcam`;
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${escapeHtml(title)}</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #cam { width: 100%; height: 100%; object-fit: contain; display: block; }
+</style>
+</head>
+<body>
+<img id="cam" alt="${escapeHtml(title)}" src="${escapeHtml(streamUrl)}" />
+<script>
+  (function () {
+    var img = document.getElementById('cam');
+    var live = ${live ? 'true' : 'false'};
+    var src = ${JSON.stringify(streamUrl)};
+    if (live) {
+      // The MJPEG stream can drop if the printer/camera hiccups; reconnect on error.
+      img.addEventListener('error', function () {
+        setTimeout(function () { img.src = src + '?t=' + Date.now(); }, 2000);
+      });
+    } else {
+      // Snapshot-only camera: poll a fresh frame on a timer (cache-busted).
+      setInterval(function () { img.src = src + '?t=' + Date.now(); }, 1000);
+    }
+  })();
+</script>
+</body>
+</html>`;
+
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  // This page is meant to be embedded cross-origin in an <iframe>, so relax the
+  // global X-Frame-Options: DENY. The frames themselves come from the same-origin
+  // /__printer_webcam endpoints, so no printer secrets are exposed to the embedder.
+  res.removeHeader('X-Frame-Options');
+  res.end(html);
+  return true;
+}
+
 async function handleApi(req, res, requestUrl) {
   if (requestUrl.pathname === '/healthz') {
     sendJson(res, 200, { ok: true }, 'no-store');
@@ -1310,6 +1385,10 @@ async function handleRequest(req, res) {
         {},
       )
     ) {
+      return;
+    }
+
+    if (await handleWebcamPage(req, res, requestUrl)) {
       return;
     }
 

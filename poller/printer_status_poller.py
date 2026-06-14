@@ -119,7 +119,7 @@ SNAPMAKER_STATUS_PATH = (
     "/printer/objects/query?print_stats&extruder=temperature,target"
     "&extruder1=temperature,target&extruder2=temperature,target"
     "&extruder3=temperature,target&heater_bed=temperature,target"
-    "&virtual_sdcard=progress&fan=speed"
+    "&virtual_sdcard=progress&fan=speed&toolhead=extruder"
 )
 
 # Bambu Lab printers report over MQTT-over-TLS in LAN mode (no HTTP status API).
@@ -544,6 +544,16 @@ def fetch_snapmaker_status(printer: dict[str, Any]) -> dict[str, Any]:
         else printer.get("fanSpeeds")
     )
 
+    # Moonraker names the active extruder on the toolhead ("extruder", "extruder1",
+    # …); map it to the matching tool-N spool id so the run-out alert fires (and is
+    # named) only for the lane the print is actually feeding from.
+    active_extruder = (status.get("toolhead") or {}).get("extruder")
+    active_spool_id = None
+    if isinstance(active_extruder, str) and active_extruder.startswith("extruder"):
+        suffix = active_extruder[len("extruder") :]
+        active_index = int(suffix) if suffix.isdigit() else 0
+        active_spool_id = f"tool-{active_index + 1}"
+
     return {
         "status": map_print_state_to_status(raw_print_state),
         "currentJob": build_current_job(print_stats, printer.get("currentJob"), progress),
@@ -557,6 +567,8 @@ def fetch_snapmaker_status(printer: dict[str, Any]) -> dict[str, Any]:
         "nozzleTargets": nozzle_targets,
         "bedTarget": round(bed_target),
         "fanSpeeds": fan_speeds,
+        # Lane currently feeding the nozzle; transient, not persisted by upsert.
+        "activeSpoolId": active_spool_id,
     }
 
 
@@ -829,6 +841,29 @@ def build_bambu_spools(print_data: dict[str, Any]) -> list[dict[str, Any]] | Non
     add_tray(print_data.get("vt_tray"), "external")
 
     return spools or None
+
+
+def bambu_active_spool_id(print_data: dict[str, Any]) -> str | None:
+    """Slot id (matching build_bambu_spools ids) of the tray currently feeding the
+    nozzle, read from the AMS `tray_now` pointer. Returns "external" for the vt_tray
+    and None when no tray is engaged (transitioning / unknown). Used to fire the
+    run-out alert only for the filament the current print is actually using."""
+    ams_root = print_data.get("ams")
+    if not isinstance(ams_root, dict):
+        # No AMS — A1 mini / external-spool printers feed from vt_tray.
+        return "external" if isinstance(print_data.get("vt_tray"), dict) else None
+    try:
+        global_index = int(str(ams_root.get("tray_now")).strip())
+    except (TypeError, ValueError):
+        return None
+    # 254/255 are Bambu's "no tray / external spool" sentinels.
+    if global_index >= 254:
+        return "external" if isinstance(print_data.get("vt_tray"), dict) else None
+    if global_index < 0:
+        return None
+    # tray_now is a flat index across AMS units of four trays each, matching the
+    # ams{unit}-{tray} ids build_bambu_spools emits.
+    return f"ams{global_index // 4}-{global_index % 4}"
 
 
 # Bambu reports faults via two channels in the print report: the `hms` list
@@ -1137,6 +1172,9 @@ def fetch_bambu_status(printer: dict[str, Any]) -> dict[str, Any]:
         # HMS/print_error run-out signal, edge-detected in check_filament_runout.
         # Transient (notification-only); not persisted by upsert_printer.
         "filamentRunout": bambu_filament_runout(print_data),
+        # Slot currently feeding the nozzle, so the run-out alert names (and gates
+        # on) the filament the print is actually using. Transient; not persisted.
+        "activeSpoolId": bambu_active_spool_id(print_data),
     }
 
 
@@ -1571,8 +1609,31 @@ def check_filament_runout(next_printer: dict[str, Any]) -> bool:
     previous_ids = _PRINTING_SPOOLS.get(printer_id)
     _PRINTING_SPOOLS[printer_id] = current_ids
 
-    spool_edge = previous_ids is not None and bool(previous_ids - current_ids)
+    # Only the spool the print is actually feeding from counts as a run-out — an
+    # idle loaded spool being removed or depleted must not alert. When the active
+    # spool is known we require *it* to have vanished; otherwise fall back to any
+    # disappearance so a genuine run-out is never missed.
+    disappeared = previous_ids - current_ids if previous_ids is not None else set()
+    active_spool_id = next_printer.get("activeSpoolId")
+    spool_edge = active_spool_id in disappeared if active_spool_id else bool(disappeared)
     return hms_edge or spool_edge
+
+
+def humanize_spool_id(spool_id: str | None) -> str | None:
+    """Turn an internal slot id (tool-1, ams0-2, external) into a label for alerts."""
+    if not spool_id:
+        return None
+    if spool_id == "external":
+        return "External spool"
+    if spool_id.startswith("tool-"):
+        return f"Lane {spool_id[len('tool-'):]}"
+    if spool_id.startswith("ams"):
+        try:
+            unit, tray = spool_id[len("ams"):].split("-")
+            return f"AMS {int(unit) + 1} slot {int(tray) + 1}"
+        except (ValueError, IndexError):
+            return spool_id
+    return spool_id
 
 
 def build_filament_runout_embed(printer: dict[str, Any]) -> dict[str, Any]:
@@ -1582,9 +1643,12 @@ def build_filament_runout_embed(printer: dict[str, Any]) -> dict[str, Any]:
     fields = [{"name": "Printer", "value": printer_name, "inline": True}]
     if filename:
         fields.append({"name": "Job", "value": str(filename), "inline": True})
+    slot_label = humanize_spool_id(printer.get("activeSpoolId"))
+    if slot_label:
+        fields.append({"name": "Filament", "value": slot_label, "inline": True})
     return {
         "title": f"{printer_name} Out of Filament",
-        "description": "A loaded filament was depleted or removed during printing.",
+        "description": "The filament feeding the current print was depleted or removed.",
         "color": discord_color_for_status("failed"),
         "fields": fields,
         "timestamp": iso_timestamp(),
