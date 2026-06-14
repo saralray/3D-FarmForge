@@ -721,18 +721,24 @@ export function PrinterDetail() {
     })) ?? [];
   // Profiles without a Moonraker task config (e.g. Bambu) report loaded
   // filament through printer.spools, populated by the poller.
-  const spoolSlots: FilamentSlot[] = (printer.spools ?? []).map((spool, index) => ({
-    slot: index + 1,
-    vendor: '',
-    type: spool.material || 'Unknown',
-    subType: '',
-    color: spool.color || '#808080',
-    isLoaded: true,
-    isInUse: printer.status === 'printing',
-    trayId: bambuTrayId(spool.id),
-    remaining: spool.remaining,
-    weight: spool.weight,
-  }));
+  const spoolSlots: FilamentSlot[] = (printer.spools ?? []).map((spool, index) => {
+    const trayId = bambuTrayId(spool.id);
+    return {
+      // Show the physical tray position (trayId 0-based → 1-based slot) so the
+      // slot number matches the AMS, not just the order spools were reported.
+      // The external spool (254) and non-Bambu profiles fall back to index+1.
+      slot: trayId !== undefined && trayId !== 254 ? trayId + 1 : index + 1,
+      vendor: '',
+      type: spool.material || 'Unknown',
+      subType: '',
+      color: spool.color || '#808080',
+      isLoaded: true,
+      isInUse: printer.status === 'printing',
+      trayId,
+      remaining: spool.remaining,
+      weight: spool.weight,
+    };
+  });
   const filamentSlots: FilamentSlot[] =
     taskConfigSlots.length > 0 ? taskConfigSlots : spoolSlots;
   const formattedTimeRemaining = formatMinutesAsHourDotMinute(printer.currentJob?.timeRemaining ?? 0);
@@ -1113,7 +1119,7 @@ export function PrinterDetail() {
 
           <div className="space-y-4">
             {/* Camera is always shown so staff can watch the printer regardless of job state. */}
-            <div className="overflow-hidden rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-900">
+            <div className="relative overflow-hidden rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-900">
               {isOnline ? (
                 supportsWebcamStream ? (
                   // Snapmaker's own real-time H264 player (jmuxer → <video>), which
@@ -1179,6 +1185,28 @@ export function PrinterDetail() {
                 <div className="flex h-80 w-full items-center justify-center text-sm text-gray-500 dark:text-gray-400">
                   Webcam offline
                 </div>
+              )}
+
+              {/* Chamber/cavity light toggle, overlaid on the live view rather than
+                  taking up a card of its own. */}
+              {canControlPrinter && printerSupportsLight(printer) && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant={lightOn ? 'default' : 'secondary'}
+                  disabled={!isOnline || lightInFlight}
+                  onClick={() => handleToggleLight(!lightOn)}
+                  aria-pressed={lightOn}
+                  aria-label={
+                    printer.profile === 'snapmaker_u1' ? 'Cavity light' : 'Chamber light'
+                  }
+                  title={printer.profile === 'snapmaker_u1' ? 'Cavity Light' : 'Chamber Light'}
+                  className={`absolute right-2 top-2 size-9 rounded-full shadow-md ${CONTROL_GLOW} ${
+                    lightOn ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : ''
+                  }`}
+                >
+                  <Lightbulb className={`size-5 ${lightOn ? 'fill-current' : ''}`} />
+                </Button>
               )}
             </div>
 
@@ -1404,7 +1432,9 @@ export function PrinterDetail() {
                             <FilamentSpoolIcon color={slot.color} />
                           </div>
                           <div>
-                            <div className="font-medium dark:text-white">Tool {slot.slot}</div>
+                            <div className="font-medium dark:text-white">
+                              {isBambuProfile(printer.profile) ? 'Slot' : 'Tool'} {slot.slot}
+                            </div>
                             <div className="text-sm text-gray-600 dark:text-gray-400">
                               {`${slot.vendor} ${slot.type}`.trim()}{slot.subType ? ` / ${slot.subType}` : ''}
                             </div>
@@ -1462,52 +1492,28 @@ export function PrinterDetail() {
                 No live filament status available.
               </p>
             )}
-            {canControlFilament && filamentSlots.length > 0 && !isFilamentReady && (
-              <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
-                Filament can only be loaded or unloaded while the printer is online and idle.
-              </p>
-            )}
           </Card>
           ),
-          light:
-            canControlPrinter && printerSupportsLight(printer) ? (
-            <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
-              <h2 className="text-xl font-semibold mb-4 flex items-center gap-2 dark:text-white">
-                <Lightbulb className="size-5" />
-                {printer.profile === 'snapmaker_u1' ? 'Cavity Light' : 'Chamber Light'}
-              </h2>
-              <Button
-                type="button"
-                size="lg"
-                variant={lightOn ? 'default' : 'outline'}
-                disabled={!isOnline || lightInFlight}
-                onClick={() => handleToggleLight(!lightOn)}
-                className={`h-14 w-full justify-center text-base font-semibold ${CONTROL_GLOW} ${
-                  lightOn ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : ''
-                }`}
-                aria-pressed={lightOn}
-              >
-                <Lightbulb className={`size-6 mr-2 ${lightOn ? 'fill-current' : ''}`} />
-                {lightInFlight
-                  ? 'Switching…'
-                  : lightOn
-                    ? 'Light On — tap to turn off'
-                    : 'Light Off — tap to turn on'}
-              </Button>
-              {!isOnline && (
-                <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
-                  Connect the printer to control its light.
-                </p>
-              )}
-            </Card>
-          ) : null,
           cooling:
             canControlPrinter && printerSupportsCoolingControl(printer) ? (
             <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
-              <h2 className="text-xl font-semibold mb-4 flex items-center gap-2 dark:text-white">
-                <Fan className="size-5" />
-                Cooling
-              </h2>
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <h2 className="text-xl font-semibold flex items-center gap-2 dark:text-white">
+                  <Fan className="size-5" />
+                  Cooling
+                </h2>
+                {supportsAirFilter && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-600 dark:text-gray-400">Air Filter</span>
+                    <Switch
+                      checked={airFilterOn}
+                      disabled={!canControlCooling || airFilterInFlight}
+                      onCheckedChange={handleToggleAirFilter}
+                      aria-label="Air filter"
+                    />
+                  </div>
+                )}
+              </div>
               <div className="space-y-5">
                 {printerFans.map((fan) => {
                   const value = fanInputs[fan.id] ?? 0;
@@ -1547,22 +1553,6 @@ export function PrinterDetail() {
                     </div>
                   );
                 })}
-                {supportsAirFilter && (
-                  <div className="flex items-center justify-between gap-3 border-t border-gray-200 pt-4 dark:border-gray-700">
-                    <div>
-                      <span className="text-sm text-gray-600 dark:text-gray-400">Air Filter</span>
-                      <p className="text-xs text-gray-400 dark:text-gray-500">
-                        Activated-carbon filtration
-                      </p>
-                    </div>
-                    <Switch
-                      checked={airFilterOn}
-                      disabled={!canControlCooling || airFilterInFlight}
-                      onCheckedChange={handleToggleAirFilter}
-                      aria-label="Air filter"
-                    />
-                  </div>
-                )}
                 {!isOnline && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     Connect the printer to control its cooling fans.
@@ -1702,11 +1692,9 @@ export function PrinterDetail() {
                   {motionInFlight === 'disable' ? 'Disabling…' : 'Disable motors'}
                 </Button>
 
-                {!isMotionReady && (
+                {!isMotionReady && !isOnline && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">
-                    {isOnline
-                      ? 'Motion control is available when the printer is idle.'
-                      : 'Connect the printer to control its motion.'}
+                    Connect the printer to control its motion.
                   </p>
                 )}
               </div>
