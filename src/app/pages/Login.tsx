@@ -11,7 +11,7 @@ import { Eye, EyeOff, ClipboardList } from 'lucide-react';
 import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
 import { fetchAdminConfigured } from '../lib/adminCredentialApi';
 import { useIntegrationSettings } from '../lib/settingsApi';
-import stemlabLogo from '../../../CUD-STEM-LAB-logoBBGv2.svg';
+import { Logo } from '../components/Logo';
 
 export function Login() {
   if (PUBLIC_VIEWER_MODE) {
@@ -128,11 +128,7 @@ export function Login() {
       <div className="w-full max-w-lg space-y-6">
         <div className="text-center">
           <div className="flex items-center justify-center gap-2 mb-4">
-            <img
-              src={stemlabLogo}
-              alt="CUD Stemlab PrintFarm logo"
-              className="h-24 w-auto max-w-full dark:invert dark:brightness-200"
-            />
+            <Logo baseHeight={96} alt="CUD Stemlab PrintFarm logo" />
           </div>
           <p className="text-gray-600 dark:text-gray-400 mt-2">
             {showSetup

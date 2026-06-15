@@ -7,6 +7,7 @@ import { Progress } from './ui/progress';
 import { Badge } from './ui/badge';
 import { buildPrinterWebcamSnapshotUrl } from '../lib/printerProfiles';
 import { formatMaxTwoDecimals } from '../lib/numberFormat';
+import { useIsMobile } from './ui/use-mobile';
 
 interface PrinterCardProps {
   printer: Printer;
@@ -27,12 +28,19 @@ export function PrinterCard({
 }: PrinterCardProps) {
   const navigate = useNavigate();
   const draggedRef = useRef(false);
+  // On phones the webcam preview is hidden to save space — the live view lives
+  // on the printer control page — so we also skip the snapshot polling here.
+  const isMobile = useIsMobile();
   const [snapshotNonce, setSnapshotNonce] = useState(() => Date.now());
   const webcamSnapshotUrl = `${buildPrinterWebcamSnapshotUrl(printer)}?t=${snapshotNonce}`;
   const isOnline = printer.status !== 'offline';
   const activityLabel = isOnline ? printer.status : 'unreachable';
 
   useEffect(() => {
+    if (isMobile) {
+      return;
+    }
+
     setSnapshotNonce(Date.now());
 
     if (!isOnline) {
@@ -46,7 +54,7 @@ export function PrinterCard({
     return () => {
       window.clearInterval(interval);
     };
-  }, [isOnline, printer.id]);
+  }, [isOnline, printer.id, isMobile]);
 
   const getActivityIcon = () => {
     switch (printer.status) {
@@ -91,7 +99,7 @@ export function PrinterCard({
 
   return (
     <Card
-      className={`printer-card p-4 hover:shadow-lg transition-shadow dark:bg-gray-800 dark:border-gray-700 ${canManage && onDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+      className={`printer-card p-3 sm:p-4 hover:shadow-lg transition-shadow dark:bg-gray-800 dark:border-gray-700 ${canManage && onDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
       draggable={canManage && Boolean(onDragStart)}
       onClick={() => {
         if (draggedRef.current) {
@@ -129,28 +137,30 @@ export function PrinterCard({
         }, 0);
       }}
     >
-      <div className="printer-card-webcam mb-4 aspect-video overflow-hidden rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-900">
-        {isOnline ? (
-          <img
-            src={webcamSnapshotUrl}
-            alt={`${printer.name} webcam`}
-            className="h-full w-full object-cover"
-            loading="lazy"
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center text-sm text-gray-500 dark:text-gray-400">
-            Webcam offline
-          </div>
-        )}
-      </div>
-
-      <div className="flex items-start justify-between mb-3">
-        <div>
-          <h3 className="font-semibold mb-1 dark:text-white">{printer.name}</h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{printer.model}</p>
+      {!isMobile && (
+        <div className="printer-card-webcam mb-4 aspect-video overflow-hidden rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-900">
+          {isOnline ? (
+            <img
+              src={webcamSnapshotUrl}
+              alt={`${printer.name} webcam`}
+              className="h-full w-full object-cover"
+              loading="lazy"
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+              Webcam offline
+            </div>
+          )}
         </div>
-        <div className="flex flex-1 items-start justify-end gap-2">
-          <div className="ml-auto flex flex-col items-end gap-2">
+      )}
+
+      <div className="flex flex-col sm:flex-row items-start justify-between gap-2 mb-3">
+        <div className="min-w-0 w-full">
+          <h3 className="font-semibold mb-0.5 sm:mb-1 dark:text-white text-sm sm:text-base truncate">{printer.name}</h3>
+          <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">{printer.model}</p>
+        </div>
+        <div className="flex w-full sm:w-auto sm:flex-1 items-start justify-start sm:justify-end gap-2">
+          <div className="flex flex-col items-start sm:items-end gap-2 sm:ml-auto">
             <div className="flex items-center gap-2">
               <Badge variant={getStatusBadgeVariant()} className="flex items-center gap-1 capitalize">
                 {getActivityIcon()}

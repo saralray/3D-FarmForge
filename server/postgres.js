@@ -222,9 +222,9 @@ export async function ensureSchema() {
   await schemaReadyPromise;
 }
 
-export async function listPrinters() {
+export async function listPrinters(forceSensitive = false) {
   await ensureSchema();
-  const includeSensitive = !isPublicViewerMode();
+  const includeSensitive = forceSensitive || !isPublicViewerMode();
 
   const result = await query(`
     SELECT COALESCE(

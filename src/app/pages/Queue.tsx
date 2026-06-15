@@ -5,7 +5,7 @@ import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { List, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
-import { deleteQueueJob, fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
+import { deleteQueueJob, fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses, syncQueueJobs } from '../lib/queueApi';
 import { useAuth } from '../contexts/AuthContext';
 import { usePrinters } from '../contexts/PrintersContext';
 import { useIntegrationSettings } from '../lib/settingsApi';
@@ -21,9 +21,12 @@ export function Queue() {
   useEffect(() => {
     let active = true;
 
-    const refreshQueue = async () => {
+    // On mount, request a fresh Sheet sync; routine polling then uses the cheap
+    // read endpoint (the server keeps the stored queue in sync in the
+    // background, so we don't pull the Sheet on every interval).
+    const loadQueue = async (sync: boolean) => {
       try {
-        const jobs = await fetchQueueJobs();
+        const jobs = sync ? await syncQueueJobs() : await fetchQueueJobs();
         if (active) {
           setQueue(jobs.queue);
           setHistory(jobs.history);
@@ -33,8 +36,8 @@ export function Queue() {
       }
     };
 
-    refreshQueue();
-    const queueInterval = window.setInterval(refreshQueue, 30000);
+    loadQueue(true);
+    const queueInterval = window.setInterval(() => loadQueue(false), 30000);
 
     return () => {
       active = false;

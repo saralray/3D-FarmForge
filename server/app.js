@@ -66,6 +66,16 @@ const PRINTER_CARD_LAYOUT_PROFILES = new Set([
 // the cards) stored in app_settings, like the printer-detail card layout above.
 const ANALYTICS_LAYOUT_KEY = 'analytics_layout';
 
+// Queue sync cadence. The Sheet is pulled once per interval server-side (not per
+// client request), and each pull is bounded by a fetch timeout so a slow Sheet
+// can't hang the loop. 0 disables the background loop (sync then runs only on
+// explicit POST /api/queue/sync).
+const QUEUE_SYNC_INTERVAL_MS = Number.parseInt(process.env.QUEUE_SYNC_INTERVAL_MS ?? '60000', 10);
+const QUEUE_SYNC_FETCH_TIMEOUT_MS = Number.parseInt(
+  process.env.QUEUE_SYNC_FETCH_TIMEOUT_MS ?? '15000',
+  10,
+);
+
 // Google Sheet (queue feed) and Google Form (print-request) URLs. Configured by
 // admins in Settings → Integrations and persisted in app_settings; they are
 // empty until an admin sets them (no build-time/env defaults).
@@ -77,6 +87,133 @@ async function getIntegrationUrls() {
     googleSheetQueueUrl: stored.googleSheetQueueUrl || '',
     googleFormUrl: stored.googleFormUrl || '',
   };
+}
+
+// Branding: an admin-uploaded logo that overrides the bundled default SVG.
+// The image is stored as a data: URL in app_settings so it survives container
+// rebuilds without a filesystem volume; an empty value means "use the default".
+// For SVG uploads we also analyze the markup and keep a theme-adaptive copy
+// (`logoSvg`) so the frontend can inline it and let monochrome marks follow the
+// light/dark theme via `currentColor`. `logoScale` sizes the rendered logo.
+const BRANDING_KEY = 'branding';
+
+// Cap the stored data URL so a single logo can't bloat the row past the request
+// body limit (maxBodyBytes). 700 KB of data URL ~= a 512 KB image after base64.
+const MAX_LOGO_DATA_URL_BYTES = 700 * 1024;
+
+// Allowed logo size multiplier range (1 = the built-in default size).
+const MIN_LOGO_SCALE = 0.5;
+const MAX_LOGO_SCALE = 2;
+
+function clampLogoScale(value) {
+  const scale = Number(value);
+  if (!Number.isFinite(scale)) return 1;
+  return Math.min(MAX_LOGO_SCALE, Math.max(MIN_LOGO_SCALE, Math.round(scale * 100) / 100));
+}
+
+async function getBranding() {
+  const stored = (await getAppSetting(BRANDING_KEY)) || {};
+  return {
+    logoDataUrl: typeof stored.logoDataUrl === 'string' ? stored.logoDataUrl : '',
+    logoSvg: typeof stored.logoSvg === 'string' ? stored.logoSvg : '',
+    logoAdaptive: stored.logoAdaptive === true,
+    logoScale: clampLogoScale(stored.logoScale ?? 1),
+  };
+}
+
+function decodeSvgDataUrl(dataUrl) {
+  const match = /^data:image\/svg\+xml;base64,(.*)$/s.exec(dataUrl);
+  if (!match) return '';
+  try {
+    return Buffer.from(match[1], 'base64').toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+// Strip the obvious active-content vectors before we inline admin-uploaded SVG
+// markup into the DOM. Upload is admin-only, but this is cheap insurance against
+// a stored XSS via <script>, event handlers, or external/script URLs.
+function sanitizeSvg(svg) {
+  return svg
+    .replace(/<\?xml[\s\S]*?\?>/gi, '')
+    .replace(/<!DOCTYPE[\s\S]*?>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/(?:xlink:href|href)\s*=\s*"(?:\s*javascript:|\s*https?:|\s*data:)[^"]*"/gi, '')
+    .trim();
+}
+
+// Drop the root width/height so CSS height controls the rendered size (keeping
+// aspect ratio via viewBox); synthesize a viewBox from width/height if missing.
+function normalizeSvgSize(svg) {
+  return svg.replace(/<svg\b[^>]*>/i, (tag) => {
+    let next = tag;
+    if (!/viewBox\s*=/i.test(next)) {
+      const width = (/(?:^|\s)width\s*=\s*["']?([\d.]+)/i.exec(next) || [])[1];
+      const height = (/(?:^|\s)height\s*=\s*["']?([\d.]+)/i.exec(next) || [])[1];
+      if (width && height) {
+        next = next.replace(/<svg\b/i, `<svg viewBox="0 0 ${width} ${height}"`);
+      }
+    }
+    return next.replace(/\s(?:width|height)\s*=\s*(?:"[^"]*"|'[^']*'|[\d.]+)(?=[\s>])/gi, '');
+  });
+}
+
+const SVG_COLOR_KEYWORDS = new Set([
+  'none',
+  'transparent',
+  'currentcolor',
+  'inherit',
+  'initial',
+  'unset',
+  'context-fill',
+  'context-stroke',
+]);
+
+// Inspect an uploaded SVG and decide whether it is a single-color ("monochrome")
+// mark we can recolor to follow the theme. If so, every visible color is swapped
+// for `currentColor` so light/dark mode drives it; genuine multi-color art is
+// left with its own colors. Returns the size-normalized markup either way.
+function analyzeSvgForTheme(rawSvg) {
+  const svg = normalizeSvgSize(sanitizeSvg(rawSvg));
+  if (!/<svg[\s>]/i.test(svg)) {
+    return { svg: '', adaptive: false };
+  }
+
+  const colorAttr = /(?:fill|stroke|stop-color)\s*[:=]\s*["']?\s*([^"';>\s]+)/gi;
+  const originalValues = [];
+  const normalizedColors = new Set();
+  let match;
+  while ((match = colorAttr.exec(svg)) !== null) {
+    const raw = match[1].trim();
+    const normalized = raw.toLowerCase();
+    if (SVG_COLOR_KEYWORDS.has(normalized) || normalized.startsWith('url(')) {
+      continue;
+    }
+    originalValues.push(raw);
+    normalizedColors.add(normalized);
+  }
+
+  // More than one distinct color → real multi-color logo; keep it untouched.
+  if (normalizedColors.size > 1) {
+    return { svg, adaptive: false };
+  }
+
+  let themed = svg;
+  for (const value of new Set(originalValues)) {
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    themed = themed.replace(new RegExp(escaped, 'gi'), 'currentColor');
+  }
+  // No explicit fill anywhere → the art relies on the default black fill; pin
+  // that to currentColor on the root so it adapts too.
+  if (originalValues.length === 0 && !/fill\s*[:=]/i.test(themed)) {
+    themed = themed.replace(/<svg\b/i, '<svg fill="currentColor"');
+  }
+
+  return { svg: themed, adaptive: true };
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -376,6 +513,54 @@ async function sendQueueAddedNotifications(jobs) {
           }),
         ),
     );
+  }
+}
+
+// Pull the Google Sheet, upsert new/changed rows, and fire add notifications.
+// This is the only place that touches the Sheet, shared by the periodic
+// background sync and the explicit POST /api/queue/sync endpoint so that the
+// read path (GET /api/queue) can stay a cheap DB read. The fetch is bounded by
+// QUEUE_SYNC_FETCH_TIMEOUT_MS so a slow/unreachable Sheet can never hang a
+// request or stall the background loop.
+async function syncQueueFromSheet() {
+  const { googleSheetQueueUrl } = await getIntegrationUrls();
+  if (!googleSheetQueueUrl) {
+    throw new Error('Google Sheet queue URL is not configured (set it in Settings → Integrations)');
+  }
+
+  const response = await fetch(toGoogleSheetCsvUrl(googleSheetQueueUrl), {
+    headers: { Accept: 'text/csv,text/plain;q=0.9,*/*;q=0.8' },
+    signal: AbortSignal.timeout(QUEUE_SYNC_FETCH_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Google Sheet request failed with ${response.status}`);
+  }
+
+  const jobs = mapSheetRowsToQueue(parseCsv(await response.text()));
+  const addedJobs = await upsertQueueJobs(jobs);
+  sendQueueAddedNotifications(addedJobs).catch((error) => {
+    console.error('Failed to send queue add notification', error);
+  });
+  return addedJobs;
+}
+
+// Periodic background sync: keeps queue_jobs fresh from the Sheet without any
+// client driving it, so every tab can poll the cheap read endpoint instead of
+// each one triggering its own Sheet fetch + full upsert. Runs are serialized
+// (no overlap) and failures are logged but never throw out of the interval.
+let queueSyncInFlight = false;
+async function runBackgroundQueueSync() {
+  if (queueSyncInFlight) {
+    return;
+  }
+  queueSyncInFlight = true;
+  try {
+    await syncQueueFromSheet();
+  } catch (error) {
+    console.error('Background queue sync failed', error);
+  } finally {
+    queueSyncInFlight = false;
   }
 }
 
@@ -1004,7 +1189,10 @@ function dataApiMethodNotAllowed(res) {
 async function handleDataApiPrinters(req, res, { apiKey, method, id, sub, action, requestUrl }) {
   if (!id) {
     if (method === 'GET') {
-      sendJson(res, 200, await listPrinters());
+      // Data API is key-gated, so connection details (url, ip, api key, serial —
+      // needed to reach each printer's hardware/webcam) are NOT redacted, even in
+      // public viewer mode. This matches the single-printer getPrinterById read.
+      sendJson(res, 200, await listPrinters(true));
       return true;
     }
     if (method === 'POST') {
@@ -1371,29 +1559,23 @@ async function handleApi(req, res, requestUrl) {
     return true;
   }
 
+  // Read path: cheap DB read, no Sheet fetch. The Sheet is pulled by the
+  // background sync loop (and by the explicit POST below), so every polling tab
+  // hits this instead of triggering its own fetch + full upsert.
   if (requestUrl.pathname === '/api/queue') {
     if (req.method === 'GET') {
-      const { googleSheetQueueUrl } = await getIntegrationUrls();
-      if (!googleSheetQueueUrl) {
-        throw new Error('Google Sheet queue URL is not configured (set it in Settings → Integrations)');
-      }
-
-      const response = await fetch(toGoogleSheetCsvUrl(googleSheetQueueUrl), {
-        headers: { Accept: 'text/csv,text/plain;q=0.9,*/*;q=0.8' },
-      });
-
-      if (!response.ok) {
-        throw new Error(`Google Sheet request failed with ${response.status}`);
-      }
-
-      const jobs = mapSheetRowsToQueue(parseCsv(await response.text()));
-      const addedJobs = await upsertQueueJobs(jobs);
-      sendQueueAddedNotifications(addedJobs).catch((error) => {
-        console.error('Failed to send queue add notification', error);
-      });
       sendJson(res, 200, await listQueueData());
       return true;
     }
+  }
+
+  // Explicit Sheet sync: pull + upsert + notify, then return the fresh queue.
+  // Used for on-demand refresh (e.g. opening the Queue page) on top of the
+  // periodic background sync.
+  if (requestUrl.pathname === '/api/queue/sync' && req.method === 'POST') {
+    await syncQueueFromSheet();
+    sendJson(res, 200, await listQueueData());
+    return true;
   }
 
   if (requestUrl.pathname === '/api/queue/reset' && req.method === 'POST') {
@@ -1795,6 +1977,55 @@ async function handleApi(req, res, requestUrl) {
     }
   }
 
+  // Customizable site logo. GET is public (the Login/Navigation logo must render
+  // before auth); PUT (admin-only in the UI) stores an uploaded image as a data
+  // URL, or clears it to fall back to the bundled default.
+  if (requestUrl.pathname === '/api/settings/branding') {
+    if (req.method === 'GET') {
+      sendJson(res, 200, await getBranding());
+      return true;
+    }
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      const logoDataUrl = body?.logoDataUrl;
+      if (typeof logoDataUrl !== 'string') {
+        sendJson(res, 400, { error: 'logoDataUrl must be a string' });
+        return true;
+      }
+      const trimmed = logoDataUrl.trim();
+      if (trimmed && !/^data:image\/(png|jpeg|webp|gif|svg\+xml);base64,/.test(trimmed)) {
+        sendJson(res, 400, {
+          error: 'logoDataUrl must be an empty string or a base64 image data URL',
+        });
+        return true;
+      }
+      if (Buffer.byteLength(trimmed, 'utf8') > MAX_LOGO_DATA_URL_BYTES) {
+        sendJson(res, 413, { error: 'Logo image is too large (max ~512 KB).' });
+        return true;
+      }
+
+      const logoScale = clampLogoScale(body?.logoScale ?? 1);
+
+      // For SVG uploads, analyze the markup and keep a theme-adaptive copy that
+      // the frontend can inline; non-SVG (raster) logos render straight from the
+      // data URL with no theming.
+      let logoSvg = '';
+      let logoAdaptive = false;
+      if (trimmed.startsWith('data:image/svg+xml;base64,')) {
+        const raw = decodeSvgDataUrl(trimmed);
+        if (raw) {
+          const analyzed = analyzeSvgForTheme(raw);
+          logoSvg = analyzed.svg;
+          logoAdaptive = analyzed.adaptive;
+        }
+      }
+
+      await setAppSetting(BRANDING_KEY, { logoDataUrl: trimmed, logoSvg, logoAdaptive, logoScale });
+      sendJson(res, 200, await getBranding());
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -1995,6 +2226,16 @@ await assertProductionInputs();
 ensureSchema().catch((error) => {
   console.error('Initial schema setup failed; will retry on first database request', error);
 });
+
+// Periodic background queue sync: one Sheet pull per interval for the whole
+// server, regardless of how many tabs are polling. Kicks off shortly after
+// startup (lets the schema settle) and repeats on QUEUE_SYNC_INTERVAL_MS.
+if (Number.isFinite(QUEUE_SYNC_INTERVAL_MS) && QUEUE_SYNC_INTERVAL_MS > 0) {
+  setTimeout(() => {
+    runBackgroundQueueSync();
+    setInterval(runBackgroundQueueSync, QUEUE_SYNC_INTERVAL_MS).unref();
+  }, 2000).unref();
+}
 
 createServer(handleRequest).listen(port, host, () => {
   console.log(`Print Farm server listening on ${host}:${port}`);

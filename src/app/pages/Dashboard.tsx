@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Printer } from '../types';
 import { PrinterCard } from '../components/PrinterCard';
-import { Activity, AlertCircle, CheckCircle, Lightbulb, Pause, WifiOff } from 'lucide-react';
+import { Activity, AlertCircle, CheckCircle, Lightbulb, Pause } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { useAuth } from '../contexts/AuthContext';
@@ -9,6 +9,7 @@ import { savePrinter } from '../lib/printersApi';
 import { printerSupportsLight, setPrinterLight } from '../lib/printerProfiles';
 import { logAuditEvent } from '../lib/auditApi';
 import { usePrinters } from '../contexts/PrintersContext';
+import { useIsMobile } from '../components/ui/use-mobile';
 import { toast } from 'sonner';
 
 export function Dashboard() {
@@ -17,6 +18,10 @@ export function Dashboard() {
   const [draggedPrinterId, setDraggedPrinterId] = useState<string | null>(null);
   const [lightsInFlight, setLightsInFlight] = useState(false);
   const { user } = useAuth();
+  // Drag-to-reorder ("edit layout") is awkward on touch phones, so it's
+  // disabled there — cards stay tap-to-open only.
+  const isMobile = useIsMobile();
+  const canReorder = user?.role === 'admin' && !isMobile;
   const loadErrorToastShownRef = useRef(false);
 
   // Adopt the shared poll's data except while a drag is in progress, so the
@@ -63,11 +68,10 @@ export function Dashboard() {
   };
 
   const statCards = [
-    { label: 'Online', value: stats.online, icon: CheckCircle, color: 'text-green-500', bgColor: 'bg-green-50 dark:bg-green-900/30' },
+    { label: 'Online', value: `${stats.online}/${stats.total}`, icon: CheckCircle, color: 'text-green-500', bgColor: 'bg-green-50 dark:bg-green-900/30' },
     { label: 'Printing', value: stats.printing, icon: Activity, color: 'text-blue-500', bgColor: 'bg-blue-50 dark:bg-blue-900/30' },
     { label: 'Paused', value: stats.paused, icon: Pause, color: 'text-yellow-500', bgColor: 'bg-yellow-50 dark:bg-yellow-900/30' },
     { label: 'Error', value: stats.error, icon: AlertCircle, color: 'text-red-500', bgColor: 'bg-red-50 dark:bg-red-900/30' },
-    { label: 'Offline', value: stats.offline, icon: WifiOff, color: 'text-gray-500', bgColor: 'bg-gray-50 dark:bg-gray-800' },
   ];
 
   // Printers that expose a chamber/cavity light and are currently reachable.
@@ -167,7 +171,7 @@ export function Dashboard() {
         <p className="text-gray-600 dark:text-gray-400">Monitor and manage all printers in real-time</p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {statCards.map((stat) => (
           <Card key={stat.label} className={`p-4 ${stat.bgColor} border-0`}>
             <div className="flex items-center justify-between">
@@ -183,16 +187,16 @@ export function Dashboard() {
 
       <div>
         <h2 className="text-xl font-semibold mb-4 dark:text-white">All Printers ({stats.total})</h2>
-        <div className="printer-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div className="printer-grid grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
           {printers.map((printer) => (
             <PrinterCard
               key={printer.id}
               printer={printer}
-              canManage={user?.role === 'admin'}
+              canManage={canReorder}
               canViewSensitiveInfo={user?.role !== 'viewer'}
-              onDragStart={handlePrinterDragStart}
-              onDragOver={handlePrinterDragOver}
-              onDragEnd={handlePrinterDragEnd}
+              onDragStart={canReorder ? handlePrinterDragStart : undefined}
+              onDragOver={canReorder ? handlePrinterDragOver : undefined}
+              onDragEnd={canReorder ? handlePrinterDragEnd : undefined}
             />
           ))}
         </div>
@@ -205,11 +209,11 @@ export function Dashboard() {
           disabled={lightsInFlight}
           aria-pressed={anyLightOn}
           title={anyLightOn ? 'Turn all printer lights off' : 'Turn all printer lights on'}
-          className={`fixed bottom-6 right-6 z-50 size-14 rounded-full shadow-lg ${
+          className={`fixed right-4 bottom-[calc(env(safe-area-inset-bottom)+4.5rem)] z-50 size-12 rounded-full shadow-lg lg:right-6 lg:bottom-6 lg:size-14 ${
             anyLightOn ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : ''
           }`}
         >
-          <Lightbulb className={`size-6 ${anyLightOn ? 'fill-current' : ''}`} />
+          <Lightbulb className={`size-5 lg:size-6 ${anyLightOn ? 'fill-current' : ''}`} />
         </Button>
       )}
     </div>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="PrintFarm">
+  <!-- Full-bleed background so Android's adaptive-icon mask never reveals transparency. -->
+  <rect width="512" height="512" fill="#863bff" />
+  <!-- Glyph kept inside the central 80% safe zone so circle/squircle masks don't clip it. -->
+  <g transform="translate(128,128) scale(4)" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="10" y="6" width="44" height="40" rx="3" />
+    <line x1="10" y1="20" x2="54" y2="20" />
+    <rect x="27" y="20" width="10" height="7" rx="1" fill="#38bdf8" stroke="#ffffff" />
+    <path d="M32 27 L32 32" />
+    <line x1="18" y1="40" x2="46" y2="40" />
+    <path d="M27 40 L29 33 L35 33 L37 40 Z" fill="#38bdf8" stroke="#ffffff" />
+    <line x1="16" y1="46" x2="16" y2="52" />
+    <line x1="48" y1="46" x2="48" y2="52" />
+    <line x1="12" y1="52" x2="52" y2="52" />
+  </g>
+</svg>

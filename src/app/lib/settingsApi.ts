@@ -23,6 +23,77 @@ async function parseError(response: Response) {
   }
 }
 
+export interface BrandingSettings {
+  // Empty string means "use the bundled default logo".
+  logoDataUrl: string;
+  // Theme-adaptive, sanitized SVG markup for inline rendering (SVG uploads only).
+  logoSvg: string;
+  // True when logoSvg was recolored to follow the theme via currentColor.
+  logoAdaptive: boolean;
+  // Size multiplier for the rendered logo (1 = built-in default size).
+  logoScale: number;
+}
+
+const DEFAULT_BRANDING_SETTINGS: BrandingSettings = {
+  logoDataUrl: '',
+  logoSvg: '',
+  logoAdaptive: false,
+  logoScale: 1,
+};
+
+// The fields the client sends on save; the server derives logoSvg/logoAdaptive.
+export interface BrandingInput {
+  logoDataUrl: string;
+  logoScale: number;
+}
+
+export async function fetchBrandingSettings(): Promise<BrandingSettings> {
+  const response = await fetch('/api/settings/branding', { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return response.json() as Promise<BrandingSettings>;
+}
+
+export async function saveBrandingSettings(
+  settings: BrandingInput,
+): Promise<BrandingSettings> {
+  const response = await fetch('/api/settings/branding', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  logAuditEvent('settings.branding');
+  return response.json() as Promise<BrandingSettings>;
+}
+
+// Read-only hook for components that render the logo (Login, Navigation).
+// Falls back to the bundled default (empty string) until the API responds.
+export function useBrandingSettings(): BrandingSettings {
+  const [settings, setSettings] = useState<BrandingSettings>(DEFAULT_BRANDING_SETTINGS);
+
+  useEffect(() => {
+    let active = true;
+    fetchBrandingSettings()
+      .then((value) => {
+        if (active) {
+          setSettings(value);
+        }
+      })
+      .catch(() => {
+        // Keep the bundled default on failure.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  return settings;
+}
+
 export async function fetchIntegrationSettings(): Promise<IntegrationSettings> {
   const response = await fetch('/api/settings/integrations', { cache: 'no-store' });
   if (!response.ok) {

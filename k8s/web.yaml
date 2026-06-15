@@ -53,6 +53,12 @@ spec:
                   name: printfarm-secret
                   key: SLICER_GRANT_SECRET
 
+            # Background Google Sheet → queue sync cadence + per-pull timeout.
+            - name: QUEUE_SYNC_INTERVAL_MS
+              value: "60000"
+            - name: QUEUE_SYNC_FETCH_TIMEOUT_MS
+              value: "15000"
+
           readinessProbe:
             httpGet:
               path: /healthz

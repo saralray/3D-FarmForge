@@ -5,10 +5,11 @@ import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
 import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
-import { useIntegrationSettings } from '../lib/settingsApi';
+import { useIntegrationSettings, useBrandingSettings } from '../lib/settingsApi';
+import { Logo } from './Logo';
 import { useSidebar } from '../contexts/SidebarContext';
 import { startAudioRgbSync, stopAudioRgbSync, type AudioRgbSource } from '../lib/audioRgbSync';
-import stemlabLogo from '../../../CUD-STEM-LAB-logoBBGv2.svg';
+import stemlabLogo from '../assets/printer-logo.svg';
 
 export function Navigation() {
   const location = useLocation();
@@ -51,6 +52,11 @@ export function Navigation() {
     }
   };
   const { googleFormUrl } = useIntegrationSettings();
+  const { logoDataUrl, logoScale } = useBrandingSettings();
+  const logoBaseHeight = isCollapsed ? 36 : 56;
+  // The RGB-wave effect masks an animated gradient with the logo shape, so it
+  // needs an image URL — use the uploaded logo or fall back to the bundled mark.
+  const logoMaskUrl = logoDataUrl || stemlabLogo;
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -74,7 +80,7 @@ export function Navigation() {
 
   return (
     <nav
-      className={`relative flex h-screen h-[100dvh] flex-shrink-0 flex-col border-r border-gray-200 bg-white transition-[width] duration-300 ease-in-out dark:border-gray-700 dark:bg-gray-900 ${
+      className={`relative hidden h-screen h-[100dvh] flex-shrink-0 flex-col border-r border-gray-200 bg-white transition-[width] duration-300 ease-in-out lg:flex dark:border-gray-700 dark:bg-gray-900 ${
         isCollapsed ? 'w-[84px]' : 'w-72'
       }`}
     >
@@ -91,15 +97,21 @@ export function Navigation() {
               <div
                 role="img"
                 aria-label="CUD Stemlab PrintFarm logo"
-                className={`logo-rgb-wave aspect-[1774/486] max-w-full ${isCollapsed ? 'h-9' : 'h-14'}`}
-                style={{ WebkitMaskImage: `url(${stemlabLogo})`, maskImage: `url(${stemlabLogo})` }}
+                className="logo-rgb-wave aspect-square max-w-full"
+                style={{
+                  height: Math.round(logoBaseHeight * (logoScale || 1)),
+                  WebkitMaskImage: `url(${logoMaskUrl})`,
+                  maskImage: `url(${logoMaskUrl})`,
+                  WebkitMaskRepeat: 'no-repeat',
+                  maskRepeat: 'no-repeat',
+                  WebkitMaskPosition: 'center',
+                  maskPosition: 'center',
+                  WebkitMaskSize: 'contain',
+                  maskSize: 'contain',
+                }}
               />
             ) : (
-              <img
-                src={stemlabLogo}
-                alt="CUD Stemlab PrintFarm logo"
-                className={`w-auto max-w-full dark:invert dark:brightness-200 ${isCollapsed ? 'h-9' : 'h-14'}`}
-              />
+              <Logo baseHeight={logoBaseHeight} alt="CUD Stemlab PrintFarm logo" />
             )}
           </button>
           {logoWave && (

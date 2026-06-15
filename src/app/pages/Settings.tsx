@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Bell, Check, Copy, KeyRound, Link2, Plus, Settings as SettingsIcon, Shield, Trash2, Users } from 'lucide-react';
+import { Bell, Check, Copy, Image as ImageIcon, KeyRound, Link2, Plus, Settings as SettingsIcon, Shield, Trash2, Users } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Slider } from '../components/ui/slider';
+import defaultLogo from '../assets/printer-logo.svg';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
@@ -27,7 +29,12 @@ import { CreatedSlicerKey, SlicerApiKey, createSlicerKey, fetchSlicerKeys, remov
 import { fetchPrinters, savePrinter } from '../lib/printersApi';
 import { generateId, slugifyPrinterId } from '../lib/id';
 import { isBambuProfile, normalizePrinter, PRINTER_PROFILES } from '../lib/printerProfiles';
-import { fetchIntegrationSettings, saveIntegrationSettings } from '../lib/settingsApi';
+import {
+  fetchIntegrationSettings,
+  saveIntegrationSettings,
+  fetchBrandingSettings,
+  saveBrandingSettings,
+} from '../lib/settingsApi';
 
 const IPV4_PATTERN =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
@@ -63,6 +70,11 @@ export function Settings() {
   const [googleSheetQueueUrl, setGoogleSheetQueueUrl] = useState('');
   const [googleFormUrl, setGoogleFormUrl] = useState('');
   const [savingIntegrations, setSavingIntegrations] = useState(false);
+  const [logoDataUrl, setLogoDataUrl] = useState('');
+  const [logoSvg, setLogoSvg] = useState('');
+  const [logoAdaptive, setLogoAdaptive] = useState(false);
+  const [logoScale, setLogoScale] = useState(1);
+  const [savingBranding, setSavingBranding] = useState(false);
   const [slicerKeys, setSlicerKeys] = useState<SlicerApiKey[]>([]);
   const [slicerKeyName, setSlicerKeyName] = useState('');
   const [savingSlicerKey, setSavingSlicerKey] = useState(false);
@@ -90,6 +102,17 @@ export function Settings() {
       })
       .catch(() => {
         toast.error('Unable to load integration URLs.');
+      });
+
+    fetchBrandingSettings()
+      .then((settings) => {
+        setLogoDataUrl(settings.logoDataUrl);
+        setLogoSvg(settings.logoSvg);
+        setLogoAdaptive(settings.logoAdaptive);
+        setLogoScale(settings.logoScale);
+      })
+      .catch(() => {
+        toast.error('Unable to load branding settings.');
       });
 
     fetchSlicerKeys()
@@ -488,6 +511,86 @@ export function Settings() {
     }
   };
 
+  // ~512 KB raw image — matches the server's MAX_LOGO_DATA_URL_BYTES cap once
+  // base64-encoded. Keeping the check client-side too gives instant feedback.
+  const MAX_LOGO_BYTES = 512 * 1024;
+
+  const handleLogoFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    // Allow re-selecting the same file later by clearing the input value.
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please choose an image file (PNG, JPEG, WebP, GIF, or SVG).');
+      return;
+    }
+    if (file.size > MAX_LOGO_BYTES) {
+      toast.error('Logo image is too large (max 512 KB).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setLogoDataUrl(reader.result);
+        // The theme-adaptive SVG is produced server-side on save; clear any stale
+        // processed markup so the preview falls back to the raw image until then.
+        setLogoSvg('');
+        setLogoAdaptive(false);
+      }
+    };
+    reader.onerror = () => toast.error('Could not read the selected image.');
+    reader.readAsDataURL(file);
+  };
+
+  const applyBranding = (saved: Awaited<ReturnType<typeof saveBrandingSettings>>) => {
+    setLogoDataUrl(saved.logoDataUrl);
+    setLogoSvg(saved.logoSvg);
+    setLogoAdaptive(saved.logoAdaptive);
+    setLogoScale(saved.logoScale);
+  };
+
+  const handleSaveBranding = async () => {
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can change the site logo.');
+      return;
+    }
+    setSavingBranding(true);
+    try {
+      const saved = await saveBrandingSettings({ logoDataUrl, logoScale });
+      applyBranding(saved);
+      toast.success('Logo saved', {
+        description: 'Reload the page to see it update everywhere.',
+      });
+    } catch (error) {
+      toast.error('Unable to save logo', {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setSavingBranding(false);
+    }
+  };
+
+  const handleResetBranding = async () => {
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can change the site logo.');
+      return;
+    }
+    setSavingBranding(true);
+    try {
+      const saved = await saveBrandingSettings({ logoDataUrl: '', logoScale: 1 });
+      applyBranding(saved);
+      toast.success('Logo reset to the default.');
+    } catch (error) {
+      toast.error('Unable to reset logo', {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setSavingBranding(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -514,6 +617,10 @@ export function Settings() {
           <TabsTrigger value="integrations" className="min-w-max">
             <Link2 className="size-4" />
             Integrations
+          </TabsTrigger>
+          <TabsTrigger value="branding" className="min-w-max">
+            <ImageIcon className="size-4" />
+            Branding
           </TabsTrigger>
           <TabsTrigger value="slicer-upload" className="min-w-max">
             <KeyRound className="size-4" />
@@ -1008,6 +1115,120 @@ export function Settings() {
                 {savingIntegrations ? 'Saving...' : 'Save Integration URLs'}
               </Button>
             </form>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="branding">
+          <Card className="p-6 dark:bg-gray-900 dark:border-gray-800">
+            <div className="mb-5">
+              <div className="flex items-center gap-2">
+                <ImageIcon className="size-5 text-blue-500" />
+                <h2 className="text-xl font-semibold dark:text-white">Branding</h2>
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                Upload a custom logo to replace the default mark on the login screen and the sidebar. PNG, JPEG, WebP, GIF, or SVG up to 512&nbsp;KB. A single-color SVG is recolored to follow the light/dark theme automatically.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Preview (light / dark)</Label>
+                <div className="grid grid-cols-2 gap-3">
+                  {(['light', 'dark'] as const).map((tone) => (
+                    <div
+                      key={tone}
+                      className={`flex h-28 items-center justify-center overflow-hidden rounded-lg border ${
+                        tone === 'dark'
+                          ? 'border-gray-700 bg-gray-900'
+                          : 'border-gray-200 bg-white'
+                      }`}
+                    >
+                      {logoSvg ? (
+                        <span
+                          role="img"
+                          aria-label="Logo preview"
+                          style={{ height: Math.round(64 * logoScale) }}
+                          className={`inline-flex items-center [&>svg]:h-full [&>svg]:w-auto [&>svg]:max-w-full ${
+                            logoAdaptive ? (tone === 'dark' ? 'text-white' : 'text-gray-900') : ''
+                          }`}
+                          dangerouslySetInnerHTML={{ __html: logoSvg }}
+                        />
+                      ) : logoDataUrl ? (
+                        <img
+                          src={logoDataUrl}
+                          alt="Logo preview"
+                          style={{ height: Math.round(64 * logoScale) }}
+                          className="w-auto max-w-full"
+                        />
+                      ) : (
+                        <img
+                          src={defaultLogo}
+                          alt="Default logo preview"
+                          style={{ height: Math.round(64 * logoScale) }}
+                          className={`w-auto max-w-full ${tone === 'dark' ? 'invert brightness-200' : ''}`}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {logoSvg && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {logoAdaptive
+                      ? 'Single-color SVG detected — it follows the theme via the text color.'
+                      : 'Multi-color SVG — shown with its own colors (no theme adaptation).'}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="logo-file">Choose image</Label>
+                <Input
+                  id="logo-file"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                  onChange={handleLogoFileChange}
+                  disabled={user?.role !== 'admin'}
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  The image is stored in the database, so it survives container rebuilds.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="logo-scale">Logo size</Label>
+                  <span className="text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                    {Math.round(logoScale * 100)}%
+                  </span>
+                </div>
+                <Slider
+                  id="logo-scale"
+                  min={50}
+                  max={200}
+                  step={10}
+                  value={[Math.round(logoScale * 100)]}
+                  onValueChange={(values) => setLogoScale((values[0] ?? 100) / 100)}
+                  disabled={user?.role !== 'admin'}
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Scales the logo in the sidebar and on the login screen (50–200% of the default size).
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" onClick={handleSaveBranding} disabled={savingBranding}>
+                  {savingBranding ? 'Saving...' : 'Save Logo'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleResetBranding}
+                  disabled={savingBranding || (!logoDataUrl && logoScale === 1)}
+                >
+                  Reset to Default
+                </Button>
+              </div>
+            </div>
           </Card>
         </TabsContent>
 
