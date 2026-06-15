@@ -6,7 +6,6 @@ import {
   SLICER_OPERATOR_GRANT_PARAM,
   SLICER_OPERATOR_USER,
 } from '../lib/runtimeConfig';
-import { generateId } from '../lib/id';
 import { logAuditEvent, setAuditActor } from '../lib/auditApi';
 import { verifySlicerGrant } from '../lib/slicerGrantApi';
 import {
@@ -14,6 +13,13 @@ import {
   setupAdminCredential,
   verifyAdminCredential,
 } from '../lib/adminCredentialApi';
+import {
+  changeUserPasswordApi,
+  createUserApi,
+  deleteUserApi,
+  fetchUsers,
+  verifyUser,
+} from '../lib/usersApi';
 
 interface User {
   id: string;
@@ -81,7 +87,6 @@ type UserRole = 'admin' | 'operator' | 'viewer';
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const SESSION_STORAGE_KEY = 'printfarm_session';
-const USER_STORAGE_KEY = 'printfarm_users';
 const SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
 // "Remember me" persists the session in localStorage so it survives closing the
 // browser, and gives it a longer lifetime than a regular tab-scoped session.
@@ -111,45 +116,12 @@ function sanitizeUser(record: StoredUserRecord): User {
   };
 }
 
-function readStoredUsers(): StoredUserRecord[] {
-  const rawValue = localStorage.getItem(USER_STORAGE_KEY);
-  if (!rawValue) {
-    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(DEFAULT_USERS));
-    return DEFAULT_USERS;
-  }
-
-  try {
-    const parsed = JSON.parse(rawValue) as StoredUserRecord[];
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      throw new Error('Invalid stored users');
-    }
-
-    const validUsers = parsed.filter(
-      (candidate) =>
-        candidate &&
-        typeof candidate.id === 'string' &&
-        typeof candidate.name === 'string' &&
-        typeof candidate.username === 'string' &&
-        typeof candidate.passwordHash === 'string' &&
-        ['admin', 'operator', 'viewer'].includes(candidate.role)
-    );
-
-    if (validUsers.length === 0) {
-      throw new Error('No valid users');
-    }
-
-    const nextUsers = validUsers.filter((candidate) => candidate.username !== DEFAULT_ADMIN.username);
-    nextUsers.unshift(DEFAULT_ADMIN);
-    writeStoredUsers(nextUsers);
-    return nextUsers;
-  } catch {
-    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(DEFAULT_USERS));
-    return DEFAULT_USERS;
-  }
-}
-
-function writeStoredUsers(users: StoredUserRecord[]) {
-  localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(users));
+// The staff list shown in the UI is the (server-stored) accounts plus the
+// built-in admin, which always leads. The admin account is verified server-side,
+// so it carries no usable hash here.
+async function loadUsers(): Promise<User[]> {
+  const serverUsers = await fetchUsers();
+  return [sanitizeUser(DEFAULT_ADMIN), ...serverUsers];
 }
 
 // A remembered session lives in localStorage; a tab-scoped one in sessionStorage.
@@ -366,9 +338,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     const bootstrap = async () => {
-      const storedUsers = readStoredUsers();
+      const loadedUsers = await loadUsers();
       if (!cancelled) {
-        setUsers(storedUsers.map(sanitizeUser));
+        setUsers(loadedUsers);
       }
 
       // A slicer "Device" link can grant operator access, but only once the
@@ -420,6 +392,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuditActor(user);
   }, [user]);
 
+  // Re-read the server-stored staff list into state after a mutation.
+  const refreshUsers = async () => {
+    setUsers(await loadUsers());
+  };
+
   const login = async (
     username: string,
     password: string,
@@ -458,11 +435,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { success: true };
     }
 
-    const availableUsers = readStoredUsers();
-    const foundUser = availableUsers.find(
-      (candidate) =>
-        candidate.username === normalizedUsername && candidate.passwordHash === passwordHash
-    );
+    const foundUser = await verifyUser(normalizedUsername, passwordHash);
 
     if (foundUser) {
       const userData = {
@@ -593,26 +566,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
     }
 
-    const availableUsers = readStoredUsers();
-    if (availableUsers.some((candidate) => candidate.username === normalizedUsername)) {
-      return {
-        success: false,
-        error: 'That username is already in use.',
-      };
-    }
-
     const passwordHash = await hashPassword(trimmedPassword);
-    const nextUser: StoredUserRecord = {
-      id: generateId(),
+    const result = await createUserApi({
       name: normalizedName,
       username: normalizedUsername,
-      passwordHash,
       role,
-    };
+      passwordHash,
+    });
 
-    const nextUsers = [...availableUsers, nextUser];
-    writeStoredUsers(nextUsers);
-    setUsers(nextUsers.map(sanitizeUser));
+    if (!result.ok) {
+      return { success: false, error: result.error ?? 'Unable to create the user.' };
+    }
+
+    await refreshUsers();
 
     logAuditEvent('user.create', normalizedUsername, { role });
 
@@ -648,29 +614,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
     }
 
-    const availableUsers = readStoredUsers();
-    const targetUser = availableUsers.find((candidate) => candidate.id === userId);
+    const targetUser = users.find((candidate) => candidate.id === userId);
 
-    if (!targetUser) {
-      return {
-        success: false,
-        error: 'User not found.',
-      };
+    const result = await deleteUserApi(userId);
+    if (!result.ok) {
+      return { success: false, error: result.error ?? 'Unable to remove the user.' };
     }
 
-    const adminCount = availableUsers.filter((candidate) => candidate.role === 'admin').length;
-    if (targetUser.role === 'admin' && adminCount <= 1) {
-      return {
-        success: false,
-        error: 'At least one admin account must remain.',
-      };
+    await refreshUsers();
+
+    if (targetUser) {
+      logAuditEvent('user.delete', targetUser.username, { role: targetUser.role });
     }
-
-    const nextUsers = availableUsers.filter((candidate) => candidate.id !== userId);
-    writeStoredUsers(nextUsers);
-    setUsers(nextUsers.map(sanitizeUser));
-
-    logAuditEvent('user.delete', targetUser.username, { role: targetUser.role });
 
     return { success: true };
   };
@@ -708,27 +663,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
     }
 
-    const availableUsers = readStoredUsers();
-    const targetIndex = availableUsers.findIndex((candidate) => candidate.id === userId);
-
-    if (targetIndex === -1) {
-      return {
-        success: false,
-        error: 'User not found.',
-      };
+    const passwordHash = await hashPassword(trimmedPassword);
+    const result = await changeUserPasswordApi(userId, passwordHash);
+    if (!result.ok) {
+      return { success: false, error: result.error ?? 'Unable to change password.' };
     }
 
-    const passwordHash = await hashPassword(trimmedPassword);
-    const nextUsers = [...availableUsers];
-    nextUsers[targetIndex] = {
-      ...nextUsers[targetIndex],
-      passwordHash,
-    };
+    await refreshUsers();
 
-    writeStoredUsers(nextUsers);
-    setUsers(nextUsers.map(sanitizeUser));
-
-    logAuditEvent('user.password_change', nextUsers[targetIndex].username);
+    logAuditEvent('user.password_change', user.username);
 
     return { success: true };
   };

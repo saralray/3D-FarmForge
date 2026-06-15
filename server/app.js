@@ -106,6 +106,17 @@ function hash(value) {
 // value is { passwordHash: <sha256 hex> }; the plaintext is never sent or stored.
 const ADMIN_CREDENTIAL_KEY = 'admin_credential';
 
+// Staff user accounts (operators and any extra admins) are persisted server-side
+// under this app_settings key so the list survives container rebuilds and is the
+// same in every browser — they used to live only in the browser's localStorage,
+// which made them vanish on a new machine or a fresh build. The primary `admin`
+// account is the separate credential above and is never part of this list. Each
+// record is { id, name, username, role, passwordHash } where passwordHash is a
+// sha256 hex (hashed client-side); the hash is never returned by list/verify.
+const STAFF_USERS_KEY = 'staff_users';
+const RESERVED_USERNAME = 'admin';
+const USER_ROLES = new Set(['admin', 'operator', 'viewer']);
+
 function isSha256Hex(value) {
   return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
 }
@@ -121,6 +132,22 @@ function timingSafeEqualString(a, b) {
     return false;
   }
   return timingSafeEqual(aBuffer, bBuffer);
+}
+
+// The stored staff-user list, or [] when none have been created yet.
+async function readStaffUsers() {
+  const stored = await getAppSetting(STAFF_USERS_KEY);
+  return Array.isArray(stored) ? stored : [];
+}
+
+// Drop the password hash before a record leaves the server.
+function sanitizeStaffUser(record) {
+  return {
+    id: record.id,
+    name: record.name,
+    username: record.username,
+    role: record.role,
+  };
 }
 
 // Best-effort client IP for the audit trail: prefer the first hop in
@@ -1132,6 +1159,136 @@ async function handleApi(req, res, requestUrl) {
       timingSafeEqualString(storedHash, passwordHash.toLowerCase());
     sendJson(res, valid ? 200 : 401, { valid });
     return true;
+  }
+
+  // Staff user accounts (operators and any extra admins), persisted server-side
+  // so the list survives container rebuilds and is shared across browsers. The
+  // primary `admin` account is the separate credential above and is never part
+  // of this list. Reads never expose password hashes.
+  //   GET  /api/users          → sanitized list for the management UI.
+  //   POST /api/users          → create from { name, username, role, passwordHash }.
+  if (requestUrl.pathname === '/api/users') {
+    if (req.method === 'GET') {
+      const usersList = await readStaffUsers();
+      sendJson(res, 200, usersList.map(sanitizeStaffUser));
+      return true;
+    }
+
+    if (req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const name = typeof body?.name === 'string' ? body.name.trim() : '';
+      const username =
+        typeof body?.username === 'string' ? body.username.trim().toLowerCase() : '';
+      const role = typeof body?.role === 'string' ? body.role : '';
+      const passwordHash = body?.passwordHash;
+
+      if (!name || !username) {
+        sendJson(res, 400, { error: 'Name and username are required.' });
+        return true;
+      }
+      if (!USER_ROLES.has(role)) {
+        sendJson(res, 400, { error: 'role must be admin, operator, or viewer' });
+        return true;
+      }
+      if (!isSha256Hex(passwordHash)) {
+        sendJson(res, 400, { error: 'passwordHash must be a sha256 hex string' });
+        return true;
+      }
+      if (username === RESERVED_USERNAME) {
+        sendJson(res, 409, { error: 'That username is reserved.' });
+        return true;
+      }
+
+      const usersList = await readStaffUsers();
+      if (usersList.some((candidate) => candidate.username === username)) {
+        sendJson(res, 409, { error: 'That username is already in use.' });
+        return true;
+      }
+
+      const newUser = {
+        id: randomUUID(),
+        name,
+        username,
+        role,
+        passwordHash: passwordHash.toLowerCase(),
+      };
+      await setAppSetting(STAFF_USERS_KEY, [...usersList, newUser]);
+      sendJson(res, 201, sanitizeStaffUser(newUser));
+      return true;
+    }
+  }
+
+  // Verify a staff (non-admin) login. Returns { valid } and, on success, the
+  // sanitized user record so the client can open a session. The hash is compared
+  // in constant time and never echoed back.
+  if (requestUrl.pathname === '/api/users/verify' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    const username =
+      typeof body?.username === 'string' ? body.username.trim().toLowerCase() : '';
+    const passwordHash = body?.passwordHash;
+    const usersList = await readStaffUsers();
+    const found = isSha256Hex(passwordHash)
+      ? usersList.find(
+          (candidate) =>
+            candidate.username === username &&
+            timingSafeEqualString(
+              String(candidate.passwordHash || ''),
+              passwordHash.toLowerCase(),
+            ),
+        )
+      : undefined;
+    if (!found) {
+      sendJson(res, 401, { valid: false });
+      return true;
+    }
+    sendJson(res, 200, { valid: true, user: sanitizeStaffUser(found) });
+    return true;
+  }
+
+  // Per-user management, keyed by id:
+  //   DELETE /api/users/:id           → remove the account.
+  //   PUT    /api/users/:id/password  → set a new password ({ passwordHash }).
+  if (requestUrl.pathname.startsWith('/api/users/')) {
+    const [rawId, action] = requestUrl.pathname.slice('/api/users/'.length).split('/');
+    const userId = decodeURIComponent(rawId || '');
+
+    if (!userId) {
+      sendJson(res, 400, { error: 'user id is required' });
+      return true;
+    }
+
+    if (!action && req.method === 'DELETE') {
+      const usersList = await readStaffUsers();
+      if (!usersList.some((candidate) => candidate.id === userId)) {
+        sendJson(res, 404, { error: 'user not found' });
+        return true;
+      }
+      await setAppSetting(
+        STAFF_USERS_KEY,
+        usersList.filter((candidate) => candidate.id !== userId),
+      );
+      sendEmpty(res);
+      return true;
+    }
+
+    if (action === 'password' && req.method === 'PUT') {
+      const { passwordHash } = await readJsonBody(req);
+      if (!isSha256Hex(passwordHash)) {
+        sendJson(res, 400, { error: 'passwordHash must be a sha256 hex string' });
+        return true;
+      }
+      const usersList = await readStaffUsers();
+      const index = usersList.findIndex((candidate) => candidate.id === userId);
+      if (index === -1) {
+        sendJson(res, 404, { error: 'user not found' });
+        return true;
+      }
+      const nextUsers = [...usersList];
+      nextUsers[index] = { ...nextUsers[index], passwordHash: passwordHash.toLowerCase() };
+      await setAppSetting(STAFF_USERS_KEY, nextUsers);
+      sendEmpty(res);
+      return true;
+    }
   }
 
   // Audit log. GET returns the most recent entries (admin-only in the UI); POST

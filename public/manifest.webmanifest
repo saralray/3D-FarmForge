@@ -2,7 +2,7 @@
   "name": "CUD Stemlab PrintFarm",
   "short_name": "PrintFarm",
   "description": "STEM Lab print-farm dashboard for monitoring 3D printers, queues, and analytics.",
-  "start_url": "/",
+  "start_url": "/admin",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
