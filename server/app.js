@@ -15,6 +15,7 @@ import {
   deleteQueueJob,
   deleteSlicerApiKey,
   ensureSchema,
+  findSlicerApiKeyByHash,
   getAppSetting,
   getPrinterById,
   getPrinterByIdOrName,
@@ -30,6 +31,7 @@ import {
   resetDailyAnalytics,
   resetQueueJobs,
   setAppSetting,
+  touchSlicerApiKey,
   upsertPrinter,
   upsertQueueJobs,
 } from './postgres.js';
@@ -879,9 +881,399 @@ async function handleWebcamStream(req, res, requestUrl) {
   );
 }
 
+// ── /api/v1: API-key-protected programmatic data API ───────────────────────
+// A versioned external/integration API over the print-farm's data, gated by a
+// named API key. Per the project decision it reuses the slicer_api_keys store
+// (X-Api-Key header, or `Authorization: Bearer <key>`); any valid key grants
+// full read/write. This namespace is entirely separate from the cookieless
+// frontend /api/* endpoints, which stay unauthenticated and untouched. Because
+// the key is the guard here, connection details are NOT redacted (unlike the
+// public-viewer listPrinters path). Mutations are stamped into the audit log
+// with source 'api' so key-driven changes are attributable.
+const DATA_API_PREFIX = '/api/v1/';
+
+const DATA_API_RESOURCES = [
+  'printers',
+  'queue',
+  'analytics',
+  'notifications',
+  'slicer-keys',
+  'audit-logs',
+  'settings',
+];
+
+function extractApiKey(req) {
+  const headerKey = req.headers['x-api-key'];
+  if (typeof headerKey === 'string' && headerKey.trim()) {
+    return headerKey.trim();
+  }
+  const auth = req.headers['authorization'];
+  if (typeof auth === 'string' && auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim();
+  }
+  return '';
+}
+
+// Resolve the presented key to a slicer_api_keys record, or null. Mirrors the
+// slicer-proxy: hash the plaintext, look it up, and best-effort stamp usage.
+async function authenticateDataApi(req) {
+  const key = extractApiKey(req);
+  if (!key) {
+    return null;
+  }
+  const record = await findSlicerApiKeyByHash(hash(key));
+  if (!record) {
+    return null;
+  }
+  touchSlicerApiKey(record.id).catch((error) => {
+    console.error('Failed to stamp API key usage', error);
+  });
+  return record;
+}
+
+// Best-effort audit entry for a key-driven mutation; never blocks the response.
+function auditDataApi(req, apiKey, action, target, details) {
+  recordAuditLog({
+    actorName: `api:${apiKey.name}`,
+    actorUsername: apiKey.id,
+    actorRole: 'api',
+    action,
+    target: target ?? null,
+    details: details ?? null,
+    source: 'api',
+    ip: getClientIp(req),
+  }).catch((error) => {
+    console.error('Failed to record API audit log', error);
+  });
+}
+
+async function handleDataApi(req, res, requestUrl) {
+  if (!requestUrl.pathname.startsWith(DATA_API_PREFIX)) {
+    return false;
+  }
+
+  const apiKey = await authenticateDataApi(req);
+  if (!apiKey) {
+    sendJson(res, 401, {
+      error: 'A valid API key is required. Pass it as the X-Api-Key header or `Authorization: Bearer <key>`.',
+    });
+    return true;
+  }
+
+  const method = req.method;
+  const segments = requestUrl.pathname
+    .slice(DATA_API_PREFIX.length)
+    .split('/')
+    .filter(Boolean)
+    .map((part) => decodeURIComponent(part));
+  const [entity, id, sub] = segments;
+
+  // Discovery root: GET /api/v1 lists the available resources.
+  if (!entity) {
+    sendJson(res, 200, { version: 'v1', resources: DATA_API_RESOURCES });
+    return true;
+  }
+
+  switch (entity) {
+    case 'printers':
+      return handleDataApiPrinters(req, res, { apiKey, method, id, sub, action: segments[3], requestUrl });
+    case 'queue':
+      return handleDataApiQueue(req, res, { apiKey, method, id, sub });
+    case 'analytics':
+      return handleDataApiAnalytics(req, res, { apiKey, method, id, requestUrl });
+    case 'notifications':
+      return handleDataApiNotifications(req, res, { apiKey, method, id });
+    case 'slicer-keys':
+      return handleDataApiSlicerKeys(req, res, { apiKey, method, id });
+    case 'audit-logs':
+      return handleDataApiAuditLogs(req, res, { apiKey, method, requestUrl });
+    case 'settings':
+      return handleDataApiSettings(req, res, { apiKey, method, id });
+    default:
+      sendJson(res, 404, { error: `Unknown resource '${entity}'.`, resources: DATA_API_RESOURCES });
+      return true;
+  }
+}
+
+function dataApiMethodNotAllowed(res) {
+  sendJson(res, 405, { error: 'Method not allowed for this resource.' });
+  return true;
+}
+
+// printers: list / read / upsert / delete (+ pass-through Bambu command, webcam).
+async function handleDataApiPrinters(req, res, { apiKey, method, id, sub, action, requestUrl }) {
+  if (!id) {
+    if (method === 'GET') {
+      sendJson(res, 200, await listPrinters());
+      return true;
+    }
+    if (method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!body || typeof body.id !== 'string' || !body.id.trim()) {
+        sendJson(res, 400, { error: 'printer id is required' });
+        return true;
+      }
+      await upsertPrinter(body);
+      auditDataApi(req, apiKey, 'printer.upsert', body.id);
+      sendJson(res, 200, await getPrinterById(body.id));
+      return true;
+    }
+    return dataApiMethodNotAllowed(res);
+  }
+
+  // POST /printers/:id/command — proxy a Bambu MQTT command.
+  if (sub === 'command' && method === 'POST') {
+    const printer = await getPrinterById(id);
+    if (!printer) {
+      sendJson(res, 404, { error: 'Printer not found' });
+      return true;
+    }
+    const { command, heater, target, nozzleIndex, gcode, trayId, fanPort, speed, modeId, submode } =
+      await readJsonBody(req);
+    await sendBambuCommand(printer, command, {
+      heater, target, nozzleIndex, gcode, trayId, fanPort, speed, modeId, submode,
+    });
+    auditDataApi(req, apiKey, 'printer.command', id, { command });
+    sendEmpty(res);
+    return true;
+  }
+
+  // GET /printers/:id/camera/{snapshot,stream,health} — webcam access. Snapshot
+  // and stream delegate to the same /__printer_webcam proxy the friendly
+  // /webcam/<id> route uses, so every profile (Bambu port-6000 JPEG, H2 RTSP
+  // hub, Snapmaker live MJPEG) is handled identically. `stream` serves live
+  // multipart MJPEG where the profile supports it and otherwise falls back to a
+  // single snapshot.
+  if (sub === 'camera') {
+    if (method !== 'GET') {
+      return dataApiMethodNotAllowed(res);
+    }
+    if (action === 'health') {
+      sendJson(res, 200, getCameraHealth(id), 'no-store');
+      return true;
+    }
+    if (action !== 'snapshot' && action !== 'stream') {
+      sendJson(res, 404, { error: "Use /camera/snapshot, /camera/stream, or /camera/health." });
+      return true;
+    }
+    const printer = await getPrinterById(id);
+    if (!printer) {
+      sendJson(res, 404, { error: 'Printer not found' });
+      return true;
+    }
+    const camPath =
+      action === 'stream' && LIVE_MJPEG_PROFILES.has(printer.profile) ? 'stream.mjpg' : 'snapshot.jpg';
+    const proxyUrl = new URL(
+      `/__printer_webcam/${encodeURIComponent(printer.id)}/${camPath}`,
+      requestUrl,
+    );
+    return handlePrinterProxy(
+      req,
+      res,
+      proxyUrl,
+      '/__printer_webcam/',
+      (p, proxyPath) => `${p.url}/webcam${proxyPath}`,
+      {},
+    );
+  }
+
+  if (method === 'GET') {
+    const printer = await getPrinterById(id);
+    if (!printer) {
+      sendJson(res, 404, { error: 'Printer not found' });
+      return true;
+    }
+    sendJson(res, 200, printer);
+    return true;
+  }
+  if (method === 'DELETE') {
+    await deletePrinter(id);
+    auditDataApi(req, apiKey, 'printer.delete', id);
+    sendEmpty(res);
+    return true;
+  }
+  return dataApiMethodNotAllowed(res);
+}
+
+// queue: list stored jobs / upsert / reset / mark printed / delete.
+// GET returns the stored queue (it does NOT trigger a Google Sheet sync — that
+// stays on the frontend /api/queue path).
+async function handleDataApiQueue(req, res, { apiKey, method, id, sub }) {
+  if (!id) {
+    if (method === 'GET') {
+      sendJson(res, 200, await listQueueData());
+      return true;
+    }
+    if (method === 'POST') {
+      const body = await readJsonBody(req);
+      const jobs = Array.isArray(body) ? body : Array.isArray(body?.jobs) ? body.jobs : null;
+      if (!jobs) {
+        sendJson(res, 400, { error: 'expected an array of jobs or { jobs: [...] }' });
+        return true;
+      }
+      const added = await upsertQueueJobs(jobs);
+      auditDataApi(req, apiKey, 'queue.upsert', null, { count: jobs.length });
+      sendJson(res, 200, { added });
+      return true;
+    }
+    return dataApiMethodNotAllowed(res);
+  }
+
+  if (id === 'reset' && method === 'POST') {
+    await resetQueueJobs();
+    auditDataApi(req, apiKey, 'queue.reset', null);
+    sendEmpty(res);
+    return true;
+  }
+  if (sub === 'printed' && method === 'POST') {
+    await markQueueJobPrinted(id);
+    auditDataApi(req, apiKey, 'queue.printed', id);
+    sendEmpty(res);
+    return true;
+  }
+  if (method === 'DELETE') {
+    await deleteQueueJob(id);
+    auditDataApi(req, apiKey, 'queue.delete', id);
+    sendEmpty(res);
+    return true;
+  }
+  return dataApiMethodNotAllowed(res);
+}
+
+// analytics: daily rollups (read) + reset.
+async function handleDataApiAnalytics(req, res, { apiKey, method, id, requestUrl }) {
+  if (!id) {
+    if (method === 'GET') {
+      const days = Number.parseInt(requestUrl.searchParams.get('days') || '7', 10);
+      sendJson(res, 200, await listDailyAnalytics(Number.isFinite(days) ? days : 7));
+      return true;
+    }
+    return dataApiMethodNotAllowed(res);
+  }
+  if (id === 'reset' && method === 'POST') {
+    await resetDailyAnalytics();
+    auditDataApi(req, apiKey, 'analytics.reset', null);
+    sendEmpty(res);
+    return true;
+  }
+  return dataApiMethodNotAllowed(res);
+}
+
+// notifications: Discord webhook CRUD.
+async function handleDataApiNotifications(req, res, { apiKey, method, id }) {
+  if (!id) {
+    if (method === 'GET') {
+      sendJson(res, 200, await listDiscordWebhooks());
+      return true;
+    }
+    if (method === 'POST') {
+      const body = await readJsonBody(req);
+      const webhook = { id: typeof body?.id === 'string' && body.id ? body.id : randomUUID(), ...body };
+      await createDiscordWebhook(webhook);
+      auditDataApi(req, apiKey, 'notification.upsert', webhook.id);
+      sendJson(res, 201, { id: webhook.id });
+      return true;
+    }
+    return dataApiMethodNotAllowed(res);
+  }
+  if (method === 'DELETE') {
+    await deleteDiscordWebhook(id);
+    auditDataApi(req, apiKey, 'notification.delete', id);
+    sendEmpty(res);
+    return true;
+  }
+  return dataApiMethodNotAllowed(res);
+}
+
+// slicer-keys: list / mint (plaintext returned once) / revoke.
+async function handleDataApiSlicerKeys(req, res, { apiKey, method, id }) {
+  if (!id) {
+    if (method === 'GET') {
+      sendJson(res, 200, await listSlicerApiKeys());
+      return true;
+    }
+    if (method === 'POST') {
+      const { name } = await readJsonBody(req);
+      if (typeof name !== 'string' || !name.trim()) {
+        sendJson(res, 400, { error: 'name is required' });
+        return true;
+      }
+      const key = randomBytes(24).toString('base64url');
+      const newId = randomUUID();
+      await createSlicerApiKey({ id: newId, name: name.trim(), keyHash: hash(key), keyPrefix: key.slice(0, 8) });
+      auditDataApi(req, apiKey, 'slicer-key.create', newId, { name: name.trim() });
+      sendJson(res, 201, { id: newId, name: name.trim(), key });
+      return true;
+    }
+    return dataApiMethodNotAllowed(res);
+  }
+  if (method === 'DELETE') {
+    await deleteSlicerApiKey(id);
+    auditDataApi(req, apiKey, 'slicer-key.delete', id);
+    sendEmpty(res);
+    return true;
+  }
+  return dataApiMethodNotAllowed(res);
+}
+
+// audit-logs: read recent entries (newest first). Append via POST.
+async function handleDataApiAuditLogs(req, res, { apiKey, method, requestUrl }) {
+  if (method === 'GET') {
+    const limit = requestUrl.searchParams.get('limit') || '200';
+    sendJson(res, 200, await listAuditLogs(limit));
+    return true;
+  }
+  if (method === 'POST') {
+    const body = await readJsonBody(req);
+    if (typeof body?.action !== 'string' || !body.action.trim()) {
+      sendJson(res, 400, { error: 'action is required' });
+      return true;
+    }
+    await recordAuditLog({
+      actorName: `api:${apiKey.name}`,
+      actorUsername: apiKey.id,
+      actorRole: 'api',
+      action: body.action,
+      target: typeof body.target === 'string' ? body.target : null,
+      details: body.details ?? null,
+      source: 'api',
+      ip: getClientIp(req),
+    });
+    sendEmpty(res, 201);
+    return true;
+  }
+  return dataApiMethodNotAllowed(res);
+}
+
+// settings: app_settings key/value store. GET/PUT by key.
+async function handleDataApiSettings(req, res, { apiKey, method, id }) {
+  if (!id) {
+    sendJson(res, 400, { error: 'a settings key is required: /api/v1/settings/<key>' });
+    return true;
+  }
+  if (method === 'GET') {
+    sendJson(res, 200, { key: id, value: await getAppSetting(id) });
+    return true;
+  }
+  if (method === 'PUT' || method === 'POST') {
+    const body = await readJsonBody(req);
+    // Accept either { value: <any> } or the raw value as the whole body.
+    const value = body && typeof body === 'object' && 'value' in body ? body.value : body;
+    await setAppSetting(id, value);
+    auditDataApi(req, apiKey, 'setting.update', id);
+    sendJson(res, 200, { key: id, value });
+    return true;
+  }
+  return dataApiMethodNotAllowed(res);
+}
+
 async function handleApi(req, res, requestUrl) {
   if (requestUrl.pathname === '/healthz') {
     sendJson(res, 200, { ok: true }, 'no-store');
+    return true;
+  }
+
+  if (await handleDataApi(req, res, requestUrl)) {
     return true;
   }
 

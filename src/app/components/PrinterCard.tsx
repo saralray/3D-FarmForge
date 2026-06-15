@@ -182,10 +182,10 @@ export function PrinterCard({
         <div className="space-y-3">
           <div>
             <div className="flex justify-between text-sm mb-1">
-              <span className="text-gray-600 dark:text-gray-400 truncate flex-1 mr-2">
+              <span className="text-gray-600 dark:text-gray-400 truncate min-w-0 flex-1 mr-2">
                 {printer.currentJob?.filename}
               </span>
-              <div className="flex items-center gap-3">
+              <div className="flex shrink-0 items-center gap-3">
                 <span className="text-gray-500 dark:text-gray-400">
                   ETA <span className="font-medium dark:text-white">{printer.currentJob?.timeRemaining}m</span>
                 </span>
