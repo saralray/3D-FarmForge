@@ -1203,12 +1203,12 @@ export function PrinterDetail() {
                   // H2 series: live MJPEG stream (ffmpeg transcodes the RTSP feed
                   // server-side). The <img> holds one long-lived connection; on a
                   // drop, onError schedules a reconnect by bumping the src nonce.
-                  <div className="relative h-80 w-full">
+                  <div className="relative min-h-[20rem] w-full">
                     <img
                       key={`webcam-mjpeg-${printer.id}`}
                       src={webcamMjpegUrl}
                       alt={`${printer.name} live view`}
-                      className={`h-80 w-full object-cover ${snapshotErrored ? 'opacity-0' : ''}`}
+                      className={`block h-auto w-full ${snapshotErrored ? 'opacity-0' : ''}`}
                       onLoad={() => setSnapshotErrored(false)}
                       onError={() => {
                         setSnapshotErrored(true);
@@ -1227,12 +1227,12 @@ export function PrinterDetail() {
                   // stays mounted to keep the loop alive even while erroring). On a
                   // rejected camera the server 502s, so onError shows a placeholder
                   // instead of a broken image.
-                  <div className="relative h-80 w-full">
+                  <div className="relative min-h-[20rem] w-full">
                     <img
                       key={`webcam-${printer.id}`}
                       src={webcamSnapshotUrl}
                       alt={`${printer.name} preview`}
-                      className={`h-80 w-full object-cover ${snapshotErrored ? 'opacity-0' : ''}`}
+                      className={`block h-auto w-full ${snapshotErrored ? 'opacity-0' : ''}`}
                       onLoad={() => {
                         setSnapshotErrored(false);
                         scheduleSnapshotRefresh(500);

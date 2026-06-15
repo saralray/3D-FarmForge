@@ -199,7 +199,7 @@ export function Queue() {
                 <div className="text-sm font-medium text-gray-400 w-6 text-center mt-4">
                   {index + 1}
                 </div>
-                <div className="flex-1">
+                <div className="min-w-0 flex-1">
                   <QueueItem
                     job={job}
                     onRemove={canManageQueue ? handleRemove : undefined}
@@ -235,7 +235,7 @@ export function Queue() {
                 <div className="text-sm font-medium text-gray-400 w-6 text-center mt-4">
                   {index + 1}
                 </div>
-                <div className="flex-1">
+                <div className="min-w-0 flex-1">
                   <QueueItem
                     job={job}
                     mode="history"

@@ -97,13 +97,13 @@ export function QueueItem({
           {job.submitterName && (
             <div className="space-y-1 text-sm bg-gray-50 dark:bg-gray-700/50 rounded p-2 mt-2">
               <div className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
-                <User className="size-3" />
-                <span className="font-medium">{job.filename}</span>
+                <User className="size-3 flex-shrink-0" />
+                <span className="font-medium truncate min-w-0">{job.filename}</span>
               </div>
               {job.submitterEmail && (
                 <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
-                  <Mail className="size-3" />
-                  <span className="text-xs">{job.submitterEmail}</span>
+                  <Mail className="size-3 flex-shrink-0" />
+                  <span className="text-xs truncate min-w-0">{job.submitterEmail}</span>
                 </div>
               )}
               {job.notes && (

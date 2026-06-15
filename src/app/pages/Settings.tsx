@@ -1134,50 +1134,43 @@ export function Settings() {
               <div className="space-y-2">
                 <Label>Preview (light / dark)</Label>
                 <div className="grid grid-cols-2 gap-3">
-                  {(['light', 'dark'] as const).map((tone) => (
-                    <div
-                      key={tone}
-                      className={`flex h-28 items-center justify-center overflow-hidden rounded-lg border ${
-                        tone === 'dark'
-                          ? 'border-gray-700 bg-gray-900'
-                          : 'border-gray-200 bg-white'
-                      }`}
-                    >
-                      {logoSvg ? (
-                        <span
-                          role="img"
-                          aria-label="Logo preview"
-                          style={{ height: Math.round(64 * logoScale) }}
-                          className={`inline-flex items-center [&>svg]:h-full [&>svg]:w-auto [&>svg]:max-w-full ${
-                            logoAdaptive ? (tone === 'dark' ? 'text-white' : 'text-gray-900') : ''
-                          }`}
-                          dangerouslySetInnerHTML={{ __html: logoSvg }}
-                        />
-                      ) : logoDataUrl ? (
-                        <img
-                          src={logoDataUrl}
-                          alt="Logo preview"
-                          style={{ height: Math.round(64 * logoScale) }}
-                          className="w-auto max-w-full"
-                        />
-                      ) : (
-                        <img
-                          src={defaultLogo}
-                          alt="Default logo preview"
-                          style={{ height: Math.round(64 * logoScale) }}
-                          className={`w-auto max-w-full ${tone === 'dark' ? 'invert brightness-200' : ''}`}
-                        />
-                      )}
-                    </div>
-                  ))}
+                  {(['light', 'dark'] as const).map((tone) => {
+                    // The tiles preview both themes at once, so they can't rely on
+                    // the `dark:` variant (it follows the real app theme). Force the
+                    // tone explicitly: dark in the light tile, white in the dark tile.
+                    const toneFilter = tone === 'dark' ? 'brightness-0 invert' : 'brightness-0';
+                    return (
+                      <div
+                        key={tone}
+                        className={`flex h-28 items-center justify-center overflow-hidden rounded-lg border ${
+                          tone === 'dark'
+                            ? 'border-gray-700 bg-gray-900'
+                            : 'border-gray-200 bg-white'
+                        }`}
+                      >
+                        {logoSvg ? (
+                          <span
+                            role="img"
+                            aria-label="Logo preview"
+                            style={{ height: Math.round(64 * logoScale) }}
+                            className={`inline-flex items-center [&>svg]:h-full [&>svg]:w-auto [&>svg]:max-w-full ${toneFilter}`}
+                            dangerouslySetInnerHTML={{ __html: logoSvg }}
+                          />
+                        ) : (
+                          <img
+                            src={logoDataUrl || defaultLogo}
+                            alt="Logo preview"
+                            style={{ height: Math.round(64 * logoScale) }}
+                            className={`w-auto max-w-full ${toneFilter}`}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-                {logoSvg && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {logoAdaptive
-                      ? 'Single-color SVG detected — it follows the theme via the text color.'
-                      : 'Multi-color SVG — shown with its own colors (no theme adaptation).'}
-                  </p>
-                )}
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  The logo is shown dark on light backgrounds and white on dark backgrounds.
+                </p>
               </div>
 
               <div className="space-y-2">
