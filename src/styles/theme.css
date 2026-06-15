@@ -2,25 +2,28 @@
 
 :root {
   --font-size: 16px;
-  --background: #ffffff;
-  --foreground: oklch(0.145 0 0);
-  --card: #ffffff;
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
+  /* Softer light theme: a warm off-white page with cards slightly lighter
+     than the background, so the UI reads less glaring than pure #ffffff
+     while keeping clear card/page separation. */
+  --background: oklch(0.84 0.005 264.53);
+  --foreground: oklch(0.2 0 0);
+  --card: oklch(0.905 0.004 264.53);
+  --card-foreground: oklch(0.2 0 0);
+  --popover: oklch(0.905 0.004 264.53);
+  --popover-foreground: oklch(0.2 0 0);
   --primary: #030213;
   --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.95 0.0058 264.53);
+  --secondary: oklch(0.87 0.007 264.53);
   --secondary-foreground: #030213;
-  --muted: #ececf0;
-  --muted-foreground: #717182;
-  --accent: #e9ebef;
+  --muted: oklch(0.865 0.005 264.53);
+  --muted-foreground: oklch(0.5 0.01 264.53);
+  --accent: oklch(0.845 0.008 264.53);
   --accent-foreground: #030213;
   --destructive: #d4183d;
   --destructive-foreground: #ffffff;
-  --border: rgba(0, 0, 0, 0.1);
+  --border: rgba(0, 0, 0, 0.14);
   --input: transparent;
-  --input-background: #f3f3f5;
+  --input-background: oklch(0.895 0.004 264.53);
   --switch-background: #cbced4;
   --font-weight-medium: 500;
   --font-weight-normal: 400;
@@ -31,13 +34,13 @@
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar: oklch(0.825 0.005 264.53);
+  --sidebar-foreground: oklch(0.2 0 0);
   --sidebar-primary: #030213;
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-accent: oklch(0.84 0.008 264.53);
+  --sidebar-accent-foreground: oklch(0.2 0 0);
+  --sidebar-border: oklch(0.8 0.005 264.53);
   --sidebar-ring: oklch(0.708 0 0);
 }
 
@@ -184,7 +187,27 @@
    The grayscale logo SVG is used as a mask over a scrolling rainbow
    gradient, so the colors are fully saturated regardless of the original
    artwork's colors. The mask image URL is set inline from the JS import. */
+/* iOS/iPadOS Safari renders an element that is BOTH CSS-masked and has an
+   animated background as transparent (the logo vanishes after enabling RGB
+   mode); layer-promotion hacks (translateZ) on the masked element itself are
+   unreliable and can drop the mask entirely on iPad. The robust fix is to
+   keep the static mask on this element and move the animated rainbow gradient
+   onto a ::before pseudo-element — the mask and the animated paint then live
+   on separate layers, which iOS composites correctly. */
 .logo-rgb-wave {
+  position: relative;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: left center;
+  mask-position: left center;
+}
+
+.logo-rgb-wave::before {
+  content: '';
+  position: absolute;
+  inset: 0;
   background-image: linear-gradient(
     90deg,
     #ff0000,
@@ -196,20 +219,7 @@
     #ff0000
   );
   background-size: 200% 100%;
-  -webkit-mask-size: contain;
-  mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-position: left center;
-  mask-position: left center;
   animation: logo-rgb-wave 2s linear infinite;
-  /* iOS/iPadOS Safari fails to repaint an element that is both CSS-masked
-     and has an animated background, rendering it transparent (the logo
-     vanishes). Promoting it to its own compositing layer forces a correct
-     repaint. */
-  -webkit-transform: translateZ(0);
-  transform: translateZ(0);
-  will-change: background-position;
 }
 
 @keyframes logo-rgb-wave {
@@ -360,7 +370,7 @@
   animation: none;
 }
 
-.rgb-music .logo-rgb-wave {
+.rgb-music .logo-rgb-wave::before {
   animation: none;
   background-position: var(--rgb-pos, 0%) center;
 }
