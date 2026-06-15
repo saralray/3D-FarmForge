@@ -638,7 +638,8 @@ export default defineConfig(({ mode }) => {
   ],
   server: {
     host: '0.0.0.0',
-    allowedHosts: ['printfarm.stemlabs2.work'],
+    // Accept requests for any Host header (the site can be reached from any domain).
+    allowedHosts: true,
   },
   resolve: {
     alias: {

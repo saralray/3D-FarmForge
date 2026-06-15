@@ -50,6 +50,9 @@ import {
   printerSupportsAirFilter,
   printerSupportsCoolingControl,
   printerSupportsFilamentControl,
+  printerSupportsFilamentEdit,
+  setPrinterFilament,
+  FILAMENT_MATERIALS,
   printerSupportsLight,
   printerSupportsLiveMjpeg,
   printerSupportsMotionControl,
@@ -69,6 +72,13 @@ import { Slider } from '../components/ui/slider';
 import { Switch } from '../components/ui/switch';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -341,6 +351,16 @@ export function PrinterDetail() {
   const [motionInFlight, setMotionInFlight] = useState<string | null>(null);
   // Keyed "load-<slot>"/"unload-<slot>" while a filament command is in flight.
   const [filamentInFlight, setFilamentInFlight] = useState<string | null>(null);
+  // The filament slot the user has selected (its 1-based `slot`). Load/Unload/Edit
+  // act on this slot, so the controls stay disabled until a spool is picked.
+  const [selectedFilamentSlot, setSelectedFilamentSlot] = useState<number | null>(null);
+  // "Edit filament" dialog: the slot being edited plus its draft material/color.
+  const [filamentEditSlot, setFilamentEditSlot] = useState<FilamentSlot | null>(null);
+  const [filamentEditDraft, setFilamentEditDraft] = useState<{ type: string; color: string }>({
+    type: 'PLA',
+    color: '#808080',
+  });
+  const [filamentEditSaving, setFilamentEditSaving] = useState(false);
   // Cooling-fan slider positions keyed by fan id ("part"/"aux"/"chamber"), each
   // a 0–100 percentage. Synced from the printer's reported speeds below unless
   // the user is dragging or a command is in flight / inside its grace window.
@@ -717,6 +737,7 @@ export function PrinterDetail() {
   const canControlFilament = canControlPrinter && printerSupportsFilamentControl(printer);
   const isFilamentReady = canControlFilament && isOnline && printer.status === 'idle';
   const filamentControlsDisabled = !isFilamentReady || filamentInFlight !== null;
+  const canEditFilament = canControlPrinter && printerSupportsFilamentEdit(printer);
   const canViewSensitiveInfo = user?.role !== 'viewer';
   // The printer's IP is a connection secret operators shouldn't need, so it is
   // admin-only — a tighter gate than the rest of the sensitive info block.
@@ -760,6 +781,7 @@ export function PrinterDetail() {
   });
   const filamentSlots: FilamentSlot[] =
     taskConfigSlots.length > 0 ? taskConfigSlots : spoolSlots;
+  const selectedSlot = filamentSlots.find((s) => s.slot === selectedFilamentSlot) ?? null;
   const formattedTimeRemaining = formatMinutesAsHourDotMinute(printer.currentJob?.timeRemaining ?? 0);
   const formattedPrintingTime = formatMinutesAsHourDotMinute(printer.currentJob?.printingTime ?? 0);
 
@@ -970,6 +992,33 @@ export function PrinterDetail() {
       toast.error(error instanceof Error ? error.message : 'Unable to control filament');
     } finally {
       setFilamentInFlight(null);
+    }
+  };
+
+  const openFilamentEdit = (slot: FilamentSlot) => {
+    setFilamentEditSlot(slot);
+    setFilamentEditDraft({
+      type: (slot.type || 'PLA').toUpperCase(),
+      color: slot.color || '#808080',
+    });
+  };
+
+  const saveFilamentEdit = async () => {
+    if (!filamentEditSlot) {
+      return;
+    }
+    setFilamentEditSaving(true);
+    try {
+      await setPrinterFilament(printer, filamentEditSlot.slot, filamentEditSlot.trayId, {
+        type: filamentEditDraft.type,
+        color: filamentEditDraft.color,
+      });
+      toast.success('Filament updated');
+      setFilamentEditSlot(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to update filament');
+    } finally {
+      setFilamentEditSaving(false);
     }
   };
 
@@ -1439,11 +1488,39 @@ export function PrinterDetail() {
             {taskConfigError ? (
               <p className="text-sm text-red-500">{taskConfigError}</p>
             ) : filamentSlots.length > 0 ? (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {filamentSlots.map((slot) => (
+              <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {filamentSlots.map((slot) => {
+                    const isSelectable = canControlFilament || canEditFilament;
+                    const isSelected = selectedFilamentSlot === slot.slot;
+                    return (
                     <div
                       key={`${printer.id}-filament-${slot.slot}`}
-                      className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"
+                      role={isSelectable ? 'button' : undefined}
+                      tabIndex={isSelectable ? 0 : undefined}
+                      aria-pressed={isSelectable ? isSelected : undefined}
+                      onClick={
+                        isSelectable
+                          ? () => setSelectedFilamentSlot(isSelected ? null : slot.slot)
+                          : undefined
+                      }
+                      onKeyDown={
+                        isSelectable
+                          ? (event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                setSelectedFilamentSlot(isSelected ? null : slot.slot);
+                              }
+                            }
+                          : undefined
+                      }
+                      className={`rounded-lg border p-3 transition-colors dark:border-gray-700 ${
+                        isSelectable ? 'cursor-pointer hover:border-primary/60' : ''
+                      } ${
+                        isSelected
+                          ? 'border-primary ring-2 ring-primary/40'
+                          : 'border-gray-200'
+                      }`}
                     >
                       <div className="flex h-full flex-col gap-3">
                         <div className="flex items-start gap-3">
@@ -1476,36 +1553,62 @@ export function PrinterDetail() {
                           </Badge>
                           {slot.isInUse && <Badge>In Use</Badge>}
                         </div>
-                        {canControlFilament && (
-                          <div className="flex gap-1.5">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className={`h-7 min-w-0 flex-1 gap-1 px-2 text-xs ${CONTROL_GLOW}`}
-                              disabled={filamentControlsDisabled}
-                              onClick={() => handleFilamentAction('load', slot)}
-                            >
-                              <ArrowDownToLine className="size-3.5" />
-                              {filamentInFlight === `load-${slot.slot}` ? '…' : 'Load'}
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className={`h-7 min-w-0 flex-1 gap-1 px-2 text-xs ${CONTROL_GLOW}`}
-                              disabled={filamentControlsDisabled}
-                              onClick={() => handleFilamentAction('unload', slot)}
-                            >
-                              <ArrowUpFromLine className="size-3.5" />
-                              {filamentInFlight === `unload-${slot.slot}` ? '…' : 'Unload'}
-                            </Button>
-                          </div>
-                        )}
                       </div>
                     </div>
-                  ))}
-              </div>
+                    );
+                  })}
+                </div>
+                {(canControlFilament || canEditFilament) && (
+                  <div className="mt-4 border-t border-gray-200 pt-4 dark:border-gray-700">
+                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                      {selectedSlot
+                        ? `Selected: ${selectedSlot.label ?? `${isBambuProfile(printer.profile) ? 'Slot' : 'Tool'} ${selectedSlot.slot}`}`
+                        : 'Select a filament spool above to load, unload, or edit it.'}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {canControlFilament && (
+                        <>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className={`h-8 gap-1 px-3 text-xs ${CONTROL_GLOW}`}
+                            disabled={!selectedSlot || filamentControlsDisabled}
+                            onClick={() => selectedSlot && handleFilamentAction('load', selectedSlot)}
+                          >
+                            <ArrowDownToLine className="size-3.5" />
+                            {selectedSlot && filamentInFlight === `load-${selectedSlot.slot}` ? '…' : 'Load'}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className={`h-8 gap-1 px-3 text-xs ${CONTROL_GLOW}`}
+                            disabled={!selectedSlot || filamentControlsDisabled}
+                            onClick={() => selectedSlot && handleFilamentAction('unload', selectedSlot)}
+                          >
+                            <ArrowUpFromLine className="size-3.5" />
+                            {selectedSlot && filamentInFlight === `unload-${selectedSlot.slot}` ? '…' : 'Unload'}
+                          </Button>
+                        </>
+                      )}
+                      {canEditFilament && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className={`h-8 gap-1 px-3 text-xs ${CONTROL_GLOW}`}
+                          disabled={!selectedSlot}
+                          onClick={() => selectedSlot && openFilamentEdit(selectedSlot)}
+                        >
+                          <Pencil className="size-3.5" />
+                          Edit
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
             ) : (
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 No live filament status available.
@@ -1947,6 +2050,80 @@ export function PrinterDetail() {
                 </Button>
               </DialogFooter>
             </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {canEditFilament && (
+        <Dialog
+          open={filamentEditSlot !== null}
+          onOpenChange={(open) => {
+            if (!open) setFilamentEditSlot(null);
+          }}
+        >
+          <DialogContent className="dark:bg-gray-900 dark:border-gray-800">
+            <DialogHeader>
+              <DialogTitle>Edit Filament</DialogTitle>
+              <DialogDescription>
+                {filamentEditSlot
+                  ? `Set the material and color for ${
+                      filamentEditSlot.label ??
+                      `${isBambuProfile(printer.profile) ? 'Slot' : 'Tool'} ${filamentEditSlot.slot}`
+                    }.`
+                  : ''}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="filament-type">Material</Label>
+                <Select
+                  value={filamentEditDraft.type}
+                  onValueChange={(value) =>
+                    setFilamentEditDraft((draft) => ({ ...draft, type: value }))
+                  }
+                >
+                  <SelectTrigger id="filament-type">
+                    <SelectValue placeholder="Select material" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FILAMENT_MATERIALS.map((material) => (
+                      <SelectItem key={material} value={material}>
+                        {material}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="filament-color">Color</Label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="filament-color"
+                    type="color"
+                    value={filamentEditDraft.color}
+                    onChange={(event) =>
+                      setFilamentEditDraft((draft) => ({ ...draft, color: event.target.value }))
+                    }
+                    className="h-10 w-16 cursor-pointer rounded border border-gray-300 bg-transparent dark:border-gray-700"
+                  />
+                  <Input
+                    value={filamentEditDraft.color}
+                    onChange={(event) =>
+                      setFilamentEditDraft((draft) => ({ ...draft, color: event.target.value }))
+                    }
+                    className="w-32"
+                  />
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setFilamentEditSlot(null)}>
+                Cancel
+              </Button>
+              <Button onClick={saveFilamentEdit} disabled={filamentEditSaving}>
+                {filamentEditSaving ? 'Saving…' : 'Save'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       )}

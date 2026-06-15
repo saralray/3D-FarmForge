@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useLocation } from 'react-router';
+import { Link, useLocation, useNavigate } from 'react-router';
 import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ExternalLink, ScrollText, Music } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../contexts/AuthContext';
@@ -12,7 +12,13 @@ import stemlabLogo from '../../../CUD-STEM-LAB-logoBBGv2.svg';
 
 export function Navigation() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { user, logout } = useAuth();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/admin');
+  };
   const { isCollapsed, toggleSidebar } = useSidebar();
   const [logoWave, setLogoWave] = useState(false);
   const [musicSync, setMusicSync] = useState(false);
@@ -193,7 +199,7 @@ export function Navigation() {
           <Button
             variant="outline"
             className={isCollapsed ? 'w-full px-0' : 'w-full'}
-            onClick={logout}
+            onClick={handleLogout}
           >
             <LogOut className="size-4 mr-2" />
             {!isCollapsed && 'Logout'}

@@ -6,6 +6,7 @@ import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import { Checkbox } from '../components/ui/checkbox';
 import { Eye, EyeOff, ClipboardList } from 'lucide-react';
 import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
 import { fetchAdminConfigured } from '../lib/adminCredentialApi';
@@ -19,11 +20,12 @@ export function Login() {
 
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, loginAsViewer, setupAdminPassword } = useAuth();
+  const { user, isLoading: isAuthLoading, login, loginAsViewer, setupAdminPassword } = useAuth();
   const { googleFormUrl } = useIntegrationSettings();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const isAdminPage = location.pathname === '/admin';
 
@@ -54,7 +56,7 @@ export function Login() {
     setIsLoading(true);
 
     try {
-      const result = await login(username, password);
+      const result = await login(username, password, rememberMe);
       if (result.success) {
         navigate(from, { replace: true });
       } else {
@@ -93,6 +95,14 @@ export function Login() {
       setIsLoading(false);
     }
   };
+
+  // A saved (remembered) login is restored during auth bootstrap. Once a real
+  // user is signed in, don't show the login form again — send them on to the app
+  // until they explicitly log out. Viewers stay on the login screen so they can
+  // still sign in as admin.
+  if (!isAuthLoading && user && user.role !== 'viewer') {
+    return <Navigate to={from} replace />;
+  }
 
   const showSetup = isAdminPage && adminConfigured === false;
 
@@ -225,6 +235,17 @@ export function Login() {
                       )}
                     </button>
                   </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="remember-me"
+                    checked={rememberMe}
+                    onCheckedChange={(checked) => setRememberMe(checked === true)}
+                  />
+                  <Label htmlFor="remember-me" className="cursor-pointer font-normal">
+                    Keep me signed in
+                  </Label>
                 </div>
 
                 <Button type="submit" className="w-full" disabled={isLoading}>

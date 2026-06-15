@@ -726,6 +726,77 @@ export async function unloadPrinterFilament(printer: Printer, slot: number, tray
   await sendFilamentCommand(printer, 'unload', slot, trayId);
 }
 
+// Filament materials offered by the "Edit filament" dialog. The server maps each
+// to a generic Bambu profile (tray_info_idx) and nozzle temperature window.
+export const FILAMENT_MATERIALS = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PC', 'PA', 'PVA'] as const;
+export type FilamentMaterial = (typeof FILAMENT_MATERIALS)[number];
+
+export function printerSupportsFilamentEdit(printer: Printer) {
+  // Editable on every profile that exposes filament slots: Bambu (MQTT
+  // ams_filament_setting) and the Snapmaker U1 (Klipper/AFC SET_MATERIAL +
+  // SET_COLOR macros). Generic printers report no filament, so the edit UI never
+  // surfaces for them.
+  return printerSupportsFilamentControl(printer);
+}
+
+// Set the material and color the printer associates with a tray/lane. `slot` is
+// the 1-based card index; `trayId` is the Bambu global tray id (unused by the
+// Snapmaker path). Bambu sends an MQTT ams_filament_setting via the command
+// endpoint; the Snapmaker U1 runs AFC SET_MATERIAL/SET_COLOR macros over the
+// gcode proxy (lane E0–E3 == slot-1, mirroring the load/unload macros).
+export async function setPrinterFilament(
+  printer: Printer,
+  slot: number,
+  trayId: number | undefined,
+  settings: { type: string; color: string },
+) {
+  if (!printerSupportsFilamentEdit(printer)) {
+    throw new Error('Editing filament is not available for this printer.');
+  }
+
+  let response: Response;
+  if (isBambuProfile(printer.profile)) {
+    response = await fetch(`/api/printers/${encodeURIComponent(printer.id)}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'set_filament',
+        trayId,
+        type: settings.type,
+        color: settings.color,
+      }),
+    });
+  } else if (printer.profile === 'snapmaker_u1') {
+    const lane = `E${Math.max(0, slot - 1)}`;
+    const material = settings.type.toUpperCase().replace(/[^A-Z0-9+-]/g, '');
+    const color = settings.color.replace('#', '').slice(0, 6).toUpperCase();
+    // AFC stores material/color per lane; set both, then the card reflects them
+    // on the next poll. Combined into one gcode proxy call (newline-separated).
+    const script = `SET_MATERIAL LANE=${lane} MATERIAL=${material}\nSET_COLOR LANE=${lane} COLOR=${color}`;
+    response = await fetch(
+      `/__printer_proxy/${encodeURIComponent(printer.id)}/printer/gcode/script?script=${encodeURIComponent(script)}`,
+      { method: 'POST' },
+    );
+  } else {
+    throw new Error('Editing filament is not available for this printer.');
+  }
+
+  if (!response.ok) {
+    let message = `Filament command failed with ${response.status}`;
+    try {
+      const payload = (await response.json()) as { error?: string };
+      if (payload.error) {
+        message = payload.error;
+      }
+    } catch {
+      // Ignore non-JSON proxy responses.
+    }
+    throw new Error(message);
+  }
+
+  logAuditEvent('printer.filament', printer.name, { action: 'edit', slot, trayId, ...settings });
+}
+
 export type MotionAxis = 'x' | 'y' | 'z';
 
 // Step sizes (mm) offered by the manual jog controls.

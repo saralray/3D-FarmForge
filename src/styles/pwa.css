@@ -1,0 +1,48 @@
+/*
+ * Installed / standalone web-app styling.
+ *
+ * `.pwa-standalone` is added to <html> by main.tsx when the app runs as an
+ * installed PWA or an iOS "Add to Home Screen" app. We use it to (a) respect
+ * the device safe-area insets (the status-bar style is black-translucent, so
+ * content draws under the notch) and (b) render a denser, more app-like
+ * printer grid with smaller cards.
+ */
+
+.pwa-standalone body {
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Tighter grid + smaller printer cards in app mode. */
+.pwa-standalone .printer-grid {
+  gap: 0.5rem;
+}
+
+.pwa-standalone .printer-card {
+  padding: 0.625rem;
+  border-radius: 0.5rem;
+}
+
+.pwa-standalone .printer-card-webcam {
+  margin-bottom: 0.5rem;
+}
+
+.pwa-standalone .printer-card h3 {
+  font-size: 0.8125rem;
+  line-height: 1.1rem;
+  margin-bottom: 0.125rem;
+}
+
+.pwa-standalone .printer-card p {
+  font-size: 0.6875rem;
+  line-height: 1rem;
+}
+
+/* Fit one more card per row on larger screens when installed. */
+@media (min-width: 1280px) {
+  .pwa-standalone .printer-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}

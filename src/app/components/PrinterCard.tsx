@@ -91,7 +91,7 @@ export function PrinterCard({
 
   return (
     <Card
-      className={`p-4 hover:shadow-lg transition-shadow dark:bg-gray-800 dark:border-gray-700 ${canManage && onDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+      className={`printer-card p-4 hover:shadow-lg transition-shadow dark:bg-gray-800 dark:border-gray-700 ${canManage && onDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
       draggable={canManage && Boolean(onDragStart)}
       onClick={() => {
         if (draggedRef.current) {
@@ -129,7 +129,7 @@ export function PrinterCard({
         }, 0);
       }}
     >
-      <div className="mb-4 aspect-video overflow-hidden rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-900">
+      <div className="printer-card-webcam mb-4 aspect-video overflow-hidden rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-900">
         {isOnline ? (
           <img
             src={webcamSnapshotUrl}

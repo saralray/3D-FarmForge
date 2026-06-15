@@ -410,6 +410,21 @@ function mapSheetRowsToQueue(rows) {
 // poller's connection.
 const BAMBU_PRINT_ACTIONS = { pause: 'pause', resume: 'resume', cancel: 'stop' };
 
+// Generic Bambu filament presets keyed by material type. `idx` is Bambu's
+// tray_info_idx code (the generic profile for each material); `min`/`max` are
+// the nozzle temperature window. Used by the ams_filament_setting command when
+// staff edit a tray's material. Codes/temps may need per-model tuning.
+const BAMBU_FILAMENT_PRESETS = {
+  PLA: { idx: 'GFL99', type: 'PLA', min: 190, max: 230 },
+  PETG: { idx: 'GFG99', type: 'PETG', min: 230, max: 260 },
+  ABS: { idx: 'GFB99', type: 'ABS', min: 240, max: 270 },
+  ASA: { idx: 'GFB98', type: 'ASA', min: 240, max: 270 },
+  TPU: { idx: 'GFU99', type: 'TPU', min: 200, max: 240 },
+  PC: { idx: 'GFC99', type: 'PC', min: 260, max: 280 },
+  PA: { idx: 'GFN99', type: 'PA', min: 260, max: 290 },
+  PVA: { idx: 'GFS99', type: 'PVA', min: 190, max: 220 },
+};
+
 // Map a heater target to the M-code Bambu accepts over `gcode_line`.
 function buildBambuTemperatureGcode(heater, target, nozzleIndex = 0) {
   const value = Math.round(Number(target));
@@ -580,6 +595,41 @@ function buildBambuCommandPayload(command, params = {}, profile) {
         target,
         curr_temp: 0,
         tar_temp: tarTemp,
+        sequence_id: sequenceId,
+      },
+    };
+  }
+
+  if (command === 'set_filament') {
+    // ams_filament_setting: change the material/color the printer thinks is in a
+    // tray. `trayId` is the global tray id (AMS unit * 4 + tray, or 254 for the
+    // external spool). Bambu splits it into ams_id (the unit) and tray_id (0-3
+    // within the unit); the external spool uses ams_id 255 / tray_id 254.
+    // `tray_info_idx` is Bambu's filament code (e.g. generic PLA = GFL99) and
+    // `tray_color` is RRGGBBAA. These codes/temps are device-specific and may
+    // need live tuning per printer model.
+    const target = Number(params.trayId);
+    if (!Number.isFinite(target) || target < 0 || target > 255) {
+      throw new Error('Filament tray target is out of range');
+    }
+    const isExternal = target === 254;
+    const amsId = isExternal ? 255 : Math.floor(target / 4);
+    const trayId = isExternal ? 254 : target % 4;
+    const type = String(params.type || '').toUpperCase().trim();
+    const preset = BAMBU_FILAMENT_PRESETS[type] || BAMBU_FILAMENT_PRESETS.PLA;
+    const color = String(params.color || '#808080').replace('#', '').slice(0, 6).toUpperCase();
+    const trayColor = `${color.padEnd(6, '0')}FF`;
+    return {
+      print: {
+        command: 'ams_filament_setting',
+        ams_id: amsId,
+        tray_id: trayId,
+        tray_info_idx: preset.idx,
+        tray_color: trayColor,
+        nozzle_temp_min: preset.min,
+        nozzle_temp_max: preset.max,
+        tray_type: preset.type,
+        setting_id: '',
         sequence_id: sequenceId,
       },
     };

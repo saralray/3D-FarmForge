@@ -1,0 +1,19 @@
+{
+  "name": "CUD Stemlab PrintFarm",
+  "short_name": "PrintFarm",
+  "description": "STEM Lab print-farm dashboard for monitoring 3D printers, queues, and analytics.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#863bff",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

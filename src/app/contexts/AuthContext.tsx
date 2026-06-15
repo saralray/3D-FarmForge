@@ -24,7 +24,7 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  login: (username: string, password: string) => Promise<LoginResult>;
+  login: (username: string, password: string, remember?: boolean) => Promise<LoginResult>;
   loginAsViewer: () => Promise<LoginResult>;
   setupAdminPassword: (password: string) => Promise<ChangePasswordResult>;
   changeAdminPassword: (
@@ -83,6 +83,9 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const SESSION_STORAGE_KEY = 'printfarm_session';
 const USER_STORAGE_KEY = 'printfarm_users';
 const SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
+// "Remember me" persists the session in localStorage so it survives closing the
+// browser, and gives it a longer lifetime than a regular tab-scoped session.
+const REMEMBER_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
 // The admin's password is not stored client-side — it lives server-side and is
 // set on first run (see lib/adminCredentialApi.ts), so this record carries no
@@ -149,42 +152,49 @@ function writeStoredUsers(users: StoredUserRecord[]) {
   localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(users));
 }
 
+// A remembered session lives in localStorage; a tab-scoped one in sessionStorage.
+// Prefer the persistent store so a "remember me" login wins after a restart.
 function readStoredSession(): StoredSession | null {
-  const rawValue = sessionStorage.getItem(SESSION_STORAGE_KEY);
-  if (!rawValue) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(rawValue) as StoredSession;
-    if (!parsed.user || typeof parsed.expiresAt !== 'number') {
-      sessionStorage.removeItem(SESSION_STORAGE_KEY);
-      return null;
+  for (const store of [localStorage, sessionStorage]) {
+    const rawValue = store.getItem(SESSION_STORAGE_KEY);
+    if (!rawValue) {
+      continue;
     }
 
-    if (parsed.expiresAt <= Date.now()) {
-      sessionStorage.removeItem(SESSION_STORAGE_KEY);
-      return null;
-    }
+    try {
+      const parsed = JSON.parse(rawValue) as StoredSession;
+      if (!parsed.user || typeof parsed.expiresAt !== 'number' || parsed.expiresAt <= Date.now()) {
+        store.removeItem(SESSION_STORAGE_KEY);
+        continue;
+      }
 
-    return parsed;
-  } catch {
-    sessionStorage.removeItem(SESSION_STORAGE_KEY);
-    return null;
+      return parsed;
+    } catch {
+      store.removeItem(SESSION_STORAGE_KEY);
+    }
   }
+
+  return null;
 }
 
-function writeStoredSession(user: User | null) {
+function clearStoredSession() {
+  sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function writeStoredSession(user: User | null, remember = false) {
+  // Always clear both stores first so a session never lingers in the other one.
+  clearStoredSession();
   if (!user) {
-    sessionStorage.removeItem(SESSION_STORAGE_KEY);
     return;
   }
 
   const session: StoredSession = {
     user,
-    expiresAt: Date.now() + SESSION_DURATION_MS,
+    expiresAt: Date.now() + (remember ? REMEMBER_DURATION_MS : SESSION_DURATION_MS),
   };
-  sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  const store = remember ? localStorage : sessionStorage;
+  store.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
 }
 
 function createViewerSession() {
@@ -225,8 +235,16 @@ function sha256Fallback(message: string) {
     bytes.push(0);
   }
 
-  for (let shift = 56; shift >= 0; shift -= 8) {
-    bytes.push((bitLength >>> shift) & 0xff);
+  // 64-bit big-endian length. Split into high/low 32-bit halves: JS `>>>`
+  // only operates on 32 bits (the shift count is taken mod 32), so a single
+  // `bitLength >>> 56` would wrap around and corrupt the length block.
+  const highBits = Math.floor(bitLength / 0x100000000);
+  const lowBits = bitLength >>> 0;
+  for (let shift = 24; shift >= 0; shift -= 8) {
+    bytes.push((highBits >>> shift) & 0xff);
+  }
+  for (let shift = 24; shift >= 0; shift -= 8) {
+    bytes.push((lowBits >>> shift) & 0xff);
   }
 
   const words = new Uint32Array(64);
@@ -402,7 +420,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuditActor(user);
   }, [user]);
 
-  const login = async (username: string, password: string): Promise<LoginResult> => {
+  const login = async (
+    username: string,
+    password: string,
+    remember = false,
+  ): Promise<LoginResult> => {
     if (PUBLIC_VIEWER_MODE) {
       return { success: true };
     }
@@ -430,7 +452,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       const userData = sanitizeUser(DEFAULT_ADMIN);
       setUser(userData);
-      writeStoredSession(userData);
+      writeStoredSession(userData, remember);
       setAuditActor(userData);
       logAuditEvent('auth.login', userData.username, { role: userData.role });
       return { success: true };
@@ -450,7 +472,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         role: foundUser.role,
       };
       setUser(userData);
-      writeStoredSession(userData);
+      writeStoredSession(userData, remember);
       // Attribute the login (and any immediate follow-up action) to this user
       // right away, ahead of the actor-sync effect that runs after render.
       setAuditActor(userData);
