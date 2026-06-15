@@ -203,6 +203,13 @@
   -webkit-mask-position: left center;
   mask-position: left center;
   animation: logo-rgb-wave 2s linear infinite;
+  /* iOS/iPadOS Safari fails to repaint an element that is both CSS-masked
+     and has an animated background, rendering it transparent (the logo
+     vanishes). Promoting it to its own compositing layer forces a correct
+     repaint. */
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  will-change: background-position;
 }
 
 @keyframes logo-rgb-wave {

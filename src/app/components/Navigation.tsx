@@ -74,7 +74,7 @@ export function Navigation() {
 
   return (
     <nav
-      className={`relative flex h-screen flex-shrink-0 flex-col border-r border-gray-200 bg-white transition-[width] duration-300 ease-in-out dark:border-gray-700 dark:bg-gray-900 ${
+      className={`relative flex h-screen h-[100dvh] flex-shrink-0 flex-col border-r border-gray-200 bg-white transition-[width] duration-300 ease-in-out dark:border-gray-700 dark:bg-gray-900 ${
         isCollapsed ? 'w-[84px]' : 'w-72'
       }`}
     >
@@ -138,7 +138,7 @@ export function Navigation() {
         </div>
       </div>
 
-      <div className="flex-1 p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="space-y-1">
           {[...navItems, ...adminNavItems].map((item) => (
             <Link
