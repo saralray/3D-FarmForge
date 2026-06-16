@@ -673,7 +673,11 @@ export async function setPrinterLight(printer: Printer, on: boolean) {
       body: JSON.stringify({ command: on ? 'light_on' : 'light_off' }),
     });
   } else if (printer.profile === 'snapmaker_u1') {
-    const script = `SET_LED LED=cavity_led WHITE=${on ? 1 : 0}`;
+    // SYNC=0 applies the LED change immediately instead of queuing it behind the
+    // gcode movement queue (the default SYNC=1). The U1's own screen also drives
+    // cavity_led, so a queued change gets deferred/re-ordered against the
+    // firmware's writes and the LED visibly blinks; applying it atomically wins.
+    const script = `SET_LED LED=cavity_led WHITE=${on ? 1 : 0} SYNC=0`;
     response = await fetch(
       `/__printer_proxy/${encodeURIComponent(printer.id)}/printer/gcode/script?script=${encodeURIComponent(script)}`,
       { method: 'POST' },
