@@ -205,10 +205,11 @@ a large model never has to be base64-encoded inside one JSON document.
 
 | Method & path | Description |
 |---------------|-------------|
-| `GET /queue/export` | Metadata-only manifest of stored jobs → `{ "jobs": [...] }`. Pending jobs only by default; add `?includePrinted=true` to also include printed history. Each job carries `hasFile`, `fileMime`, `fileSize`. |
+| `GET /queue/export` | Metadata-only manifest of stored jobs → `{ "jobs": [...] }`. Pending jobs only by default; add `?includePrinted=true` to also include printed history. Migrate **only a selection** with `?ids=a,b,c` (comma-separated, repeatable). Each job carries `hasFile`, `fileMime`, `fileSize`. |
 | `POST /queue/import` | Recreate rows from a manifest. Body is an array or `{ "jobs": [...] }`. Preserves `id`, `printedStatus`, and `submittedAt` (idempotent upsert on `id`). Returns `{ "imported": <count> }`. |
 | `GET /queue/:id/file` | Stream a job's stored model bytes (`Content-Disposition: attachment`). `404` if the job has no stored file. |
 | `PUT /queue/:id/file` | Attach model bytes to an already-imported job. Send the file as the **raw request body**; `Content-Type` becomes the stored MIME. `404` if the job doesn't exist yet. Returns `{ "id", "fileSize" }`. |
+| `POST /queue/delete` | Bulk soft-delete the source rows after migration. Body is an array or `{ "ids": [...] }`. Returns `{ "deleted": <count> }`. |
 
 The upload route is capped by `QUEUE_UPLOAD_MAX_BYTES` (default 50 MB), and nginx
 lifts its body cap to 60 MB for `…/queue/:id/file` specifically.
@@ -218,8 +219,10 @@ lifts its body cap to 60 MB for `…/queue/:id/file` specifically.
 ```bash
 SRC="http://host-a:8080/api/v1";  DST="http://host-b:8080/api/v1"
 
-# 1. pull the manifest from the source
+# 1. pull the manifest from the source — whole queue, or only a selection:
 curl -H "X-Api-Key: $SRC_KEY" "$SRC/queue/export?includePrinted=true" -o jobs.json
+# selection only:
+curl -H "X-Api-Key: $SRC_KEY" "$SRC/queue/export?ids=job-1,job-2" -o jobs.json
 
 # 2. recreate the rows on the destination
 curl -H "X-Api-Key: $DST_KEY" -X POST "$DST/queue/import" \
@@ -230,8 +233,10 @@ curl -H "X-Api-Key: $SRC_KEY" "$SRC/queue/$ID/file" -o model.bin
 curl -H "X-Api-Key: $DST_KEY" -X PUT "$DST/queue/$ID/file" \
      -H "Content-Type: model/3mf" --data-binary @model.bin
 
-# 4. (optional) remove the migrated jobs from the source
+# 4. remove the migrated jobs from the source — one job, or the whole selection:
 curl -H "X-Api-Key: $SRC_KEY" -X DELETE "$SRC/queue/$ID"
+curl -H "X-Api-Key: $SRC_KEY" -X POST "$SRC/queue/delete" \
+     -H "Content-Type: application/json" -d '{"ids":["job-1","job-2"]}'
 ```
 
 ---

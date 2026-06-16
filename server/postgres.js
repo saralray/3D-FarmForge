@@ -673,6 +673,27 @@ export async function deleteQueueJob(id) {
   );
 }
 
+// Soft-delete a set of jobs in one statement. Used to remove the source-side
+// rows after a host→host migration ("migrate selection, then drop the source").
+// Returns the number of rows actually removed (already-deleted rows are skipped).
+export async function deleteQueueJobs(ids) {
+  await ensureSchema();
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return 0;
+  }
+  const result = await query(
+    `
+    UPDATE queue_jobs
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE id = ANY($1::text[])
+      AND deleted_at IS NULL;
+  `,
+    [ids],
+  );
+  return result.rowCount;
+}
+
 // Insert (or replace) a job submitted through the in-app print-request form. The
 // uploaded file lives in queue_jobs.file_content (bytea) so the queue carries the
 // model itself instead of an external link. form_type is forced to the queue's
@@ -756,10 +777,12 @@ export async function getQueueJobFile(id) {
 
 // Manifest of stored queue jobs for migration. Pending jobs only by default;
 // pass includePrinted to also carry the printed history. Soft-deleted rows are
-// always skipped. No file bytes — each job advertises hasFile/fileMime/fileSize
-// and the caller fetches the bytes from .../file.
-export async function exportQueueJobs(includePrinted = false) {
+// always skipped. Pass a non-empty `ids` array to migrate only that selection
+// (order/printed filters still apply). No file bytes — each job advertises
+// hasFile/fileMime/fileSize and the caller fetches the bytes from .../file.
+export async function exportQueueJobs(includePrinted = false, ids = null) {
   await ensureSchema();
+  const idFilter = Array.isArray(ids) && ids.length > 0 ? ids : null;
   const result = await query(
     `
     SELECT COALESCE(
@@ -787,9 +810,10 @@ export async function exportQueueJobs(includePrinted = false) {
     FROM queue_jobs
     WHERE form_type = $1
       AND deleted_at IS NULL
-      AND ($2::boolean OR printed_status = 0);
+      AND ($2::boolean OR printed_status = 0)
+      AND ($3::text[] IS NULL OR id = ANY($3::text[]));
   `,
-    [QUEUE_FORM_TYPE, Boolean(includePrinted)],
+    [QUEUE_FORM_TYPE, Boolean(includePrinted), idFilter],
   );
 
   return result.rows[0].data;

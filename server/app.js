@@ -14,6 +14,7 @@ import {
   deleteDiscordWebhook,
   deletePrinter,
   deleteQueueJob,
+  deleteQueueJobs,
   deleteSlicerApiKey,
   ensureSchema,
   exportQueueJobs,
@@ -357,6 +358,29 @@ function readBody(req) {
 async function readJsonBody(req) {
   const body = await readBody(req);
   return body.length > 0 ? JSON.parse(body.toString('utf8')) : {};
+}
+
+// Normalize a list of queue-job ids from either query params (repeated `?ids=`
+// and/or comma-separated values) or a JSON array body, into a deduped array of
+// trimmed strings. Returns null when nothing usable is present.
+function parseIdList(input) {
+  if (input == null) {
+    return null;
+  }
+  const raw = Array.isArray(input) ? input : [input];
+  const ids = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string') {
+      continue;
+    }
+    for (const part of entry.split(',')) {
+      const trimmed = part.trim();
+      if (trimmed && !ids.includes(trimmed)) {
+        ids.push(trimmed);
+      }
+    }
+  }
+  return ids.length > 0 ? ids : null;
 }
 
 // Buffer a raw binary request body up to an explicit cap. Used by the queue
@@ -1258,15 +1282,18 @@ async function handleDataApiPrinters(req, res, { apiKey, method, id, sub, action
 // stays on the frontend /api/queue path).
 async function handleDataApiQueue(req, res, { apiKey, method, id, sub, requestUrl }) {
   // ── Migration: export manifest ────────────────────────────────────────────
-  // GET /api/v1/queue/export[?includePrinted=true] — metadata-only manifest for
-  // a remote manager to recreate this host's queue elsewhere. Each job carries
-  // hasFile/fileMime/fileSize; the bytes are pulled separately from .../file.
+  // GET /api/v1/queue/export[?includePrinted=true][?ids=a,b,c] — metadata-only
+  // manifest for a remote manager to recreate this host's queue elsewhere. Each
+  // job carries hasFile/fileMime/fileSize; the bytes are pulled separately from
+  // .../file. Pass `ids` (comma-separated, repeatable) to migrate only that
+  // selection instead of the whole queue.
   if (id === 'export') {
     if (method !== 'GET') {
       return dataApiMethodNotAllowed(res);
     }
     const includePrinted = requestUrl.searchParams.get('includePrinted') === 'true';
-    const jobs = await exportQueueJobs(includePrinted);
+    const ids = parseIdList(requestUrl.searchParams.getAll('ids'));
+    const jobs = await exportQueueJobs(includePrinted, ids);
     sendJson(res, 200, { jobs }, 'no-store');
     return true;
   }
@@ -1288,6 +1315,26 @@ async function handleDataApiQueue(req, res, { apiKey, method, id, sub, requestUr
     const imported = await importQueueJobs(jobs);
     auditDataApi(req, apiKey, 'queue.import', null, { count: imported });
     sendJson(res, 200, { imported });
+    return true;
+  }
+
+  // ── Migration: bulk source removal ─────────────────────────────────────────
+  // POST /api/v1/queue/delete { ids: [...] } — soft-delete a set of jobs in one
+  // call. Used to drop the source-side rows after migrating a selection across
+  // ("migrate selection, then remove the source queue"). Returns { deleted }.
+  if (id === 'delete') {
+    if (method !== 'POST') {
+      return dataApiMethodNotAllowed(res);
+    }
+    const body = await readJsonBody(req);
+    const ids = parseIdList(Array.isArray(body) ? body : body?.ids);
+    if (!ids) {
+      sendJson(res, 400, { error: 'expected a non-empty array of ids or { ids: [...] }' });
+      return true;
+    }
+    const deleted = await deleteQueueJobs(ids);
+    auditDataApi(req, apiKey, 'queue.delete', null, { ids, deleted });
+    sendJson(res, 200, { deleted });
     return true;
   }
 
