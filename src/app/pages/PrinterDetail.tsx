@@ -1407,11 +1407,31 @@ export function PrinterDetail() {
                   const temperature = nozzleTemperatures[index];
                   const key = `nozzle-${index}`;
                   const label = getNozzleLabel(printer.profile, index, nozzleTemperatures.length);
+                  const multiNozzle = nozzleTemperatures.length > 1;
                   return (
                     <div key={`${printer.id}-detail-${key}`}>
-                      <div className="flex justify-between items-center gap-2 mb-2">
-                        <span className="text-sm text-gray-600 dark:text-gray-400">{label}</span>
-                        <div className="flex items-center gap-2">
+                      {/* In the narrow side-by-side columns the label, value and
+                          input can't share a line, so stack them; single-nozzle
+                          printers keep the inline row like the bed/chamber rows. */}
+                      <div
+                        className={`flex gap-2 mb-2 ${
+                          multiNozzle
+                            ? 'flex-col items-start'
+                            : 'justify-between items-center'
+                        }`}
+                      >
+                        <span
+                          className={`text-sm text-gray-600 dark:text-gray-400 truncate ${
+                            multiNozzle ? 'w-full' : 'min-w-0'
+                          }`}
+                        >
+                          {label}
+                        </span>
+                        <div
+                          className={`flex items-center gap-2 flex-wrap ${
+                            multiNozzle ? '' : 'shrink-0'
+                          }`}
+                        >
                           <span className={`font-bold text-lg ${getStatusColor()}`}>
                             {formatMaxTwoDecimals(temperature)}°C
                           </span>
