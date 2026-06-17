@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Bell, Check, Copy, Image as ImageIcon, KeyRound, Link2, MonitorCheck, Plus, Settings as SettingsIcon, Shield, Trash2, Users, X } from 'lucide-react';
+import { Bell, Check, Copy, Image as ImageIcon, KeyRound, MonitorCheck, Plus, Settings as SettingsIcon, Shield, Trash2, Users, X } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -45,8 +45,6 @@ import { fetchPrinters, savePrinter } from '../lib/printersApi';
 import { generateId, slugifyPrinterId } from '../lib/id';
 import { isBambuProfile, normalizePrinter, PRINTER_PROFILES } from '../lib/printerProfiles';
 import {
-  fetchIntegrationSettings,
-  saveIntegrationSettings,
   fetchBrandingSettings,
   saveBrandingSettings,
   DEFAULT_SITE_NAME,
@@ -83,9 +81,6 @@ export function Settings() {
   const [eventsDraft, setEventsDraft] = useState<string[]>([]);
   const [savingEvents, setSavingEvents] = useState(false);
   const [togglingWebhookId, setTogglingWebhookId] = useState<string | null>(null);
-  const [googleSheetQueueUrl, setGoogleSheetQueueUrl] = useState('');
-  const [googleFormUrl, setGoogleFormUrl] = useState('');
-  const [savingIntegrations, setSavingIntegrations] = useState(false);
   const [siteName, setSiteName] = useState('');
   const [logoDataUrl, setLogoDataUrl] = useState('');
   const [logoSvg, setLogoSvg] = useState('');
@@ -116,15 +111,6 @@ export function Settings() {
       .then(setDiscordWebhooks)
       .catch(() => {
         toast.error('Unable to load Discord webhooks.');
-      });
-
-    fetchIntegrationSettings()
-      .then((settings) => {
-        setGoogleSheetQueueUrl(settings.googleSheetQueueUrl);
-        setGoogleFormUrl(settings.googleFormUrl);
-      })
-      .catch(() => {
-        toast.error('Unable to load integration URLs.');
       });
 
     fetchBrandingSettings()
@@ -565,46 +551,6 @@ export function Settings() {
     }
   };
 
-  const handleSaveIntegrations = async (event: React.FormEvent) => {
-    event.preventDefault();
-
-    if (user?.role !== 'admin') {
-      toast.error('Only admins can change integration URLs.');
-      return;
-    }
-
-    const normalizedSheetUrl = googleSheetQueueUrl.trim();
-    const normalizedFormUrl = googleFormUrl.trim();
-
-    if (normalizedSheetUrl && !/\/spreadsheets\/d\//.test(normalizedSheetUrl)) {
-      toast.error('Enter a valid Google Sheets URL (must contain /spreadsheets/d/).');
-      return;
-    }
-
-    if (normalizedFormUrl && !/\/forms\//.test(normalizedFormUrl)) {
-      toast.error('Enter a valid Google Forms URL (must contain /forms/).');
-      return;
-    }
-
-    setSavingIntegrations(true);
-
-    try {
-      const saved = await saveIntegrationSettings({
-        googleSheetQueueUrl: normalizedSheetUrl,
-        googleFormUrl: normalizedFormUrl,
-      });
-      setGoogleSheetQueueUrl(saved.googleSheetQueueUrl);
-      setGoogleFormUrl(saved.googleFormUrl);
-      toast.success('Integration URLs saved');
-    } catch (error) {
-      toast.error('Unable to save integration URLs', {
-        description: error instanceof Error ? error.message : undefined,
-      });
-    } finally {
-      setSavingIntegrations(false);
-    }
-  };
-
   // ~512 KB raw image — matches the server's MAX_LOGO_DATA_URL_BYTES cap once
   // base64-encoded. Keeping the check client-side too gives instant feedback.
   const MAX_LOGO_BYTES = 512 * 1024;
@@ -840,10 +786,6 @@ export function Settings() {
           <TabsTrigger value="notifications" className="min-w-max">
             <Bell className="size-4" />
             Notifications
-          </TabsTrigger>
-          <TabsTrigger value="integrations" className="min-w-max">
-            <Link2 className="size-4" />
-            Integrations
           </TabsTrigger>
           <TabsTrigger value="branding" className="min-w-max">
             <ImageIcon className="size-4" />
@@ -1290,58 +1232,6 @@ export function Settings() {
                 </div>
               )}
             </div>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="integrations">
-          <Card className="p-6 dark:bg-gray-900 dark:border-gray-800">
-            <div className="mb-5">
-              <div className="flex items-center gap-2">
-                <Link2 className="size-5 text-blue-500" />
-                <h2 className="text-xl font-semibold dark:text-white">Integrations</h2>
-              </div>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                Admins can set the Google Sheet that feeds the print queue and the Google Form users submit print requests through. These override the build-time defaults and take effect on the next queue sync.
-              </p>
-            </div>
-
-            <form onSubmit={handleSaveIntegrations} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="google-sheet-url">Google Sheet (queue feed)</Label>
-                <Input
-                  id="google-sheet-url"
-                  value={googleSheetQueueUrl}
-                  onChange={(event) => setGoogleSheetQueueUrl(event.target.value)}
-                  placeholder="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                />
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  The server fetches this sheet as CSV to build the queue. Must be link-shareable.
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="google-form-url">Google Form (print request)</Label>
-                <Input
-                  id="google-form-url"
-                  value={googleFormUrl}
-                  onChange={(event) => setGoogleFormUrl(event.target.value)}
-                  placeholder="https://docs.google.com/forms/d/e/YOUR_FORM_ID/viewform"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                />
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Linked from the login screen and the sidebar so users can submit print requests.
-                </p>
-              </div>
-
-              <Button type="submit" disabled={savingIntegrations}>
-                {savingIntegrations ? 'Saving...' : 'Save Integration URLs'}
-              </Button>
-            </form>
           </Card>
         </TabsContent>
 

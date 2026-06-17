@@ -79,13 +79,36 @@ export async function saveBrandingSettings(
     throw new Error(await parseError(response));
   }
   logAuditEvent('settings.branding');
-  return response.json() as Promise<BrandingSettings>;
+  const saved = await (response.json() as Promise<BrandingSettings>);
+  saveBrandingCache(saved);
+  return saved;
+}
+
+const BRANDING_CACHE_KEY = 'branding_settings_cache';
+
+function loadBrandingCache(): BrandingSettings {
+  try {
+    const raw = localStorage.getItem(BRANDING_CACHE_KEY);
+    if (raw) return JSON.parse(raw) as BrandingSettings;
+  } catch {
+    // ignore
+  }
+  return DEFAULT_BRANDING_SETTINGS;
+}
+
+function saveBrandingCache(settings: BrandingSettings) {
+  try {
+    localStorage.setItem(BRANDING_CACHE_KEY, JSON.stringify(settings));
+  } catch {
+    // ignore
+  }
 }
 
 // Read-only hook for components that render the logo (Login, Navigation).
-// Falls back to the bundled default (empty string) until the API responds.
+// Bootstraps from localStorage cache to avoid a flash of the default logo on
+// reload, then refreshes from the API and updates the cache.
 export function useBrandingSettings(): BrandingSettings {
-  const [settings, setSettings] = useState<BrandingSettings>(DEFAULT_BRANDING_SETTINGS);
+  const [settings, setSettings] = useState<BrandingSettings>(loadBrandingCache);
 
   useEffect(() => {
     let active = true;
@@ -93,10 +116,11 @@ export function useBrandingSettings(): BrandingSettings {
       .then((value) => {
         if (active) {
           setSettings(value);
+          saveBrandingCache(value);
         }
       })
       .catch(() => {
-        // Keep the bundled default on failure.
+        // Keep the cached/bundled default on failure.
       });
     return () => {
       active = false;
