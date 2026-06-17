@@ -10,6 +10,7 @@ import { printerSupportsLight, setPrinterLight } from '../lib/printerProfiles';
 import { logAuditEvent } from '../lib/auditApi';
 import { usePrinters } from '../contexts/PrintersContext';
 import { useIsMobile } from '../components/ui/use-mobile';
+import { DEFAULT_SITE_NAME, useBrandingSettings } from '../lib/settingsApi';
 import { toast } from 'sonner';
 
 export function Dashboard() {
@@ -21,6 +22,7 @@ export function Dashboard() {
   // Drag-to-reorder ("edit layout") is awkward on touch phones, so it's
   // disabled there — cards stay tap-to-open only.
   const isMobile = useIsMobile();
+  const { siteName } = useBrandingSettings();
   const canReorder = user?.role === 'admin' && !isMobile;
   const loadErrorToastShownRef = useRef(false);
 
@@ -68,10 +70,10 @@ export function Dashboard() {
   };
 
   const statCards = [
-    { label: 'Online', value: `${stats.online}/${stats.total}`, icon: CheckCircle, color: 'text-green-500', bgColor: 'bg-green-50 dark:bg-green-900/30' },
-    { label: 'Printing', value: stats.printing, icon: Activity, color: 'text-blue-500', bgColor: 'bg-blue-50 dark:bg-blue-900/30' },
-    { label: 'Paused', value: stats.paused, icon: Pause, color: 'text-yellow-500', bgColor: 'bg-yellow-50 dark:bg-yellow-900/30' },
-    { label: 'Error', value: stats.error, icon: AlertCircle, color: 'text-red-500', bgColor: 'bg-red-50 dark:bg-red-900/30' },
+    { label: 'Online', value: `${stats.online}/${stats.total}`, icon: CheckCircle, color: 'text-green-500', bgColor: 'bg-green-50 dark:bg-green-900/80' },
+    { label: 'Printing', value: stats.printing, icon: Activity, color: 'text-blue-500', bgColor: 'bg-blue-50 dark:bg-blue-900/80' },
+    { label: 'Paused', value: stats.paused, icon: Pause, color: 'text-yellow-500', bgColor: 'bg-yellow-50 dark:bg-yellow-900/80' },
+    { label: 'Error', value: stats.error, icon: AlertCircle, color: 'text-red-500', bgColor: 'bg-red-50 dark:bg-red-900/80' },
   ];
 
   // Printers that expose a chamber/cavity light and are currently reachable.
@@ -167,7 +169,7 @@ export function Dashboard() {
   return (
     <div className="p-6 space-y-6">
       <div>
-        <h1 className="text-3xl font-bold mb-2 dark:text-white">PrintFarm Dashboard</h1>
+        <h1 className="text-3xl font-bold mb-2 dark:text-white">{siteName || DEFAULT_SITE_NAME} Dashboard</h1>
         <p className="text-gray-600 dark:text-gray-400">Monitor and manage all printers in real-time</p>
       </div>
 

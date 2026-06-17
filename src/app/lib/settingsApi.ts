@@ -14,6 +14,10 @@ const DEFAULT_INTEGRATION_SETTINGS: IntegrationSettings = {
   googleFormUrl: '',
 };
 
+// The site name shown when an admin hasn't set a custom one (browser tab,
+// dashboard heading, logo alt text).
+export const DEFAULT_SITE_NAME = 'PrintFarm';
+
 async function parseError(response: Response) {
   try {
     const payload = (await response.json()) as { error?: string };
@@ -24,6 +28,8 @@ async function parseError(response: Response) {
 }
 
 export interface BrandingSettings {
+  // Empty string means "use the bundled default site name".
+  siteName: string;
   // Empty string means "use the bundled default logo".
   logoDataUrl: string;
   // Theme-adaptive, sanitized SVG markup for inline rendering (SVG uploads only).
@@ -37,6 +43,7 @@ export interface BrandingSettings {
 }
 
 const DEFAULT_BRANDING_SETTINGS: BrandingSettings = {
+  siteName: '',
   logoDataUrl: '',
   logoSvg: '',
   logoAdaptive: false,
@@ -46,6 +53,7 @@ const DEFAULT_BRANDING_SETTINGS: BrandingSettings = {
 
 // The fields the client sends on save; the server derives logoSvg/logoAdaptive.
 export interface BrandingInput {
+  siteName: string;
   logoDataUrl: string;
   logoScale: number;
   backgroundDataUrl: string;

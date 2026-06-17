@@ -49,6 +49,7 @@ import {
   saveIntegrationSettings,
   fetchBrandingSettings,
   saveBrandingSettings,
+  DEFAULT_SITE_NAME,
 } from '../lib/settingsApi';
 
 const IPV4_PATTERN =
@@ -85,12 +86,14 @@ export function Settings() {
   const [googleSheetQueueUrl, setGoogleSheetQueueUrl] = useState('');
   const [googleFormUrl, setGoogleFormUrl] = useState('');
   const [savingIntegrations, setSavingIntegrations] = useState(false);
+  const [siteName, setSiteName] = useState('');
   const [logoDataUrl, setLogoDataUrl] = useState('');
   const [logoSvg, setLogoSvg] = useState('');
   const [logoAdaptive, setLogoAdaptive] = useState(false);
   const [logoScale, setLogoScale] = useState(1);
   const [backgroundDataUrl, setBackgroundDataUrl] = useState('');
   const [savingBranding, setSavingBranding] = useState(false);
+  const [savingIdentity, setSavingIdentity] = useState(false);
   const [savingBackground, setSavingBackground] = useState(false);
   const [slicerKeys, setSlicerKeys] = useState<SlicerApiKey[]>([]);
   const [slicerKeyName, setSlicerKeyName] = useState('');
@@ -126,6 +129,7 @@ export function Settings() {
 
     fetchBrandingSettings()
       .then((settings) => {
+        setSiteName(settings.siteName);
         setLogoDataUrl(settings.logoDataUrl);
         setLogoSvg(settings.logoSvg);
         setLogoAdaptive(settings.logoAdaptive);
@@ -634,7 +638,16 @@ export function Settings() {
     reader.readAsDataURL(file);
   };
 
+  // Branding (name, color, logo, background) is read once at app start by
+  // BrandingApplier and the various useBrandingSettings consumers, so after a
+  // save the simplest way to make it take effect everywhere is a full reload.
+  // The short delay lets the success toast register before the page reloads.
+  const reloadAfterSave = () => {
+    setTimeout(() => window.location.reload(), 700);
+  };
+
   const applyBranding = (saved: Awaited<ReturnType<typeof saveBrandingSettings>>) => {
+    setSiteName(saved.siteName);
     setLogoDataUrl(saved.logoDataUrl);
     setLogoSvg(saved.logoSvg);
     setLogoAdaptive(saved.logoAdaptive);
@@ -650,12 +663,13 @@ export function Settings() {
     setSavingBranding(true);
     try {
       // Send the full branding payload so saving the logo never wipes the
-      // background (and vice versa).
-      const saved = await saveBrandingSettings({ logoDataUrl, logoScale, backgroundDataUrl });
+      // name/color/background (and vice versa).
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl });
       applyBranding(saved);
       toast.success('Logo saved', {
-        description: 'Reload the page to see it update everywhere.',
+        description: 'Reloading to apply it everywhere…',
       });
+      reloadAfterSave();
     } catch (error) {
       toast.error('Unable to save logo', {
         description: error instanceof Error ? error.message : undefined,
@@ -672,9 +686,12 @@ export function Settings() {
     }
     setSavingBranding(true);
     try {
-      const saved = await saveBrandingSettings({ logoDataUrl: '', logoScale: 1, backgroundDataUrl });
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl: '', logoScale: 1, backgroundDataUrl });
       applyBranding(saved);
-      toast.success('Logo reset to the default.');
+      toast.success('Logo reset to the default.', {
+        description: 'Reloading to apply it everywhere…',
+      });
+      reloadAfterSave();
     } catch (error) {
       toast.error('Unable to reset logo', {
         description: error instanceof Error ? error.message : undefined,
@@ -720,11 +737,12 @@ export function Settings() {
     }
     setSavingBackground(true);
     try {
-      const saved = await saveBrandingSettings({ logoDataUrl, logoScale, backgroundDataUrl });
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl });
       applyBranding(saved);
       toast.success('Background saved', {
-        description: 'Reload the page to see it update everywhere.',
+        description: 'Reloading to apply it everywhere…',
       });
+      reloadAfterSave();
     } catch (error) {
       toast.error('Unable to save background', {
         description: error instanceof Error ? error.message : undefined,
@@ -741,15 +759,62 @@ export function Settings() {
     }
     setSavingBackground(true);
     try {
-      const saved = await saveBrandingSettings({ logoDataUrl, logoScale, backgroundDataUrl: '' });
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl: '' });
       applyBranding(saved);
-      toast.success('Background reset to the default theme.');
+      toast.success('Background reset to the default theme.', {
+        description: 'Reloading to apply it everywhere…',
+      });
+      reloadAfterSave();
     } catch (error) {
       toast.error('Unable to reset background', {
         description: error instanceof Error ? error.message : undefined,
       });
     } finally {
       setSavingBackground(false);
+    }
+  };
+
+  const handleSaveIdentity = async () => {
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can change the site name.');
+      return;
+    }
+    setSavingIdentity(true);
+    try {
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl });
+      applyBranding(saved);
+      toast.success('Site name saved.', {
+        description: 'Reloading to apply it everywhere…',
+      });
+      reloadAfterSave();
+    } catch (error) {
+      toast.error('Unable to save site name', {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setSavingIdentity(false);
+    }
+  };
+
+  const handleResetIdentity = async () => {
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can change the site name.');
+      return;
+    }
+    setSavingIdentity(true);
+    try {
+      const saved = await saveBrandingSettings({ siteName: '', logoDataUrl, logoScale, backgroundDataUrl });
+      applyBranding(saved);
+      toast.success('Site name reset to the default.', {
+        description: 'Reloading to apply it everywhere…',
+      });
+      reloadAfterSave();
+    } catch (error) {
+      toast.error('Unable to reset site name', {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setSavingIdentity(false);
     }
   };
 
@@ -1290,6 +1355,46 @@ export function Settings() {
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                 Upload a custom logo to replace the default mark on the login screen and the sidebar. PNG, JPEG, WebP, GIF, or SVG up to 512&nbsp;KB. A single-color SVG is recolored to follow the light/dark theme automatically.
               </p>
+            </div>
+
+            <div className="border-b border-gray-200 pb-6 mb-6 dark:border-gray-800">
+              <div className="mb-4">
+                <h3 className="text-lg font-semibold dark:text-white">Site Name</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                  Set the name shown in the browser tab and dashboard heading. Saving reloads
+                  the app so the change applies everywhere. Leave blank / reset to use the
+                  built-in default.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="site-name">Website name</Label>
+                  <Input
+                    id="site-name"
+                    type="text"
+                    maxLength={120}
+                    placeholder={DEFAULT_SITE_NAME}
+                    value={siteName}
+                    onChange={(event) => setSiteName(event.target.value)}
+                    disabled={user?.role !== 'admin'}
+                  />
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" onClick={handleSaveIdentity} disabled={savingIdentity}>
+                    {savingIdentity ? 'Saving...' : 'Save Name'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleResetIdentity}
+                    disabled={savingIdentity || !siteName}
+                  >
+                    Reset to Default
+                  </Button>
+                </div>
+              </div>
             </div>
 
             <div className="space-y-4">

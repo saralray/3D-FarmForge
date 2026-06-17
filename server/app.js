@@ -137,6 +137,10 @@ const MAX_BRANDING_BODY_BYTES =
 const MIN_LOGO_SCALE = 0.5;
 const MAX_LOGO_SCALE = 2;
 
+// Site name shown in the browser tab and dashboard heading. Empty = the bundled
+// default name. Capped so it can't bloat the row or overflow the UI.
+const MAX_SITE_NAME_LENGTH = 120;
+
 function clampLogoScale(value) {
   const scale = Number(value);
   if (!Number.isFinite(scale)) return 1;
@@ -146,6 +150,7 @@ function clampLogoScale(value) {
 async function getBranding() {
   const stored = (await getAppSetting(BRANDING_KEY)) || {};
   return {
+    siteName: typeof stored.siteName === 'string' ? stored.siteName : '',
     logoDataUrl: typeof stored.logoDataUrl === 'string' ? stored.logoDataUrl : '',
     logoSvg: typeof stored.logoSvg === 'string' ? stored.logoSvg : '',
     logoAdaptive: stored.logoAdaptive === true,
@@ -2553,6 +2558,16 @@ async function handleApi(req, res, requestUrl) {
 
       const logoScale = clampLogoScale(body?.logoScale ?? 1);
 
+      // Optional site name (browser tab + dashboard heading). Empty falls back
+      // to the bundled default name.
+      const siteNameRaw = body?.siteName;
+      if (siteNameRaw !== undefined && typeof siteNameRaw !== 'string') {
+        sendJson(res, 400, { error: 'siteName must be a string' });
+        return true;
+      }
+      const siteName =
+        typeof siteNameRaw === 'string' ? siteNameRaw.trim().slice(0, MAX_SITE_NAME_LENGTH) : '';
+
       // For SVG uploads, analyze the markup and keep a theme-adaptive copy that
       // the frontend can inline; non-SVG (raster) logos render straight from the
       // data URL with no theming.
@@ -2567,7 +2582,7 @@ async function handleApi(req, res, requestUrl) {
         }
       }
 
-      await setAppSetting(BRANDING_KEY, { logoDataUrl: trimmed, logoSvg, logoAdaptive, logoScale, backgroundDataUrl });
+      await setAppSetting(BRANDING_KEY, { siteName, logoDataUrl: trimmed, logoSvg, logoAdaptive, logoScale, backgroundDataUrl });
       sendJson(res, 200, await getBranding());
       return true;
     }
