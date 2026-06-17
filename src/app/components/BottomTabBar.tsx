@@ -11,6 +11,7 @@ import {
   ScrollText,
 } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
+import { NotificationBell } from './NotificationBell';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from './ui/sheet';
@@ -140,7 +141,10 @@ export function BottomTabBar() {
 
             <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
               <span className="text-sm text-gray-600 dark:text-gray-400">Theme</span>
-              <ThemeToggle />
+              <div className="flex items-center gap-1">
+                <ThemeToggle />
+                <NotificationBell />
+              </div>
             </div>
 
             {user && !PUBLIC_VIEWER_MODE && user.role !== 'viewer' && (

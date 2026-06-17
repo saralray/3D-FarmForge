@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { Printer } from '../types';
 import { fetchQueueJobs } from '../lib/queueApi';
 import { usePrinters } from '../contexts/PrintersContext';
+import { usePrinterEvents, PrinterEventLevel } from '../contexts/PrinterEventsContext';
 
 type PrinterSnapshot = Pick<Printer, 'id' | 'name' | 'status' | 'currentJob' | 'progress'>;
 
@@ -17,28 +18,38 @@ const OFFLINE_CONFIRM_MS = 20000;
 // surface the "job stopped" toast.
 type TransitionResult = { type: 'offline-stopped'; jobName: string } | null;
 
+// Both surfaces an ephemeral toast and records the event in the notification
+// center so it survives after the toast fades.
+type EmitEvent = (event: {
+  level: PrinterEventLevel;
+  title: string;
+  description?: string;
+  printerId?: string;
+  printerName?: string;
+}) => void;
+
 function getJobName(printer: PrinterSnapshot) {
   return printer.currentJob?.filename || 'Print job';
 }
 
-function notifyPrinterTransition(previous: PrinterSnapshot, next: PrinterSnapshot): TransitionResult {
+function notifyPrinterTransition(
+  previous: PrinterSnapshot,
+  next: PrinterSnapshot,
+  emit: EmitEvent,
+): TransitionResult {
   const previousJob = previous.currentJob;
   const nextJob = next.currentJob;
   const previousFilename = previousJob?.filename;
   const nextFilename = nextJob?.filename;
 
   if (!previousFilename && nextFilename) {
-    toast.success(`${next.name} started`, {
-      description: nextFilename,
-    });
+    emit({ level: 'success', title: `${next.name} started`, description: nextFilename, printerId: next.id, printerName: next.name });
     return null;
   }
 
   if (previousFilename && !nextFilename) {
     if (next.status === 'error') {
-      toast.error(`${next.name} error`, {
-        description: previousFilename,
-      });
+      emit({ level: 'error', title: `${next.name} error`, description: previousFilename, printerId: next.id, printerName: next.name });
       return null;
     }
 
@@ -48,35 +59,25 @@ function notifyPrinterTransition(previous: PrinterSnapshot, next: PrinterSnapsho
     }
 
     if (previous.progress >= 95) {
-      toast.success(`${next.name} completed`, {
-        description: previousFilename,
-      });
+      emit({ level: 'success', title: `${next.name} completed`, description: previousFilename, printerId: next.id, printerName: next.name });
     } else {
-      toast.warning(`${next.name} stopped`, {
-        description: previousFilename,
-      });
+      emit({ level: 'warning', title: `${next.name} stopped`, description: previousFilename, printerId: next.id, printerName: next.name });
     }
     return null;
   }
 
   if (previousFilename && nextFilename && previousFilename !== nextFilename) {
-    toast.success(`${next.name} started`, {
-      description: nextFilename,
-    });
+    emit({ level: 'success', title: `${next.name} started`, description: nextFilename, printerId: next.id, printerName: next.name });
     return null;
   }
 
   if (previousJob?.status !== 'paused' && nextJob?.status === 'paused') {
-    toast.warning(`${next.name} paused`, {
-      description: getJobName(next),
-    });
+    emit({ level: 'warning', title: `${next.name} paused`, description: getJobName(next), printerId: next.id, printerName: next.name });
     return null;
   }
 
   if (previous.status !== 'error' && next.status === 'error') {
-    toast.error(`${next.name} error`, {
-      description: getJobName(next),
-    });
+    emit({ level: 'error', title: `${next.name} error`, description: getJobName(next), printerId: next.id, printerName: next.name });
     return null;
   }
 
@@ -127,19 +128,16 @@ function writeSeenQueueJobIds(jobIds: Set<string>) {
   }
 }
 
-function showNewQueueJobToast(job: { filename: string; fileCount?: number; submitterName?: string }) {
-  const fileCount = job.fileCount ?? 1;
-  toast.info('New queue submission', {
-    description: `${job.submitterName || job.filename} - ${fileCount} file${fileCount === 1 ? '' : 's'}`,
-  });
-}
-
 export function PrinterStatusNotifier() {
   const { printers, loaded } = usePrinters();
+  const { addEvent } = usePrinterEvents();
   const previousPrintersRef = useRef<Map<string, PrinterSnapshot> | null>(null);
   const previousQueueJobIdsRef = useRef<Set<string> | null>(null);
   // printerId -> the job + first time we saw it offline, awaiting confirmation.
   const pendingOfflineRef = useRef<Map<string, { jobName: string; since: number }>>(new Map());
+  // Keep a stable reference to addEvent so the effects don't re-run on each render.
+  const addEventRef = useRef(addEvent);
+  addEventRef.current = addEvent;
 
   // Diff each shared-poll snapshot against the previous one to surface status/job
   // transition toasts. Driven by the central PrintersContext, so this no longer
@@ -148,6 +146,18 @@ export function PrinterStatusNotifier() {
     if (!loaded) {
       return;
     }
+
+    // Show the toast and persist the event in the notification center together.
+    const emit: EmitEvent = (event) => {
+      toast[event.level](event.title, { description: event.description });
+      addEventRef.current({
+        level: event.level,
+        title: event.title,
+        description: event.description,
+        printerId: event.printerId,
+        printerName: event.printerName,
+      });
+    };
 
     const nextPrinters = toPrinterMap(printers);
     const previousPrinters = previousPrintersRef.current;
@@ -158,7 +168,7 @@ export function PrinterStatusNotifier() {
       for (const [printerId, nextPrinter] of nextPrinters) {
         const previousPrinter = previousPrinters.get(printerId);
         if (previousPrinter) {
-          const result = notifyPrinterTransition(previousPrinter, nextPrinter);
+          const result = notifyPrinterTransition(previousPrinter, nextPrinter, emit);
           if (result?.type === 'offline-stopped' && !pendingOffline.has(printerId)) {
             // Record the offline transition; don't toast yet (avoids flicker alarms).
             pendingOffline.set(printerId, { jobName: result.jobName, since: now });
@@ -176,8 +186,12 @@ export function PrinterStatusNotifier() {
         continue;
       }
       if (now - info.since >= OFFLINE_CONFIRM_MS) {
-        toast.error(`${current.name} stopped`, {
+        emit({
+          level: 'error',
+          title: `${current.name} stopped`,
           description: `${info.jobName} stopped because the printer went offline.`,
+          printerId: current.id,
+          printerName: current.name,
         });
         pendingOffline.delete(printerId);
       }
@@ -203,7 +217,15 @@ export function PrinterStatusNotifier() {
         if (baselineJobIds) {
           const newJobs = queue.filter((job) => !baselineJobIds.has(job.id));
           for (const job of newJobs) {
-            showNewQueueJobToast(job);
+            const fileCount = job.fileCount ?? 1;
+            const who = job.submitterName?.trim() || job.filename || 'Someone';
+            const description = `${who} added a print request (${fileCount} file${fileCount === 1 ? '' : 's'}).`;
+            toast.info('New job added to queue', { description });
+            addEventRef.current({
+              level: 'info',
+              title: 'New job added to queue',
+              description,
+            });
           }
         }
 

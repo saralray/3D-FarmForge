@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ScrollText, Music } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
+import { NotificationBell } from './NotificationBell';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
 import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
@@ -198,7 +199,10 @@ export function Navigation() {
         
         <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'}`}>
           {!isCollapsed && <span className="text-sm text-gray-600 dark:text-gray-400">Theme</span>}
-          <ThemeToggle />
+          <div className="flex items-center gap-1">
+            <ThemeToggle />
+            <NotificationBell />
+          </div>
         </div>
 
         {user && !PUBLIC_VIEWER_MODE && user.role !== 'viewer' && (

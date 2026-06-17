@@ -5,12 +5,14 @@ import { BottomTabBar } from '../components/BottomTabBar';
 import { PrinterStatusNotifier } from '../components/PrinterStatusNotifier';
 import { useSidebar } from '../contexts/SidebarContext';
 import { PrintersProvider } from '../contexts/PrintersContext';
+import { PrinterEventsProvider } from '../contexts/PrinterEventsContext';
 
 export function Root() {
   const { isCollapsed, toggleSidebar } = useSidebar();
 
   return (
     <PrintersProvider>
+    <PrinterEventsProvider>
     <div className="relative flex h-screen bg-gray-50 dark:bg-gray-950">
       <Navigation />
       <button
@@ -32,6 +34,7 @@ export function Root() {
       <BottomTabBar />
       <PrinterStatusNotifier />
     </div>
+    </PrinterEventsProvider>
     </PrintersProvider>
   );
 }
