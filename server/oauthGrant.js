@@ -1,16 +1,16 @@
-// OAuth callback tokens (Google sign-in).
+// OAuth callback tokens (SSO sign-in — Google or Microsoft Entra ID).
 //
 // The dashboard's auth is cookieless: there is no server-side session store, so
-// the Google OAuth Authorization Code flow is bridged into the client the same
-// way the slicer hand-off is (see slicerGrant.js). Two short-lived, HMAC-signed
-// tokens carry the flow:
+// the OAuth Authorization Code flow is bridged into the client the same way the
+// slicer hand-off is (see slicerGrant.js). Two short-lived, HMAC-signed tokens
+// carry the flow (the provider — `google` or `microsoft` — rides along in both):
 //
-//   - a `state` token, minted in /api/auth/google/start and echoed back by Google
-//     to /api/auth/google/callback, that proves the callback corresponds to a
-//     request we initiated (CSRF protection);
-//   - an `auth grant` token, minted in the callback once Google has authenticated
-//     the user, handed to the browser as `?oauth_grant=<token>` and verified by
-//     /api/auth/google/verify before the client establishes a session.
+//   - a `state` token, minted in /api/auth/:provider/start and echoed back by the
+//     identity provider to /api/auth/:provider/callback, that proves the callback
+//     corresponds to a request we initiated (CSRF protection);
+//   - an `auth grant` token, minted in the callback once the provider has
+//     authenticated the user, handed to the browser as `?oauth_grant=<token>` and
+//     verified by /api/auth/verify before the client establishes a session.
 //
 // Unlike slicerGrant.js (which reads its secret from the environment), these
 // helpers take the signing secret as an argument — the web server reads it from
@@ -18,8 +18,8 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-// State covers the round-trip to Google's consent screen, which a user may sit on
-// for a while; the grant is single-hop and consumed immediately on landing.
+// State covers the round-trip to the provider's consent screen, which a user may
+// sit on for a while; the grant is single-hop and consumed immediately on landing.
 const STATE_TTL_MS = 10 * 60 * 1000;
 const GRANT_TTL_MS = 2 * 60 * 1000;
 
@@ -81,11 +81,14 @@ export function verifyState(secret, token) {
   return data && data.kind === 'state' ? data : null;
 }
 
-// Auth grant: the authenticated identity handed to the client after Google
-// verifies the user. Carries the fields the frontend needs to build its session.
-export function mintAuthGrant(secret, { sub, email, name, role }) {
+// Auth grant: the authenticated identity handed to the client after the provider
+// verifies the user. Carries the fields the frontend needs to build its session,
+// including which `provider` issued it (so the verify endpoint can namespace the
+// user id, e.g. `google:<sub>` vs `microsoft:<sub>`).
+export function mintAuthGrant(secret, { provider, sub, email, name, role }) {
   return encode(secret, {
     kind: 'grant',
+    provider,
     sub,
     email,
     name,
@@ -100,6 +103,7 @@ export function verifyAuthGrant(secret, token) {
     return null;
   }
   return {
+    provider: typeof data.provider === 'string' ? data.provider : 'google',
     sub: typeof data.sub === 'string' ? data.sub : data.email,
     email: data.email,
     name: typeof data.name === 'string' ? data.name : data.email,

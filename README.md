@@ -18,7 +18,7 @@ A print-farm management dashboard for monitoring 3D printers, queue requests, pr
 - OctoPrint-compatible slicer proxy so slicers (Orca/PrusaSlicer/Cura) can push files directly to a printer; API keys with permission scopes
 - programmatic `/api/v1` REST API for external integrations, gated by API keys
 - optional public viewer mode that hides sensitive printer details and viewer profile UI
-- role-aware access for admin, operator, and viewer accounts, plus optional Google (OAuth) sign-in that grants a read-only "student" role
+- role-aware access for admin, operator, and viewer accounts, plus optional SSO sign-in (Google or Microsoft Entra ID) that grants a read-only "student" role
 
 ## Stack
 
@@ -57,7 +57,7 @@ http://localhost:8080
 
 On first run, open `/login` to complete the one-time admin password setup. The app uses its in-app login screen for restricted views; there is no shipped default password.
 
-Optionally, admins can enable **Google sign-in** in Settings → Sign-in (enter an OAuth client ID/secret and optional allowed email domains). Anyone who signs in with Google gets the read-only **student** role. See [API.md](API.md#google-oauth-sign-in-api-apiauthgoogle) and register `<origin>/api/auth/google/callback` as an authorized redirect URI in the Google Cloud console.
+Optionally, admins can enable **SSO sign-in** in Settings → Sign-in for **Google** and/or **Microsoft** (enter each provider's OAuth client ID/secret, optional allowed email domains, and — for Microsoft — either the cloud directory Tenant ID, or an on-prem **AD FS** authority URL such as `https://sso.example.com/adfs`). Anyone who signs in via SSO gets the read-only **student** role. See [API.md](API.md#sso-sign-in-api-apiauth) and register `<origin>/api/auth/<provider>/callback` as a redirect URI with the provider (Google Cloud console / Azure app registration / AD FS relying-party).
 
 ## Development
 

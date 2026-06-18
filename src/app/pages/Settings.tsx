@@ -4,7 +4,6 @@ import { Bell, Check, Copy, Image as ImageIcon, KeyRound, MonitorCheck, Plus, Se
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Textarea } from '../components/ui/textarea';
 import { Slider } from '../components/ui/slider';
 import defaultLogo from '../assets/printer-logo.svg';
 import { Label } from '../components/ui/label';
@@ -50,13 +49,15 @@ import {
   saveBrandingSettings,
   DEFAULT_SITE_NAME,
 } from '../lib/settingsApi';
-import { fetchOAuthSettings, saveOAuthSettings } from '../lib/oauthApi';
+import { OAuthProviderSettings } from '../components/OAuthProviderSettings';
+import { fetchEnabledOAuthProviders } from '../lib/oauthApi';
 
 const IPV4_PATTERN =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
 export function Settings() {
-  const { user, users, createUser, removeUser, changeUserPassword, changeAdminPassword } = useAuth();
+  const { user, users, createUser, removeUser, changeUserPassword, changeUserRole, changeAdminPassword } =
+    useAuth();
   const [printers, setPrinters] = useState<Printer[]>([]);
   const [printerName, setPrinterName] = useState('');
   const [printerProfile, setPrinterProfile] = useState<PrinterProfile>('generic');
@@ -74,6 +75,7 @@ export function Settings() {
   // change it; this holds that "current password" entry for the admin's own row.
   const [currentPasswordDraft, setCurrentPasswordDraft] = useState('');
   const [changingPasswordUserId, setChangingPasswordUserId] = useState<string | null>(null);
+  const [changingRoleUserId, setChangingRoleUserId] = useState<string | null>(null);
   const [discordWebhooks, setDiscordWebhooks] = useState<DiscordWebhook[]>([]);
   const [webhookName, setWebhookName] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
@@ -101,15 +103,9 @@ export function Settings() {
   const [copiedKey, setCopiedKey] = useState(false);
   const [managerRequests, setManagerRequests] = useState<ManagerRequest[]>([]);
   const [actioningManagerId, setActioningManagerId] = useState<string | null>(null);
-  // Google OAuth sign-in config. The client secret is write-only — the server
-  // never returns it, only whether one is stored (oauthHasSecret); leaving the
-  // field blank on save keeps the existing one.
-  const [oauthEnabled, setOauthEnabled] = useState(false);
-  const [oauthClientId, setOauthClientId] = useState('');
-  const [oauthClientSecret, setOauthClientSecret] = useState('');
-  const [oauthHasSecret, setOauthHasSecret] = useState(false);
-  const [oauthAllowedDomains, setOauthAllowedDomains] = useState('');
-  const [savingOAuth, setSavingOAuth] = useState(false);
+  // Which SSO provider's config form to show. Only one provider is configured at
+  // a time — the admin picks before the form appears.
+  const [ssoProvider, setSsoProvider] = useState<'google' | 'microsoft'>('google');
 
   useEffect(() => {
     fetchPrinters()
@@ -149,15 +145,15 @@ export function Settings() {
         toast.error('Unable to load manager requests.');
       });
 
-    fetchOAuthSettings()
-      .then((settings) => {
-        setOauthEnabled(settings.enabled);
-        setOauthClientId(settings.clientId);
-        setOauthHasSecret(settings.hasClientSecret);
-        setOauthAllowedDomains(settings.allowedDomains.join('\n'));
+    // Open the Sign-in tab on whichever SSO provider is currently active.
+    fetchEnabledOAuthProviders()
+      .then((providers) => {
+        if (providers.microsoft && !providers.google) {
+          setSsoProvider('microsoft');
+        }
       })
       .catch(() => {
-        toast.error('Unable to load Google sign-in settings.');
+        /* non-fatal — defaults to Google */
       });
   }, []);
 
@@ -169,50 +165,6 @@ export function Settings() {
   const refreshDiscordWebhooks = async () => {
     const storedWebhooks = await fetchDiscordWebhooks();
     setDiscordWebhooks(storedWebhooks);
-  };
-
-  const handleSaveOAuth = async (event: React.FormEvent) => {
-    event.preventDefault();
-
-    if (user?.role !== 'admin') {
-      toast.error('Only admins can change sign-in settings.');
-      return;
-    }
-
-    const clientId = oauthClientId.trim();
-    const allowedDomains = oauthAllowedDomains
-      .split(/[\s,]+/)
-      .map((domain) => domain.trim().toLowerCase().replace(/^@/, ''))
-      .filter(Boolean);
-
-    // Can't enable the flow without a client id, and without a secret already on
-    // file the server can't complete the token exchange.
-    if (oauthEnabled && (!clientId || (!oauthHasSecret && !oauthClientSecret.trim()))) {
-      toast.error('Client ID and Client Secret are required to enable Google sign-in.');
-      return;
-    }
-
-    setSavingOAuth(true);
-    try {
-      const saved = await saveOAuthSettings({
-        enabled: oauthEnabled,
-        clientId,
-        clientSecret: oauthClientSecret.trim(),
-        allowedDomains,
-      });
-      setOauthEnabled(saved.enabled);
-      setOauthClientId(saved.clientId);
-      setOauthHasSecret(saved.hasClientSecret);
-      setOauthAllowedDomains(saved.allowedDomains.join('\n'));
-      setOauthClientSecret('');
-      toast.success('Google sign-in settings saved.');
-    } catch (error) {
-      toast.error('Unable to save Google sign-in settings.', {
-        description: error instanceof Error ? error.message : undefined,
-      });
-    } finally {
-      setSavingOAuth(false);
-    }
   };
 
   const handleCreatePrinter = async (event: React.FormEvent) => {
@@ -351,6 +303,24 @@ export function Settings() {
       toast.success('Password updated');
     } finally {
       setChangingPasswordUserId(null);
+    }
+  };
+
+  const handleChangeUserRole = async (userId: string, nextRole: 'admin' | 'operator' | 'viewer') => {
+    const account = users.find((candidate) => candidate.id === userId);
+    if (account && account.role === nextRole) {
+      return;
+    }
+    setChangingRoleUserId(userId);
+    try {
+      const result = await changeUserRole(userId, nextRole);
+      if (!result.success) {
+        toast.error(result.error ?? 'Unable to change the role.');
+        return;
+      }
+      toast.success('Role updated', { description: account ? `@${account.username} → ${nextRole}` : undefined });
+    } finally {
+      setChangingRoleUserId(null);
     }
   };
 
@@ -1026,7 +996,7 @@ export function Settings() {
                   <Label>User Role</Label>
                   <Select
                     value={role}
-                    onValueChange={(value) => setRole(value as 'admin' | 'operator')}
+                    onValueChange={(value) => setRole(value as 'admin' | 'operator' | 'viewer')}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Select a role" />
@@ -1034,6 +1004,7 @@ export function Settings() {
                     <SelectContent>
                       <SelectItem value="admin">Admin</SelectItem>
                       <SelectItem value="operator">Operator</SelectItem>
+                      <SelectItem value="viewer">Viewer</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1068,9 +1039,33 @@ export function Settings() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <div className="text-xs font-medium uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">
-                        {account.role}
-                      </div>
+                      {user?.role === 'admin' &&
+                      account.username !== ADMIN_USERNAME &&
+                      account.id !== user?.id ? (
+                        <Select
+                          value={account.role}
+                          disabled={changingRoleUserId !== null}
+                          onValueChange={(value) =>
+                            handleChangeUserRole(
+                              account.id,
+                              value as 'admin' | 'operator' | 'viewer',
+                            )
+                          }
+                        >
+                          <SelectTrigger className="h-9 w-32">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="admin">Admin</SelectItem>
+                            <SelectItem value="operator">Operator</SelectItem>
+                            <SelectItem value="viewer">Viewer</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <div className="text-xs font-medium uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">
+                          {account.role}
+                        </div>
+                      )}
                       <Button
                         type="button"
                         variant="outline"
@@ -1750,92 +1745,52 @@ export function Settings() {
         </TabsContent>
 
         <TabsContent value="sign-in">
-          <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
-            <form onSubmit={handleSaveOAuth} className="space-y-6">
-              <div>
-                <h2 className="text-xl font-semibold dark:text-white">Google sign-in</h2>
-                <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
-                  Let people sign in with a Google account. Everyone who signs in this
-                  way gets the read-only <span className="font-medium">student</span> role.
-                  Create an OAuth client in the Google Cloud console and register{' '}
-                  <code className="rounded bg-gray-100 px-1 dark:bg-gray-700">
-                    {`${typeof window !== 'undefined' ? window.location.origin : ''}/api/auth/google/callback`}
-                  </code>{' '}
-                  as an authorized redirect URI.
-                </p>
-              </div>
-
-              <div className="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-700">
-                <div>
-                  <Label htmlFor="oauth-enabled" className="text-base">
-                    Enable Google sign-in
-                  </Label>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
-                    Shows a “Sign in with Google” button on the login page.
-                  </p>
-                </div>
-                <Switch
-                  id="oauth-enabled"
-                  checked={oauthEnabled}
-                  onCheckedChange={setOauthEnabled}
-                  disabled={user?.role !== 'admin'}
-                />
-              </div>
-
+          <div className="space-y-6">
+            <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
               <div className="space-y-2">
-                <Label htmlFor="oauth-client-id">Client ID</Label>
-                <Input
-                  id="oauth-client-id"
-                  value={oauthClientId}
-                  onChange={(e) => setOauthClientId(e.target.value)}
-                  placeholder="xxxxxxxx.apps.googleusercontent.com"
-                  disabled={user?.role !== 'admin'}
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="oauth-client-secret">Client Secret</Label>
-                <Input
-                  id="oauth-client-secret"
-                  type="password"
-                  value={oauthClientSecret}
-                  onChange={(e) => setOauthClientSecret(e.target.value)}
-                  placeholder={oauthHasSecret ? '•••••••• (leave blank to keep)' : 'Enter the client secret'}
-                  disabled={user?.role !== 'admin'}
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {oauthHasSecret
-                    ? 'A client secret is stored. Leave blank to keep it, or enter a new one to replace it.'
-                    : 'No client secret stored yet.'}
+                <Label htmlFor="sso-provider">Single sign-on provider</Label>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Choose which provider to configure. Use one SSO provider at a time.
                 </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="oauth-domains">Allowed email domains</Label>
-                <Textarea
-                  id="oauth-domains"
-                  value={oauthAllowedDomains}
-                  onChange={(e) => setOauthAllowedDomains(e.target.value)}
-                  placeholder={'school.edu\nexample.org'}
-                  rows={3}
+                <Select
+                  value={ssoProvider}
+                  onValueChange={(value) => setSsoProvider(value as 'google' | 'microsoft')}
                   disabled={user?.role !== 'admin'}
-                  spellCheck={false}
-                />
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  One domain per line (or comma-separated). Leave empty to allow any
-                  Google account with a verified email.
-                </p>
+                >
+                  <SelectTrigger id="sso-provider" className="w-full sm:w-72">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="google">Google</SelectItem>
+                    <SelectItem value="microsoft">Microsoft</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
+            </Card>
 
-              <Button type="submit" disabled={savingOAuth || user?.role !== 'admin'}>
-                {savingOAuth ? 'Saving...' : 'Save sign-in settings'}
-              </Button>
-            </form>
-          </Card>
+            {ssoProvider === 'google' ? (
+              <OAuthProviderSettings
+                provider="google"
+                label="Google"
+                disabled={user?.role !== 'admin'}
+                clientIdPlaceholder="xxxxxxxx.apps.googleusercontent.com"
+                setupHint={<>Create an OAuth client in the Google Cloud console.</>}
+              />
+            ) : (
+              <OAuthProviderSettings
+                provider="microsoft"
+                label="Microsoft"
+                showTenant
+                disabled={user?.role !== 'admin'}
+                clientIdPlaceholder="Application (client) ID"
+                setupHint={
+                  <>Register an app in the Azure portal (Entra ID → App registrations)
+                  and add a client secret — or point it at an on-prem AD FS server
+                  with the authority URL below.</>
+                }
+              />
+            )}
+          </div>
         </TabsContent>
       </Tabs>
     </div>

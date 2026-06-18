@@ -335,6 +335,7 @@ matching how the frontend submits them — the server never sees plaintext.
 | `POST /users` | Create a user. Body `{ name, username, role, passwordHash }`. `role` ∈ `admin`/`operator`/`viewer`. Returns the sanitized record. |
 | `DELETE /users/:id` | Remove a user. |
 | `PUT /users/:id/password` | Set a new password. Body `{ passwordHash }`. |
+| `PUT /users/:id/role` | Change the account role. Body `{ role }`, `role` ∈ `admin`/`operator`/`viewer`. Returns the updated record. |
 | `POST /users/verify` | Validate a login. Body `{ username, passwordHash }` → `200 { valid: true, user }` or `401 { valid: false }`. |
 
 `username` `admin` is reserved (`409`); duplicate usernames return `409`.
@@ -577,51 +578,68 @@ curl http://printfarm.local/api/manager/requests/01j.../status
 curl -H "X-Api-Key: abc123..." http://printfarm.local/api/v1/printers
 ```
 
-## Google OAuth sign-in API (`/api/auth/google`)
+## SSO sign-in API (`/api/auth`)
 
-A **public** endpoint group (no API key) that runs the Google OAuth 2.0
-Authorization Code flow. The dashboard auth is cookieless, so instead of a
-server session the callback mints a short-lived, **HMAC-signed grant token** and
-hands it back to the browser as a `?oauth_grant=<token>` URL param — the same
-hand-off shape as the slicer grant. The client verifies the token server-side
-before establishing a session. Everyone who signs in this way is granted the
-read-only **`student`** role.
+A **public** endpoint group (no API key) that runs the OAuth 2.0 Authorization
+Code flow for two providers — **`google`** and **`microsoft`** (Microsoft Entra
+ID / Azure AD). The dashboard auth is cookieless, so instead of a server session
+the callback mints a short-lived, **HMAC-signed grant token** and hands it back
+to the browser as a `?oauth_grant=<token>` URL param — the same hand-off shape as
+the slicer grant. The client verifies the token server-side before establishing a
+session. Everyone who signs in this way is granted the read-only **`student`**
+role.
 
-Configure the client id/secret and (optional) allowed email domains in
-**Settings → Sign-in**; nothing is baked into the build. Register
-`<origin>/api/auth/google/callback` as an authorized redirect URI in the Google
-Cloud console (the origin is derived from `X-Forwarded-Proto`/`Host`).
+Configure each provider's client id/secret, optional allowed email domains, and
+(Microsoft only) either the cloud directory **Tenant ID** or an on-prem **AD FS
+authority URL** (the `/adfs` deep link) in **Settings → Sign-in**; nothing is
+baked into the build. Register `<origin>/api/auth/<provider>/callback` as a
+redirect URI with the provider (Google Cloud console / Azure app registration /
+AD FS relying-party); the origin is derived from `X-Forwarded-Proto`/`Host`.
+
+Both providers may be enabled at once — the login page shows a button for each
+enabled provider.
 
 ### Endpoints
 
-#### `GET /api/auth/google/config`
+#### `GET /api/auth/providers`
 
-Whether Google sign-in is configured **and** enabled. Drives the login button.
+Which providers are configured **and** enabled. Drives the login buttons.
 **Public.** Never returns any secret.
 
 **Response `200`:**
 
 ```json
-{ "enabled": true }
+{ "google": true, "microsoft": false }
 ```
 
 ---
 
-#### `GET /api/auth/google/start`
+#### `GET /api/auth/:provider/config`
 
-Begins the flow. **Public.** `302`-redirects the browser to Google's consent
-screen (with `scope=openid email profile`, the derived `redirect_uri`, and a
-signed `state`). When sign-in is disabled/unconfigured it redirects to
-`/login?oauth_error=not_configured` instead.
+Whether a single provider (`google` or `microsoft`) is configured **and**
+enabled. **Public.**
+
+**Response `200`:** `{ "enabled": true }`
 
 ---
 
-#### `GET /api/auth/google/callback`
+#### `GET /api/auth/:provider/start`
 
-Google redirects here with `?code=&state=`. **Public.** Verifies `state`,
-exchanges the code at Google's token endpoint (server-to-server with the client
-secret), requires a verified email and (if configured) an allowed domain, then
-mints the grant token and `302`-redirects to `/login?oauth_grant=<token>`.
+Begins the flow for `:provider`. **Public.** `302`-redirects the browser to that
+provider's consent screen (with `scope=openid email profile`, the derived
+`redirect_uri`, and a signed `state` carrying the provider). When the provider is
+disabled/unconfigured it redirects to `/login?oauth_error=not_configured`.
+
+---
+
+#### `GET /api/auth/:provider/callback`
+
+The provider redirects here with `?code=&state=`. **Public.** Verifies `state`
+(including that it was minted for this provider), exchanges the code at the
+provider's token endpoint (server-to-server with the client secret), requires an
+email (Google `email`; Microsoft falls back to `preferred_username`/`upn`) that
+is not explicitly unverified and (if configured) an allowed domain, then mints
+the grant token and `302`-redirects to `/login?oauth_grant=<token>`.
 
 On any failure it `302`-redirects to `/login?oauth_error=<code>` where `<code>`
 is one of `not_configured`, `denied`, `exchange_failed`, `unverified_email`, or
@@ -629,9 +647,10 @@ is one of `not_configured`, `denied`, `exchange_failed`, `unverified_email`, or
 
 ---
 
-#### `POST /api/auth/google/verify`
+#### `POST /api/auth/verify`
 
-Verifies a grant token from the callback. **Public.**
+Verifies a grant token from any provider's callback (the grant carries its own
+provider). **Public.**
 
 **Request body:**
 
@@ -639,12 +658,12 @@ Verifies a grant token from the callback. **Public.**
 { "token": "<oauth_grant value>" }
 ```
 
-**Response `200`:**
+**Response `200`** — `id` is namespaced by provider (`google:` / `microsoft:`):
 
 ```json
 {
   "user": {
-    "id": "google:1234567890",
+    "id": "microsoft:1234567890",
     "name": "Jane Student",
     "username": "jane@school.edu",
     "role": "student"
@@ -654,12 +673,21 @@ Verifies a grant token from the callback. **Public.**
 
 **Response `401`** if the token is missing, forged, or expired.
 
-## Sign-in settings (`/api/settings/oauth`)
+## Sign-in settings (`/api/settings/oauth/:provider`)
 
 Admin-only in the UI (client-side session guard, like
-`/api/settings/integrations`). Stores the Google OAuth config in `app_settings`.
+`/api/settings/integrations`). Stores each provider's OAuth config in
+`app_settings` (`:provider` is `google` or `microsoft`). `tenant` and `authority`
+are Microsoft-only; they are accepted for any provider but ignored where unused.
 
-#### `GET /api/settings/oauth`
+For Microsoft, two modes are supported:
+- **Cloud (Entra ID):** leave `authority` blank and set `tenant` (a directory GUID,
+  or `common`). Endpoints are `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/*`.
+- **On-prem AD FS:** set `authority` to the AD FS base URL (the `/adfs` deep link,
+  e.g. `https://sso.example.com/adfs`). Endpoints become `<authority>/oauth2/authorize`
+  and `<authority>/oauth2/token`. `authority` takes precedence over `tenant`.
+
+#### `GET /api/settings/oauth/:provider`
 
 **Response `200`** — the client secret is **never** returned, only whether one
 is stored:
@@ -667,21 +695,25 @@ is stored:
 ```json
 {
   "enabled": true,
-  "clientId": "xxxx.apps.googleusercontent.com",
+  "clientId": "xxxx",
+  "tenant": "00000000-0000-0000-0000-000000000000",
+  "authority": "",
   "allowedDomains": ["school.edu"],
   "hasClientSecret": true
 }
 ```
 
-#### `PUT /api/settings/oauth`
+#### `PUT /api/settings/oauth/:provider`
 
 **Request body:**
 
 ```json
 {
   "enabled": true,
-  "clientId": "xxxx.apps.googleusercontent.com",
-  "clientSecret": "GOCSPX-...",
+  "clientId": "xxxx",
+  "clientSecret": "secret-value",
+  "tenant": "00000000-0000-0000-0000-000000000000",
+  "authority": "https://sso.example.com/adfs",
   "allowedDomains": ["school.edu"]
 }
 ```
@@ -689,3 +721,7 @@ is stored:
 A blank/omitted `clientSecret` **keeps** the stored one (so the form can
 round-trip without re-entering it); a non-empty value replaces it. Returns the
 same redacted shape as `GET`.
+
+**Only one provider is active at a time:** saving with `enabled: true` disables
+the other provider (its other config is preserved, so it can be re-enabled
+later). The admin UI surfaces this as a single-provider chooser.

@@ -126,3 +126,21 @@ export async function changeUserPasswordApi(
     return { ok: false, error: 'Unable to reach the server.' };
   }
 }
+
+// Change an existing account's role. `student` is OAuth-only and not a valid
+// target here — the server accepts only admin/operator/viewer.
+export async function changeUserRoleApi(
+  userId: string,
+  role: UserRole,
+): Promise<MutationResult> {
+  try {
+    const response = await fetch(`/api/users/${encodeURIComponent(userId)}/role`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    });
+    return response.ok ? { ok: true } : { ok: false, error: await readError(response) };
+  } catch {
+    return { ok: false, error: 'Unable to reach the server.' };
+  }
+}

@@ -118,34 +118,107 @@ async function getIntegrationUrls() {
   };
 }
 
-// Google OAuth sign-in config. Admins enter the client id/secret and (optionally)
-// an allowed-email-domain list in Settings → Integrations; it is persisted in
-// app_settings, like the URLs above. Anyone who authenticates with Google is
-// granted the read-only `student` role. The clientSecret is never returned by a
-// read path — only whether one is configured.
-const OAUTH_GOOGLE_KEY = 'oauth_google';
+// OAuth (SSO) sign-in config. Two providers are supported — Google and Microsoft
+// Entra ID (Azure AD) — and each is configured independently in Settings →
+// Sign-in (client id/secret, optional allowed-email-domain list, and, for
+// Microsoft, the directory tenant). Config is persisted per provider in
+// app_settings. Anyone who authenticates this way is granted the read-only
+// `student` role. The clientSecret is never returned by a read path — only
+// whether one is configured.
+//
+// Both providers speak OAuth 2.0 Authorization Code + OIDC, so they differ only
+// in their authorize/token endpoints (Microsoft's are tenant-scoped) and in which
+// id_token claim carries the email (Google: `email`; Microsoft often only
+// `preferred_username`/`upn`). The registry below captures those differences.
+const OAUTH_PROVIDERS = {
+  google: {
+    settingsKey: 'oauth_google',
+    label: 'Google',
+    usesTenant: false,
+    authorizeEndpoint: () => 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenEndpoint: () => 'https://oauth2.googleapis.com/token',
+  },
+  microsoft: {
+    settingsKey: 'oauth_microsoft',
+    label: 'Microsoft',
+    usesTenant: true,
+    // Two modes. With an `authority` set (on-prem AD FS, e.g.
+    // https://sso.example.com/adfs) the OIDC endpoints are <authority>/oauth2/*.
+    // Otherwise fall back to Microsoft cloud (Entra ID), which is tenant-scoped.
+    authorizeEndpoint: (config) =>
+      config.authority
+        ? `${config.authority.replace(/\/+$/, '')}/oauth2/authorize`
+        : `https://login.microsoftonline.com/${encodeURIComponent(
+            config.tenant || 'common',
+          )}/oauth2/v2.0/authorize`,
+    tokenEndpoint: (config) =>
+      config.authority
+        ? `${config.authority.replace(/\/+$/, '')}/oauth2/token`
+        : `https://login.microsoftonline.com/${encodeURIComponent(
+            config.tenant || 'common',
+          )}/oauth2/v2.0/token`,
+  },
+};
+const OAUTH_SCOPE = 'openid email profile';
 const OAUTH_SIGNING_SECRET_KEY = 'oauth_signing_secret';
-// The role every Google sign-in lands on. Read-only, like the public viewer.
+// The role every SSO sign-in lands on. Read-only, like the public viewer.
 const OAUTH_DEFAULT_ROLE = 'student';
 
-async function getOAuthConfig() {
-  const stored = (await getAppSetting(OAUTH_GOOGLE_KEY)) || {};
+function getOAuthProvider(name) {
+  return Object.prototype.hasOwnProperty.call(OAUTH_PROVIDERS, name)
+    ? OAUTH_PROVIDERS[name]
+    : null;
+}
+
+async function getOAuthConfig(providerName) {
+  const provider = getOAuthProvider(providerName);
+  if (!provider) {
+    return null;
+  }
+  const stored = (await getAppSetting(provider.settingsKey)) || {};
   const allowedDomains = Array.isArray(stored.allowedDomains)
     ? stored.allowedDomains
         .map((domain) => String(domain || '').trim().toLowerCase().replace(/^@/, ''))
         .filter(Boolean)
     : [];
   return {
+    provider: providerName,
     enabled: stored.enabled === true,
     clientId: typeof stored.clientId === 'string' ? stored.clientId.trim() : '',
     clientSecret: typeof stored.clientSecret === 'string' ? stored.clientSecret : '',
+    tenant: typeof stored.tenant === 'string' ? stored.tenant.trim() : '',
+    // On-prem AD FS authority base (e.g. https://host/adfs); blank = use cloud.
+    authority: typeof stored.authority === 'string' ? stored.authority.trim() : '',
     allowedDomains,
   };
 }
 
-// True only when the flow can actually run (enabled + client id + secret all set).
+// True only when the flow can actually run (enabled + client id + secret, plus,
+// for tenant providers — Microsoft — either a cloud tenant or an AD FS authority).
 function isOAuthConfigured(config) {
-  return config.enabled && config.clientId.length > 0 && config.clientSecret.length > 0;
+  if (!config || !config.enabled || !config.clientId || !config.clientSecret) {
+    return false;
+  }
+  const provider = getOAuthProvider(config.provider);
+  if (provider?.usesTenant && !config.tenant && !config.authority) {
+    return false;
+  }
+  return true;
+}
+
+// Pull the user's email out of the id_token claims. Google always populates
+// `email`; Microsoft Entra ID commonly omits it and carries the address in
+// `preferred_username` (or `upn`), so fall back across all three.
+function oauthClaimEmail(claims) {
+  if (!claims) {
+    return '';
+  }
+  for (const candidate of [claims.email, claims.preferred_username, claims.upn]) {
+    if (typeof candidate === 'string' && candidate.includes('@')) {
+      return candidate.toLowerCase();
+    }
+  }
+  return '';
 }
 
 // HMAC secret for the state/grant tokens. Kept in app_settings (not env) so the
@@ -161,8 +234,9 @@ async function getOAuthSigningSecret() {
 }
 
 // The dashboard sits behind nginx, so the public origin must come from the
-// forwarded headers (falling back to Host). Google's redirect_uri must match this
-// exactly and be registered in the Google Cloud console.
+// forwarded headers (falling back to Host). The redirect_uri must match this
+// exactly and be registered with the provider (Google Cloud console / Azure app
+// registration) per provider.
 function resolvePublicOrigin(req) {
   const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
   const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost')
@@ -171,11 +245,11 @@ function resolvePublicOrigin(req) {
   return `${proto}://${host}`;
 }
 
-function oauthRedirectUri(req) {
-  return `${resolvePublicOrigin(req)}/api/auth/google/callback`;
+function oauthRedirectUri(req, providerName) {
+  return `${resolvePublicOrigin(req)}/api/auth/${providerName}/callback`;
 }
 
-// Send a 302 to a path/URL on the dashboard (or Google). Used by the OAuth
+// Send a 302 to a path/URL on the dashboard (or the provider). Used by the OAuth
 // start/callback hops, which redirect the browser rather than return JSON.
 function sendRedirect(res, location) {
   res.statusCode = 302;
@@ -185,7 +259,7 @@ function sendRedirect(res, location) {
 }
 
 // Decode the claims (middle segment) of a JWT without verifying its signature.
-// Safe here because the id_token is received directly from Google's token
+// Safe here because the id_token is received directly from the provider's token
 // endpoint over TLS using our client secret — server-to-server, not via the
 // browser — so the payload is already trusted. Returns null on malformed input.
 function decodeJwtClaims(jwt) {
@@ -1688,6 +1762,7 @@ async function handleDataApiSettings(req, res, { apiKey, method, id }) {
 //   POST   /users/verify        → validate a login { username, passwordHash }
 //   DELETE /users/:id           → remove an account
 //   PUT    /users/:id/password  → set a new password { passwordHash }
+//   PUT    /users/:id/role      → change the account role { role }
 // The primary `admin` account is the separate admin-credential resource and is
 // never part of this list.
 async function handleDataApiUsers(req, res, { apiKey, method, id, sub }) {
@@ -1772,6 +1847,27 @@ async function handleDataApiUsers(req, res, { apiKey, method, id, sub }) {
     await setAppSetting(STAFF_USERS_KEY, nextUsers);
     auditDataApi(req, apiKey, 'user.password', id);
     sendEmpty(res);
+    return true;
+  }
+
+  if (sub === 'role' && method === 'PUT') {
+    const body = await readJsonBody(req);
+    const role = typeof body?.role === 'string' ? body.role : '';
+    if (!USER_ROLES.has(role)) {
+      sendJson(res, 400, { error: 'role must be admin, operator, or viewer' });
+      return true;
+    }
+    const usersList = await readStaffUsers();
+    const index = usersList.findIndex((candidate) => candidate.id === id);
+    if (index === -1) {
+      sendJson(res, 404, { error: 'user not found' });
+      return true;
+    }
+    const nextUsers = [...usersList];
+    nextUsers[index] = { ...nextUsers[index], role };
+    await setAppSetting(STAFF_USERS_KEY, nextUsers);
+    auditDataApi(req, apiKey, 'user.role', id, { role });
+    sendJson(res, 200, staffUserWithHash(nextUsers[index]));
     return true;
   }
 
@@ -2286,62 +2382,80 @@ async function handleApi(req, res, requestUrl) {
     return true;
   }
 
-  // Google OAuth sign-in. The dashboard auth is cookieless, so the Authorization
-  // Code flow is bridged to the client with an HMAC-signed grant token carried in
-  // a URL param — the same hand-off shape as the slicer grant above.
-  //   GET  /api/auth/google/config   → { enabled }     : drives the login button
-  //   GET  /api/auth/google/start    → 302 to Google consent
-  //   GET  /api/auth/google/callback → exchange code, 302 back with ?oauth_grant
-  //   POST /api/auth/google/verify   → { token } → { user }
-  if (requestUrl.pathname === '/api/auth/google/config' && req.method === 'GET') {
-    const config = await getOAuthConfig();
-    sendJson(res, 200, { enabled: isOAuthConfigured(config) });
+  // OAuth (SSO) sign-in — Google and Microsoft Entra ID. The dashboard auth is
+  // cookieless, so the Authorization Code flow is bridged to the client with an
+  // HMAC-signed grant token carried in a URL param — the same hand-off shape as
+  // the slicer grant above. The provider rides in the path on start/callback and
+  // inside the grant on verify.
+  //   GET  /api/auth/providers          → { google, microsoft } : which buttons
+  //   GET  /api/auth/:provider/config   → { enabled }           : single provider
+  //   GET  /api/auth/:provider/start    → 302 to the provider's consent screen
+  //   GET  /api/auth/:provider/callback → exchange code, 302 back with ?oauth_grant
+  //   POST /api/auth/verify             → { token } → { user }  : provider-agnostic
+  if (requestUrl.pathname === '/api/auth/providers' && req.method === 'GET') {
+    const [google, microsoft] = await Promise.all([
+      getOAuthConfig('google'),
+      getOAuthConfig('microsoft'),
+    ]);
+    sendJson(res, 200, {
+      google: isOAuthConfigured(google),
+      microsoft: isOAuthConfigured(microsoft),
+    });
     return true;
   }
 
-  if (requestUrl.pathname === '/api/auth/google/start' && req.method === 'GET') {
-    const config = await getOAuthConfig();
+  const ssoMatch = requestUrl.pathname.match(
+    /^\/api\/auth\/(google|microsoft)\/(config|start|callback)$/,
+  );
+  if (ssoMatch && req.method === 'GET') {
+    const providerName = ssoMatch[1];
+    const op = ssoMatch[2];
+    const provider = OAUTH_PROVIDERS[providerName];
+    const config = await getOAuthConfig(providerName);
+
+    if (op === 'config') {
+      sendJson(res, 200, { enabled: isOAuthConfigured(config) });
+      return true;
+    }
+
     if (!isOAuthConfigured(config)) {
       sendRedirect(res, '/login?oauth_error=not_configured');
       return true;
     }
     const secret = await getOAuthSigningSecret();
-    const state = signState(secret, { n: randomUUID() });
-    const authorizeUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    authorizeUrl.searchParams.set('client_id', config.clientId);
-    authorizeUrl.searchParams.set('redirect_uri', oauthRedirectUri(req));
-    authorizeUrl.searchParams.set('response_type', 'code');
-    authorizeUrl.searchParams.set('scope', 'openid email profile');
-    authorizeUrl.searchParams.set('state', state);
-    // Force the account chooser so a shared kiosk doesn't silently reuse a login.
-    authorizeUrl.searchParams.set('prompt', 'select_account');
-    sendRedirect(res, authorizeUrl.toString());
-    return true;
-  }
 
-  if (requestUrl.pathname === '/api/auth/google/callback' && req.method === 'GET') {
-    const config = await getOAuthConfig();
-    if (!isOAuthConfigured(config)) {
-      sendRedirect(res, '/login?oauth_error=not_configured');
+    if (op === 'start') {
+      const state = signState(secret, { n: randomUUID(), p: providerName });
+      const authorizeUrl = new URL(provider.authorizeEndpoint(config));
+      authorizeUrl.searchParams.set('client_id', config.clientId);
+      authorizeUrl.searchParams.set('redirect_uri', oauthRedirectUri(req, providerName));
+      authorizeUrl.searchParams.set('response_type', 'code');
+      authorizeUrl.searchParams.set('scope', OAUTH_SCOPE);
+      authorizeUrl.searchParams.set('state', state);
+      // Force the account chooser so a shared kiosk doesn't silently reuse a login.
+      authorizeUrl.searchParams.set('prompt', 'select_account');
+      sendRedirect(res, authorizeUrl.toString());
       return true;
     }
-    const secret = await getOAuthSigningSecret();
+
+    // op === 'callback'
     const code = requestUrl.searchParams.get('code');
     const state = requestUrl.searchParams.get('state');
-    if (requestUrl.searchParams.get('error') || !code || !verifyState(secret, state)) {
+    const stateData = verifyState(secret, state);
+    if (requestUrl.searchParams.get('error') || !code || !stateData || stateData.p !== providerName) {
       sendRedirect(res, '/login?oauth_error=denied');
       return true;
     }
 
     try {
-      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      const tokenResponse = await fetch(provider.tokenEndpoint(config), {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           code,
           client_id: config.clientId,
           client_secret: config.clientSecret,
-          redirect_uri: oauthRedirectUri(req),
+          redirect_uri: oauthRedirectUri(req, providerName),
           grant_type: 'authorization_code',
         }),
       });
@@ -2350,12 +2464,14 @@ async function handleApi(req, res, requestUrl) {
         return true;
       }
       const tokens = await tokenResponse.json();
-      // The id_token comes straight from Google's token endpoint over TLS using
-      // our client secret, so its claims are trusted without re-verifying the
-      // signature; we only need the identity fields out of the payload.
+      // The id_token comes straight from the provider's token endpoint over TLS
+      // using our client secret, so its claims are trusted without re-verifying
+      // the signature; we only need the identity fields out of the payload.
       const claims = decodeJwtClaims(tokens.id_token);
-      const email = typeof claims?.email === 'string' ? claims.email.toLowerCase() : '';
-      if (!email || claims.email_verified === false) {
+      const email = oauthClaimEmail(claims);
+      // Google sets email_verified; Microsoft omits it (work/school accounts are
+      // inherently verified), so only reject when it is explicitly false.
+      if (!email || claims?.email_verified === false) {
         sendRedirect(res, '/login?oauth_error=unverified_email');
         return true;
       }
@@ -2367,6 +2483,7 @@ async function handleApi(req, res, requestUrl) {
         }
       }
       const grant = mintAuthGrant(secret, {
+        provider: providerName,
         sub: typeof claims.sub === 'string' ? claims.sub : email,
         email,
         name: typeof claims.name === 'string' && claims.name.trim() ? claims.name.trim() : email,
@@ -2379,7 +2496,7 @@ async function handleApi(req, res, requestUrl) {
     return true;
   }
 
-  if (requestUrl.pathname === '/api/auth/google/verify' && req.method === 'POST') {
+  if (requestUrl.pathname === '/api/auth/verify' && req.method === 'POST') {
     const secret = await getOAuthSigningSecret();
     const { token } = await readJsonBody(req);
     const grant = verifyAuthGrant(secret, token);
@@ -2389,7 +2506,7 @@ async function handleApi(req, res, requestUrl) {
     }
     sendJson(res, 200, {
       user: {
-        id: `google:${grant.sub}`,
+        id: `${grant.provider}:${grant.sub}`,
         name: grant.name,
         username: grant.email,
         role: grant.role,
@@ -2557,6 +2674,7 @@ async function handleApi(req, res, requestUrl) {
   // Per-user management, keyed by id:
   //   DELETE /api/users/:id           → remove the account.
   //   PUT    /api/users/:id/password  → set a new password ({ passwordHash }).
+  //   PUT    /api/users/:id/role      → change the account role ({ role }).
   if (requestUrl.pathname.startsWith('/api/users/')) {
     const [rawId, action] = requestUrl.pathname.slice('/api/users/'.length).split('/');
     const userId = decodeURIComponent(rawId || '');
@@ -2596,6 +2714,26 @@ async function handleApi(req, res, requestUrl) {
       nextUsers[index] = { ...nextUsers[index], passwordHash: passwordHash.toLowerCase() };
       await setAppSetting(STAFF_USERS_KEY, nextUsers);
       sendEmpty(res);
+      return true;
+    }
+
+    if (action === 'role' && req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      const role = typeof body?.role === 'string' ? body.role : '';
+      if (!USER_ROLES.has(role)) {
+        sendJson(res, 400, { error: 'role must be admin, operator, or viewer' });
+        return true;
+      }
+      const usersList = await readStaffUsers();
+      const index = usersList.findIndex((candidate) => candidate.id === userId);
+      if (index === -1) {
+        sendJson(res, 404, { error: 'user not found' });
+        return true;
+      }
+      const nextUsers = [...usersList];
+      nextUsers[index] = { ...nextUsers[index], role };
+      await setAppSetting(STAFF_USERS_KEY, nextUsers);
+      sendJson(res, 200, sanitizeStaffUser(nextUsers[index]));
       return true;
     }
   }
@@ -2712,16 +2850,25 @@ async function handleApi(req, res, requestUrl) {
     }
   }
 
-  // Google OAuth sign-in config (admin-only in the UI, like the integrations form
-  // above). GET never returns the client secret — only whether one is stored;
-  // PUT with a blank/omitted clientSecret keeps the existing one so the form can
-  // round-trip without re-entering it.
-  if (requestUrl.pathname === '/api/settings/oauth') {
+  // OAuth (SSO) sign-in config, per provider (admin-only in the UI, like the
+  // integrations form above). GET never returns the client secret — only whether
+  // one is stored; PUT with a blank/omitted clientSecret keeps the existing one so
+  // the form can round-trip without re-entering it. `tenant` is Microsoft-only
+  // (the Azure directory / tenant id); it is accepted and stored for any provider
+  // but ignored where unused.
+  const oauthSettingsMatch = requestUrl.pathname.match(
+    /^\/api\/settings\/oauth\/(google|microsoft)$/,
+  );
+  if (oauthSettingsMatch) {
+    const providerName = oauthSettingsMatch[1];
+    const provider = OAUTH_PROVIDERS[providerName];
     if (req.method === 'GET') {
-      const config = await getOAuthConfig();
+      const config = await getOAuthConfig(providerName);
       sendJson(res, 200, {
         enabled: config.enabled,
         clientId: config.clientId,
+        tenant: config.tenant,
+        authority: config.authority,
         allowedDomains: config.allowedDomains,
         hasClientSecret: config.clientSecret.length > 0,
       });
@@ -2731,28 +2878,47 @@ async function handleApi(req, res, requestUrl) {
       const body = await readJsonBody(req);
       const enabled = body?.enabled === true;
       const clientId = typeof body?.clientId === 'string' ? body.clientId.trim() : '';
+      const tenant = typeof body?.tenant === 'string' ? body.tenant.trim() : '';
+      const authority = typeof body?.authority === 'string' ? body.authority.trim() : '';
       const allowedDomains = Array.isArray(body?.allowedDomains)
         ? body.allowedDomains
             .map((domain) => String(domain || '').trim().toLowerCase().replace(/^@/, ''))
             .filter(Boolean)
         : [];
-      const existing = await getOAuthConfig();
+      const existing = await getOAuthConfig(providerName);
       // Blank/omitted secret on save = keep the stored one (so the form needn't
       // echo it back); a non-empty value replaces it.
       const clientSecret =
         typeof body?.clientSecret === 'string' && body.clientSecret.trim()
           ? body.clientSecret.trim()
           : existing.clientSecret;
-      await setAppSetting(OAUTH_GOOGLE_KEY, {
+      await setAppSetting(provider.settingsKey, {
         enabled,
         clientId,
         clientSecret,
+        tenant,
+        authority,
         allowedDomains,
       });
-      const saved = await getOAuthConfig();
+      // Only one SSO provider is active at a time: enabling this one disables the
+      // other (its other config is preserved so it can be re-enabled later).
+      if (enabled) {
+        for (const [otherName, otherProvider] of Object.entries(OAUTH_PROVIDERS)) {
+          if (otherName === providerName) {
+            continue;
+          }
+          const otherStored = (await getAppSetting(otherProvider.settingsKey)) || {};
+          if (otherStored.enabled === true) {
+            await setAppSetting(otherProvider.settingsKey, { ...otherStored, enabled: false });
+          }
+        }
+      }
+      const saved = await getOAuthConfig(providerName);
       sendJson(res, 200, {
         enabled: saved.enabled,
         clientId: saved.clientId,
+        tenant: saved.tenant,
+        authority: saved.authority,
         allowedDomains: saved.allowedDomains,
         hasClientSecret: saved.clientSecret.length > 0,
       });

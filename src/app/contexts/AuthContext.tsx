@@ -8,7 +8,7 @@ import {
 } from '../lib/runtimeConfig';
 import { logAuditEvent, setAuditActor } from '../lib/auditApi';
 import { verifySlicerGrant } from '../lib/slicerGrantApi';
-import { verifyGoogleGrant } from '../lib/oauthApi';
+import { verifyOAuthGrant } from '../lib/oauthApi';
 import {
   changeAdminCredential,
   setupAdminCredential,
@@ -16,6 +16,7 @@ import {
 } from '../lib/adminCredentialApi';
 import {
   changeUserPasswordApi,
+  changeUserRoleApi,
   createUserApi,
   deleteUserApi,
   fetchUsers,
@@ -41,6 +42,7 @@ interface AuthContextType {
   createUser: (input: CreateUserInput) => Promise<CreateUserResult>;
   removeUser: (userId: string) => Promise<RemoveUserResult>;
   changeUserPassword: (userId: string, password: string) => Promise<ChangePasswordResult>;
+  changeUserRole: (userId: string, role: UserRole) => Promise<ChangeRoleResult>;
   logout: () => void;
   isLoading: boolean;
   users: User[];
@@ -70,6 +72,11 @@ interface RemoveUserResult {
 }
 
 interface ChangePasswordResult {
+  success: boolean;
+  error?: string;
+}
+
+interface ChangeRoleResult {
   success: boolean;
   error?: string;
 }
@@ -198,8 +205,8 @@ function takeSlicerGrantToken(): string | null {
   return token;
 }
 
-// After the Google OAuth callback the server redirects back to the dashboard with
-// `?oauth_grant=<token>`. Pull the token out and strip it (and any oauth_error)
+// After the OAuth callback (Google or Microsoft) the server redirects back to the
+// dashboard with `?oauth_grant=<token>`. Pull the token out and strip it (and any oauth_error)
 // from the URL so it doesn't linger or get bookmarked. The token is meaningless
 // until the server verifies its signature, so this only extracts it.
 function takeOAuthGrantToken(): string | null {
@@ -380,12 +387,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Google OAuth hand-off: the callback redirects back with a signed grant
-      // token. Verify it server-side, then establish a (read-only `student`)
-      // session — mirroring the slicer grant above.
+      // OAuth (Google / Microsoft) hand-off: the callback redirects back with a
+      // signed grant token. Verify it server-side, then establish a (read-only
+      // `student`) session — mirroring the slicer grant above.
       const oauthGrant = takeOAuthGrantToken();
       if (oauthGrant) {
-        const oauthUser = await verifyGoogleGrant(oauthGrant);
+        const oauthUser = await verifyOAuthGrant(oauthGrant);
         if (oauthUser && !cancelled) {
           setUser(oauthUser);
           writeStoredSession(oauthUser, true);
@@ -715,6 +722,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { success: true };
   };
 
+  const changeUserRole = async (
+    userId: string,
+    role: UserRole,
+  ): Promise<ChangeRoleResult> => {
+    if (PUBLIC_VIEWER_MODE) {
+      return {
+        success: false,
+        error: 'User management is disabled in public viewer mode.',
+      };
+    }
+
+    if (!user || user.role !== 'admin') {
+      return {
+        success: false,
+        error: 'Only admins can change roles.',
+      };
+    }
+
+    if (!userId) {
+      return {
+        success: false,
+        error: 'User id is required.',
+      };
+    }
+
+    if (user.id === userId) {
+      return {
+        success: false,
+        error: 'You cannot change your own role.',
+      };
+    }
+
+    const targetUser = users.find((candidate) => candidate.id === userId);
+
+    const result = await changeUserRoleApi(userId, role);
+    if (!result.ok) {
+      return { success: false, error: result.error ?? 'Unable to change the role.' };
+    }
+
+    await refreshUsers();
+
+    if (targetUser) {
+      logAuditEvent('user.role_change', targetUser.username, {
+        from: targetUser.role,
+        to: role,
+      });
+    }
+
+    return { success: true };
+  };
+
   const logout = () => {
     if (PUBLIC_VIEWER_MODE) {
       return;
@@ -742,6 +800,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         createUser,
         removeUser,
         changeUserPassword,
+        changeUserRole,
         logout,
         isLoading,
       }}
