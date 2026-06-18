@@ -5,7 +5,18 @@
 // browser. The primary `admin` account is a separate server credential (see
 // adminCredentialApi.ts) and is not part of this list.
 
-export type UserRole = 'admin' | 'operator' | 'viewer';
+// `student` is the role granted to anyone who signs in with Google (OAuth). It
+// has the same read-only capabilities as the anonymous `viewer`, but is a real
+// authenticated session (so it gets a logout). Students are OAuth-only and are
+// not offered in the manual create-user role dropdown.
+export type UserRole = 'admin' | 'operator' | 'viewer' | 'student';
+
+// Roles with no management/control privileges — they see the dashboard read-only
+// and must not see sensitive printer connection details. Use this instead of an
+// `=== 'viewer'` check anywhere a capability should also be denied to students.
+export function isReadOnlyRole(role: UserRole | undefined | null): boolean {
+  return role === 'viewer' || role === 'student';
+}
 
 export interface StaffUser {
   id: string;

@@ -51,6 +51,12 @@ import {
 } from './postgres.js';
 import { verifySlicerGrant } from './slicerGrant.js';
 import {
+  mintAuthGrant,
+  signState,
+  verifyAuthGrant,
+  verifyState,
+} from './oauthGrant.js';
+import {
   addCameraViewer,
   getAllCameraHealth,
   getCameraHealth,
@@ -110,6 +116,91 @@ async function getIntegrationUrls() {
     googleSheetQueueUrl: stored.googleSheetQueueUrl || '',
     googleFormUrl: stored.googleFormUrl || '',
   };
+}
+
+// Google OAuth sign-in config. Admins enter the client id/secret and (optionally)
+// an allowed-email-domain list in Settings → Integrations; it is persisted in
+// app_settings, like the URLs above. Anyone who authenticates with Google is
+// granted the read-only `student` role. The clientSecret is never returned by a
+// read path — only whether one is configured.
+const OAUTH_GOOGLE_KEY = 'oauth_google';
+const OAUTH_SIGNING_SECRET_KEY = 'oauth_signing_secret';
+// The role every Google sign-in lands on. Read-only, like the public viewer.
+const OAUTH_DEFAULT_ROLE = 'student';
+
+async function getOAuthConfig() {
+  const stored = (await getAppSetting(OAUTH_GOOGLE_KEY)) || {};
+  const allowedDomains = Array.isArray(stored.allowedDomains)
+    ? stored.allowedDomains
+        .map((domain) => String(domain || '').trim().toLowerCase().replace(/^@/, ''))
+        .filter(Boolean)
+    : [];
+  return {
+    enabled: stored.enabled === true,
+    clientId: typeof stored.clientId === 'string' ? stored.clientId.trim() : '',
+    clientSecret: typeof stored.clientSecret === 'string' ? stored.clientSecret : '',
+    allowedDomains,
+  };
+}
+
+// True only when the flow can actually run (enabled + client id + secret all set).
+function isOAuthConfigured(config) {
+  return config.enabled && config.clientId.length > 0 && config.clientSecret.length > 0;
+}
+
+// HMAC secret for the state/grant tokens. Kept in app_settings (not env) so the
+// whole OAuth setup stays runtime-configurable; generated once on first use.
+async function getOAuthSigningSecret() {
+  const stored = await getAppSetting(OAUTH_SIGNING_SECRET_KEY);
+  if (stored && typeof stored.secret === 'string' && stored.secret.length >= 32) {
+    return stored.secret;
+  }
+  const secret = randomBytes(32).toString('base64url');
+  await setAppSetting(OAUTH_SIGNING_SECRET_KEY, { secret });
+  return secret;
+}
+
+// The dashboard sits behind nginx, so the public origin must come from the
+// forwarded headers (falling back to Host). Google's redirect_uri must match this
+// exactly and be registered in the Google Cloud console.
+function resolvePublicOrigin(req) {
+  const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost')
+    .split(',')[0]
+    .trim();
+  return `${proto}://${host}`;
+}
+
+function oauthRedirectUri(req) {
+  return `${resolvePublicOrigin(req)}/api/auth/google/callback`;
+}
+
+// Send a 302 to a path/URL on the dashboard (or Google). Used by the OAuth
+// start/callback hops, which redirect the browser rather than return JSON.
+function sendRedirect(res, location) {
+  res.statusCode = 302;
+  res.setHeader('Location', location);
+  res.setHeader('Cache-Control', 'no-store');
+  res.end();
+}
+
+// Decode the claims (middle segment) of a JWT without verifying its signature.
+// Safe here because the id_token is received directly from Google's token
+// endpoint over TLS using our client secret — server-to-server, not via the
+// browser — so the payload is already trusted. Returns null on malformed input.
+function decodeJwtClaims(jwt) {
+  if (typeof jwt !== 'string') {
+    return null;
+  }
+  const parts = jwt.split('.');
+  if (parts.length !== 3) {
+    return null;
+  }
+  try {
+    return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
 }
 
 // Branding: an admin-uploaded logo that overrides the bundled default SVG.
@@ -2195,6 +2286,118 @@ async function handleApi(req, res, requestUrl) {
     return true;
   }
 
+  // Google OAuth sign-in. The dashboard auth is cookieless, so the Authorization
+  // Code flow is bridged to the client with an HMAC-signed grant token carried in
+  // a URL param — the same hand-off shape as the slicer grant above.
+  //   GET  /api/auth/google/config   → { enabled }     : drives the login button
+  //   GET  /api/auth/google/start    → 302 to Google consent
+  //   GET  /api/auth/google/callback → exchange code, 302 back with ?oauth_grant
+  //   POST /api/auth/google/verify   → { token } → { user }
+  if (requestUrl.pathname === '/api/auth/google/config' && req.method === 'GET') {
+    const config = await getOAuthConfig();
+    sendJson(res, 200, { enabled: isOAuthConfigured(config) });
+    return true;
+  }
+
+  if (requestUrl.pathname === '/api/auth/google/start' && req.method === 'GET') {
+    const config = await getOAuthConfig();
+    if (!isOAuthConfigured(config)) {
+      sendRedirect(res, '/login?oauth_error=not_configured');
+      return true;
+    }
+    const secret = await getOAuthSigningSecret();
+    const state = signState(secret, { n: randomUUID() });
+    const authorizeUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    authorizeUrl.searchParams.set('client_id', config.clientId);
+    authorizeUrl.searchParams.set('redirect_uri', oauthRedirectUri(req));
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('scope', 'openid email profile');
+    authorizeUrl.searchParams.set('state', state);
+    // Force the account chooser so a shared kiosk doesn't silently reuse a login.
+    authorizeUrl.searchParams.set('prompt', 'select_account');
+    sendRedirect(res, authorizeUrl.toString());
+    return true;
+  }
+
+  if (requestUrl.pathname === '/api/auth/google/callback' && req.method === 'GET') {
+    const config = await getOAuthConfig();
+    if (!isOAuthConfigured(config)) {
+      sendRedirect(res, '/login?oauth_error=not_configured');
+      return true;
+    }
+    const secret = await getOAuthSigningSecret();
+    const code = requestUrl.searchParams.get('code');
+    const state = requestUrl.searchParams.get('state');
+    if (requestUrl.searchParams.get('error') || !code || !verifyState(secret, state)) {
+      sendRedirect(res, '/login?oauth_error=denied');
+      return true;
+    }
+
+    try {
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: config.clientId,
+          client_secret: config.clientSecret,
+          redirect_uri: oauthRedirectUri(req),
+          grant_type: 'authorization_code',
+        }),
+      });
+      if (!tokenResponse.ok) {
+        sendRedirect(res, '/login?oauth_error=exchange_failed');
+        return true;
+      }
+      const tokens = await tokenResponse.json();
+      // The id_token comes straight from Google's token endpoint over TLS using
+      // our client secret, so its claims are trusted without re-verifying the
+      // signature; we only need the identity fields out of the payload.
+      const claims = decodeJwtClaims(tokens.id_token);
+      const email = typeof claims?.email === 'string' ? claims.email.toLowerCase() : '';
+      if (!email || claims.email_verified === false) {
+        sendRedirect(res, '/login?oauth_error=unverified_email');
+        return true;
+      }
+      if (config.allowedDomains.length > 0) {
+        const domain = email.slice(email.indexOf('@') + 1);
+        if (!config.allowedDomains.includes(domain)) {
+          sendRedirect(res, '/login?oauth_error=domain_not_allowed');
+          return true;
+        }
+      }
+      const grant = mintAuthGrant(secret, {
+        sub: typeof claims.sub === 'string' ? claims.sub : email,
+        email,
+        name: typeof claims.name === 'string' && claims.name.trim() ? claims.name.trim() : email,
+        role: OAUTH_DEFAULT_ROLE,
+      });
+      sendRedirect(res, `/login?oauth_grant=${encodeURIComponent(grant)}`);
+    } catch {
+      sendRedirect(res, '/login?oauth_error=exchange_failed');
+    }
+    return true;
+  }
+
+  if (requestUrl.pathname === '/api/auth/google/verify' && req.method === 'POST') {
+    const secret = await getOAuthSigningSecret();
+    const { token } = await readJsonBody(req);
+    const grant = verifyAuthGrant(secret, token);
+    if (!grant) {
+      sendJson(res, 401, { error: 'Invalid or expired sign-in' });
+      return true;
+    }
+    sendJson(res, 200, {
+      user: {
+        id: `google:${grant.sub}`,
+        name: grant.name,
+        username: grant.email,
+        role: grant.role,
+      },
+    });
+    return true;
+  }
+
   // Admin bootstrap credential. The password is set through the website on first
   // run (no default is shipped in the bundle), stored as a sha256 hash in the DB.
   //   GET  → { configured }            : has the admin password been set yet?
@@ -2505,6 +2708,54 @@ async function handleApi(req, res, requestUrl) {
         googleFormUrl: googleFormUrl.trim(),
       });
       sendJson(res, 200, await getIntegrationUrls());
+      return true;
+    }
+  }
+
+  // Google OAuth sign-in config (admin-only in the UI, like the integrations form
+  // above). GET never returns the client secret — only whether one is stored;
+  // PUT with a blank/omitted clientSecret keeps the existing one so the form can
+  // round-trip without re-entering it.
+  if (requestUrl.pathname === '/api/settings/oauth') {
+    if (req.method === 'GET') {
+      const config = await getOAuthConfig();
+      sendJson(res, 200, {
+        enabled: config.enabled,
+        clientId: config.clientId,
+        allowedDomains: config.allowedDomains,
+        hasClientSecret: config.clientSecret.length > 0,
+      });
+      return true;
+    }
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      const enabled = body?.enabled === true;
+      const clientId = typeof body?.clientId === 'string' ? body.clientId.trim() : '';
+      const allowedDomains = Array.isArray(body?.allowedDomains)
+        ? body.allowedDomains
+            .map((domain) => String(domain || '').trim().toLowerCase().replace(/^@/, ''))
+            .filter(Boolean)
+        : [];
+      const existing = await getOAuthConfig();
+      // Blank/omitted secret on save = keep the stored one (so the form needn't
+      // echo it back); a non-empty value replaces it.
+      const clientSecret =
+        typeof body?.clientSecret === 'string' && body.clientSecret.trim()
+          ? body.clientSecret.trim()
+          : existing.clientSecret;
+      await setAppSetting(OAUTH_GOOGLE_KEY, {
+        enabled,
+        clientId,
+        clientSecret,
+        allowedDomains,
+      });
+      const saved = await getOAuthConfig();
+      sendJson(res, 200, {
+        enabled: saved.enabled,
+        clientId: saved.clientId,
+        allowedDomains: saved.allowedDomains,
+        hasClientSecret: saved.clientSecret.length > 0,
+      });
       return true;
     }
   }

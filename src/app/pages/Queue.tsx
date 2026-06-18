@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { deleteQueueJob, fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
 import { useAuth } from '../contexts/AuthContext';
 import { usePrinters } from '../contexts/PrintersContext';
+import { isReadOnlyRole } from '../lib/usersApi';
 
 export function Queue() {
   const { user } = useAuth();
@@ -135,7 +136,7 @@ export function Queue() {
   const totalFiles = queue.reduce((acc, job) => acc + (job.fileCount ?? 1), 0);
   const canManageQueue = user?.role === 'admin' || user?.role === 'operator';
   const canDeleteQueueJobs = user?.role === 'admin';
-  const canDownloadQueueFiles = user?.role !== 'viewer';
+  const canDownloadQueueFiles = !isReadOnlyRole(user?.role);
 
   return (
     <div className="p-6 space-y-6">

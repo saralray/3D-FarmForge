@@ -18,7 +18,7 @@ A print-farm management dashboard for monitoring 3D printers, queue requests, pr
 - OctoPrint-compatible slicer proxy so slicers (Orca/PrusaSlicer/Cura) can push files directly to a printer; API keys with permission scopes
 - programmatic `/api/v1` REST API for external integrations, gated by API keys
 - optional public viewer mode that hides sensitive printer details and viewer profile UI
-- role-aware access for admin, operator, and viewer accounts
+- role-aware access for admin, operator, and viewer accounts, plus optional Google (OAuth) sign-in that grants a read-only "student" role
 
 ## Stack
 
@@ -55,7 +55,9 @@ docker compose up --build
 http://localhost:8080
 ```
 
-On first run, open `/admin` to complete the one-time admin password setup. The app uses its in-app login screen for restricted views; there is no shipped default password.
+On first run, open `/login` to complete the one-time admin password setup. The app uses its in-app login screen for restricted views; there is no shipped default password.
+
+Optionally, admins can enable **Google sign-in** in Settings → Sign-in (enter an OAuth client ID/secret and optional allowed email domains). Anyone who signs in with Google gets the read-only **student** role. See [API.md](API.md#google-oauth-sign-in-api-apiauthgoogle) and register `<origin>/api/auth/google/callback` as an authorized redirect URI in the Google Cloud console.
 
 ## Development
 

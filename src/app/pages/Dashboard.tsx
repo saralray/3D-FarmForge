@@ -11,6 +11,7 @@ import { logAuditEvent } from '../lib/auditApi';
 import { usePrinters } from '../contexts/PrintersContext';
 import { useIsMobile } from '../components/ui/use-mobile';
 import { DEFAULT_SITE_NAME, useBrandingSettings } from '../lib/settingsApi';
+import { isReadOnlyRole } from '../lib/usersApi';
 import { toast } from 'sonner';
 
 export function Dashboard() {
@@ -195,7 +196,7 @@ export function Dashboard() {
               key={printer.id}
               printer={printer}
               canManage={canReorder}
-              canViewSensitiveInfo={user?.role !== 'viewer'}
+              canViewSensitiveInfo={!isReadOnlyRole(user?.role)}
               onDragStart={canReorder ? handlePrinterDragStart : undefined}
               onDragOver={canReorder ? handlePrinterDragOver : undefined}
               onDragEnd={canReorder ? handlePrinterDragEnd : undefined}

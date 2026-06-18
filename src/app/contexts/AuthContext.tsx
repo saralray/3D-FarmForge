@@ -8,6 +8,7 @@ import {
 } from '../lib/runtimeConfig';
 import { logAuditEvent, setAuditActor } from '../lib/auditApi';
 import { verifySlicerGrant } from '../lib/slicerGrantApi';
+import { verifyGoogleGrant } from '../lib/oauthApi';
 import {
   changeAdminCredential,
   setupAdminCredential,
@@ -197,6 +198,28 @@ function takeSlicerGrantToken(): string | null {
   return token;
 }
 
+// After the Google OAuth callback the server redirects back to the dashboard with
+// `?oauth_grant=<token>`. Pull the token out and strip it (and any oauth_error)
+// from the URL so it doesn't linger or get bookmarked. The token is meaningless
+// until the server verifies its signature, so this only extracts it.
+function takeOAuthGrantToken(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('oauth_grant');
+  if (!token) {
+    return null;
+  }
+
+  params.delete('oauth_grant');
+  const query = params.toString();
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
+  window.history.replaceState({}, '', nextUrl);
+  return token;
+}
+
 function sha256Fallback(message: string) {
   const encoder = new TextEncoder();
   const bytes = Array.from(encoder.encode(message));
@@ -355,6 +378,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setIsLoading(false);
         }
         return;
+      }
+
+      // Google OAuth hand-off: the callback redirects back with a signed grant
+      // token. Verify it server-side, then establish a (read-only `student`)
+      // session — mirroring the slicer grant above.
+      const oauthGrant = takeOAuthGrantToken();
+      if (oauthGrant) {
+        const oauthUser = await verifyGoogleGrant(oauthGrant);
+        if (oauthUser && !cancelled) {
+          setUser(oauthUser);
+          writeStoredSession(oauthUser, true);
+          setAuditActor(oauthUser);
+          logAuditEvent('auth.login', oauthUser.username, { role: oauthUser.role });
+          setIsLoading(false);
+          return;
+        }
       }
 
       const storedSession = readStoredSession();

@@ -10,7 +10,18 @@ import { Checkbox } from '../components/ui/checkbox';
 import { Eye, EyeOff, ClipboardList } from 'lucide-react';
 import { PUBLIC_VIEWER_MODE } from '../lib/runtimeConfig';
 import { fetchAdminConfigured } from '../lib/adminCredentialApi';
+import { fetchOAuthEnabled } from '../lib/oauthApi';
 import { Logo } from '../components/Logo';
+
+// Human-readable messages for the ?oauth_error codes the callback can redirect
+// back with (see server/app.js /api/auth/google/callback).
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  not_configured: 'Google sign-in is not configured.',
+  denied: 'Google sign-in was cancelled or denied.',
+  exchange_failed: 'Could not complete Google sign-in. Please try again.',
+  unverified_email: 'Your Google account email is not verified.',
+  domain_not_allowed: 'Your account is not allowed to sign in here.',
+};
 
 export function Login() {
   if (PUBLIC_VIEWER_MODE) {
@@ -31,6 +42,7 @@ export function Login() {
   // While null we hold off rendering either form to avoid a flicker.
   const [adminConfigured, setAdminConfigured] = useState<boolean | null>(null);
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [oauthEnabled, setOauthEnabled] = useState(false);
 
   const from = (location.state as any)?.from?.pathname || '/';
 
@@ -48,6 +60,33 @@ export function Login() {
       cancelled = true;
     };
   }, [isAdminPage]);
+
+  // Only show the Google button when sign-in is actually configured + enabled.
+  useEffect(() => {
+    let cancelled = false;
+    fetchOAuthEnabled().then((enabled) => {
+      if (!cancelled) {
+        setOauthEnabled(enabled);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Surface the ?oauth_error the callback may have redirected back with, then
+  // strip it from the URL so a reload doesn't show it again.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const errorCode = params.get('oauth_error');
+    if (!errorCode) {
+      return;
+    }
+    toast.error(OAUTH_ERROR_MESSAGES[errorCode] ?? 'Google sign-in failed.');
+    params.delete('oauth_error');
+    const query = params.toString();
+    navigate(`${location.pathname}${query ? `?${query}` : ''}`, { replace: true });
+  }, [location.search, location.pathname, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -257,6 +296,45 @@ export function Login() {
                   {isLoading ? 'Opening...' : 'Printfarm Dashboard'}
                 </Button>
               </div>
+            )}
+
+            {oauthEnabled && !showSetup && (
+              <>
+                <div className="flex items-center gap-3">
+                  <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+                  <span className="text-xs uppercase tracking-wide text-gray-400">or</span>
+                  <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-14 w-full gap-3 text-base"
+                  disabled={isLoading}
+                  onClick={() => {
+                    window.location.href = '/api/auth/google/start';
+                  }}
+                >
+                  <svg className="size-5" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.76h3.56c2.08-1.92 3.28-4.74 3.28-8.09Z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.56-2.76c-.98.66-2.23 1.06-3.72 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23Z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.11A6.6 6.6 0 0 1 5.5 12c0-.73.13-1.45.34-2.11V7.05H2.18A11 11 0 0 0 1 12c0 1.77.43 3.45 1.18 4.95l3.66-2.84Z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.05l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38Z"
+                    />
+                  </svg>
+                  Sign in with Google
+                </Button>
+              </>
             )}
 
             <Button

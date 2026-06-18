@@ -576,3 +576,116 @@ curl http://printfarm.local/api/manager/requests/01j.../status
 # 4. Use the key against /api/v1
 curl -H "X-Api-Key: abc123..." http://printfarm.local/api/v1/printers
 ```
+
+## Google OAuth sign-in API (`/api/auth/google`)
+
+A **public** endpoint group (no API key) that runs the Google OAuth 2.0
+Authorization Code flow. The dashboard auth is cookieless, so instead of a
+server session the callback mints a short-lived, **HMAC-signed grant token** and
+hands it back to the browser as a `?oauth_grant=<token>` URL param — the same
+hand-off shape as the slicer grant. The client verifies the token server-side
+before establishing a session. Everyone who signs in this way is granted the
+read-only **`student`** role.
+
+Configure the client id/secret and (optional) allowed email domains in
+**Settings → Sign-in**; nothing is baked into the build. Register
+`<origin>/api/auth/google/callback` as an authorized redirect URI in the Google
+Cloud console (the origin is derived from `X-Forwarded-Proto`/`Host`).
+
+### Endpoints
+
+#### `GET /api/auth/google/config`
+
+Whether Google sign-in is configured **and** enabled. Drives the login button.
+**Public.** Never returns any secret.
+
+**Response `200`:**
+
+```json
+{ "enabled": true }
+```
+
+---
+
+#### `GET /api/auth/google/start`
+
+Begins the flow. **Public.** `302`-redirects the browser to Google's consent
+screen (with `scope=openid email profile`, the derived `redirect_uri`, and a
+signed `state`). When sign-in is disabled/unconfigured it redirects to
+`/login?oauth_error=not_configured` instead.
+
+---
+
+#### `GET /api/auth/google/callback`
+
+Google redirects here with `?code=&state=`. **Public.** Verifies `state`,
+exchanges the code at Google's token endpoint (server-to-server with the client
+secret), requires a verified email and (if configured) an allowed domain, then
+mints the grant token and `302`-redirects to `/login?oauth_grant=<token>`.
+
+On any failure it `302`-redirects to `/login?oauth_error=<code>` where `<code>`
+is one of `not_configured`, `denied`, `exchange_failed`, `unverified_email`, or
+`domain_not_allowed`.
+
+---
+
+#### `POST /api/auth/google/verify`
+
+Verifies a grant token from the callback. **Public.**
+
+**Request body:**
+
+```json
+{ "token": "<oauth_grant value>" }
+```
+
+**Response `200`:**
+
+```json
+{
+  "user": {
+    "id": "google:1234567890",
+    "name": "Jane Student",
+    "username": "jane@school.edu",
+    "role": "student"
+  }
+}
+```
+
+**Response `401`** if the token is missing, forged, or expired.
+
+## Sign-in settings (`/api/settings/oauth`)
+
+Admin-only in the UI (client-side session guard, like
+`/api/settings/integrations`). Stores the Google OAuth config in `app_settings`.
+
+#### `GET /api/settings/oauth`
+
+**Response `200`** — the client secret is **never** returned, only whether one
+is stored:
+
+```json
+{
+  "enabled": true,
+  "clientId": "xxxx.apps.googleusercontent.com",
+  "allowedDomains": ["school.edu"],
+  "hasClientSecret": true
+}
+```
+
+#### `PUT /api/settings/oauth`
+
+**Request body:**
+
+```json
+{
+  "enabled": true,
+  "clientId": "xxxx.apps.googleusercontent.com",
+  "clientSecret": "GOCSPX-...",
+  "allowedDomains": ["school.edu"]
+}
+```
+
+A blank/omitted `clientSecret` **keeps** the stored one (so the form can
+round-trip without re-entering it); a non-empty value replaces it. Returns the
+same redacted shape as `GET`.
