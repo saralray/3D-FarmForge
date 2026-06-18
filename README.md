@@ -190,17 +190,15 @@ Metrics include per-printer status, nozzle/bed temperature, progress, success ra
   -v /path/to/monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
   ```
 
-  Edit `url` in `monitoring/grafana/provisioning/datasources/prometheus.yml` first: use `http://prometheus:9090/prometheus` if Grafana shares this Docker/Kubernetes network, or `http://<this-host>:HTTP_PORT/prometheus` if it runs on another host.
+  Edit `url` in `monitoring/grafana/provisioning/datasources/prometheus.yml` first: use `http://prometheus:9090/prometheus` if Grafana shares this Docker network, or `http://<this-host>:HTTP_PORT/prometheus` if it runs on another host.
 
 - **Or add it in the UI:** Connections → Data sources → add **Prometheus** with the same URL.
 
 Then import `monitoring/grafana-dashboard.json` (Dashboards → New → Import) and pick the **Print Farm Prometheus** data source when prompted.
 
-## Kubernetes Deployment
+## Image builds (CI)
 
-This repo is designed to be forked and deployed by anyone — **no secrets or deployment-specific URLs are committed**. On every push to `main`, GitHub Actions builds the images and pushes them to Docker Hub; deploying them to a cluster is a manual `kubectl` step (below).
-
-### One-time setup — GitHub Actions (build & push)
+This repo is designed to be forked and deployed by anyone — **no secrets or deployment-specific URLs are committed**. On every push to `main`, GitHub Actions (`.github/workflows/deploy.yml`) builds the custom images and pushes them to Docker Hub.
 
 Configure these in your repo under **Settings → Secrets and variables → Actions**.
 
@@ -208,7 +206,7 @@ Configure these in your repo under **Settings → Secrets and variables → Acti
 
 | Name | Purpose |
 |------|---------|
-| `DOCKERHUB_USERNAME` | Username used to push images; also the K8s image prefix |
+| `DOCKERHUB_USERNAME` | Username used to push images; also the image prefix |
 | `DOCKERHUB_TOKEN` | Docker Hub access token for that user |
 
 **Variables** (plain text):
@@ -216,39 +214,6 @@ Configure these in your repo under **Settings → Secrets and variables → Acti
 | Name | Default | Purpose |
 |------|---------|---------|
 | `PUBLIC_VIEWER_MODE` | `false` | Set to `true` to ship a public viewer build |
-
-### One-time setup — cluster
-
-```bash
-kubectl create namespace printfarm
-
-PG_PASS="$(openssl rand -hex 32)"
-kubectl -n printfarm create secret generic printfarm-secret \
-  --from-literal=POSTGRES_DB=printfarm \
-  --from-literal=POSTGRES_USER=printfarm_app \
-  --from-literal=POSTGRES_PASSWORD="$PG_PASS" \
-  --from-literal=DATABASE_URL="postgresql://printfarm_app:$PG_PASS@postgres:5432/printfarm"
-```
-
-`k8s/examples/secret.example.yaml` documents the same shape if you'd rather template it.
-
-### Manual deploy
-
-```bash
-export IMAGE_PREFIX=your-dockerhub-username
-
-kubectl apply -f k8s/namespace.yaml
-
-kubectl -n printfarm create configmap printfarm-config \
-  --from-literal=VITE_PUBLIC_VIEWER_MODE=false \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-for f in k8s/*.yaml; do
-  sed "s|saralray/|${IMAGE_PREFIX}/|g" "$f"; echo "---"
-done | kubectl apply -f -
-```
-
-The `printfarm-secret` (see above) must already exist.
 
 ## Validation
 

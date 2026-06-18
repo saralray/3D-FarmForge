@@ -31,44 +31,6 @@ server-side in `app_settings` (key `admin_credential`) via `/api/admin/credentia
 Admin login verifies against that endpoint; changing it later requires the current
 password. There is no shipped default — `admin / "admin"` no longer exists.
 
-**Full stack — Kubernetes:**
-
-All manifests live in `k8s/`. Apply with Kustomize or plain kubectl:
-```bash
-kubectl apply -k k8s/          # Kustomize (recommended)
-kubectl apply -f k8s/          # plain kubectl (applies alphabetically)
-```
-
-Before applying, edit `k8s/secret.yaml` (fill in `CHANGE_ME` values). The Google
-Sheet/Form URLs are no longer build/deploy config — admins set them at runtime in
-Settings → Integrations (stored in the DB).
-
-Build and push the custom images (`web`, `poller`, `slicer-proxy`, and `exporter` — nginx uses the upstream image directly, and `prometheus` runs the upstream `prom/prometheus` image):
-```bash
-docker build \
-  --build-arg VITE_PUBLIC_VIEWER_MODE=false \
-  -f Dockerfile.web -t stemlab-printfarm/web:latest .
-
-docker build -f Dockerfile.poller -t stemlab-printfarm/poller:latest .
-
-docker build -f Dockerfile.slicer-proxy -t stemlab-printfarm/slicer-proxy:latest .
-
-docker build -f Dockerfile.exporter -t stemlab-printfarm/exporter:latest .
-
-# Push to your registry, or load into a local cluster:
-# kind:      kind load docker-image stemlab-printfarm/web:latest
-# minikube:  minikube image load stemlab-printfarm/web:latest
-# k3s:       k3s ctr images import <(docker save stemlab-printfarm/web:latest)
-```
-
-Useful runtime commands:
-```bash
-kubectl -n stemlab-printfarm get pods
-kubectl -n stemlab-printfarm logs -f deployment/web
-kubectl -n stemlab-printfarm logs -f deployment/poller
-kubectl -n stemlab-printfarm get svc nginx   # check EXTERNAL-IP for LoadBalancer
-```
-
 ## Architecture
 
 Seven services orchestrated via Docker Compose:

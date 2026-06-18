@@ -11,7 +11,7 @@ jobs:
 
     env:
       # Forks set DOCKERHUB_USERNAME in repo secrets; it's the push registry
-      # prefix (and the Kubernetes image prefix when you deploy manually).
+      # prefix for the built images.
       IMAGE_PREFIX: ${{ secrets.DOCKERHUB_USERNAME }}
 
     steps:

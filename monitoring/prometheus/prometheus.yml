@@ -10,12 +10,14 @@ global:
 
 scrape_configs:
   # Printer state (printfarm_printer_online/printing/pause/error/offline, temps,
-  # progress) is scraped fast so the dashboard tracks the poller in near-real
-  # time. The poller refreshes the DB every PRINTER_POLL_INTERVAL_MS (2s default),
-  # so a 1s scrape always picks up the latest state within ~1s.
+  # progress) is scraped to track the poller in near-real time. The exporter
+  # opens a fresh DB connection and reads the tables on every scrape, and the
+  # poller only refreshes the DB every PRINTER_POLL_INTERVAL_MS (2s default), so
+  # scraping faster than that just doubles DB load for identical data. Match the
+  # poll cadence.
   - job_name: printfarm
-    scrape_interval: 1s
-    scrape_timeout: 1s
+    scrape_interval: 2s
+    scrape_timeout: 2s
     static_configs:
       - targets: ["exporter:9180"]
 

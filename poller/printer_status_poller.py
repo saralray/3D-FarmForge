@@ -1888,35 +1888,56 @@ _REFRESH_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="poller-ref
 
 
 def run() -> None:
+    # One long-lived connection, reused across poll cycles. Reconnecting every
+    # cycle (and re-running the full schema DDL each time) is a connection storm
+    # plus catalog-lock churn against the DB every few seconds — the schema only
+    # needs to be ensured once per connection.
+    conn: psycopg.Connection | None = None
+    schema_ready = False
+
     while True:
         try:
-            with psycopg.connect(db_url()) as conn:
+            if conn is None or conn.closed:
+                conn = psycopg.connect(db_url())
+                schema_ready = False
+            if not schema_ready:
                 ensure_schema(conn)
-                printers = list_printers(conn)
-                active_ids = {printer["id"] for printer in printers}
-                prune_bambu_clients(active_ids)
-                prune_print_time_tracking(active_ids)
-                webhooks = list_discord_webhooks(conn)
-                slicer_estimates = list_slicer_estimates(conn)
+                schema_ready = True
 
-                # Concurrent, side-effect-free refresh; DB writes and the
-                # _PRINTING_SINCE tracker run sequentially on this thread below
-                # (psycopg connections and that dict are not shared across threads).
-                next_printers = (
-                    list(_REFRESH_POOL.map(compute_next_printer, printers)) if printers else []
-                )
+            printers = list_printers(conn)
+            active_ids = {printer["id"] for printer in printers}
+            prune_bambu_clients(active_ids)
+            prune_print_time_tracking(active_ids)
+            webhooks = list_discord_webhooks(conn)
+            slicer_estimates = list_slicer_estimates(conn)
 
-                for printer, next_printer in zip(printers, next_printers):
-                    # Prefer the slicer's exact 3MF estimate over the AMS-delta
-                    # fallback before analytics/persistence read filamentUsed.
-                    apply_slicer_filament_estimate(next_printer, slicer_estimates)
-                    next_printer["totalPrintTime"] = accumulate_total_print_time(next_printer)
-                    collect_analytics_for_transition(conn, printer, next_printer)
-                    notify_for_transition(webhooks, printer, next_printer)
-                    upsert_printer(conn, next_printer)
-                conn.commit()
+            # Concurrent, side-effect-free refresh; DB writes and the
+            # _PRINTING_SINCE tracker run sequentially on this thread below
+            # (psycopg connections and that dict are not shared across threads).
+            next_printers = (
+                list(_REFRESH_POOL.map(compute_next_printer, printers)) if printers else []
+            )
+
+            for printer, next_printer in zip(printers, next_printers):
+                # Prefer the slicer's exact 3MF estimate over the AMS-delta
+                # fallback before analytics/persistence read filamentUsed.
+                apply_slicer_filament_estimate(next_printer, slicer_estimates)
+                next_printer["totalPrintTime"] = accumulate_total_print_time(next_printer)
+                collect_analytics_for_transition(conn, printer, next_printer)
+                notify_for_transition(webhooks, printer, next_printer)
+                upsert_printer(conn, next_printer)
+            conn.commit()
         except Exception as error:
             print(f"printer poller error: {error}", flush=True)
+            # The connection may be in an aborted-transaction state after an
+            # error; drop it so the next cycle reconnects cleanly.
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            conn = None
+            schema_ready = False
 
         time.sleep(POLL_INTERVAL_SECONDS)
 

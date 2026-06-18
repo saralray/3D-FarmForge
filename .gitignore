@@ -31,8 +31,3 @@ dist-ssr
 .env
 .env.local
 .env.*.local
-
-# Local Kubernetes secret manifests — never commit. Use k8s/examples/secret.example.yaml
-# as a template and create the cluster secret out-of-band.
-k8s/secrets.yaml
-k8s/secret.yaml

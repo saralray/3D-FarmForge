@@ -20,15 +20,14 @@ through nginx, so metrics never reach the public `:8080` site.
 
 | Path | Purpose |
 |------|---------|
-| `prometheus/prometheus.yml` | Prometheus scrape config. Mounted read-only by Docker Compose; mirrored by the ConfigMap in `k8s/prometheus.yaml`. |
+| `prometheus/prometheus.yml` | Prometheus scrape config. Mounted read-only by Docker Compose. |
 | `grafana/provisioning/datasources/prometheus.yml` | Grafana datasource definition (`Print Farm Prometheus`, uid `printfarm-prometheus`). Mount into Grafana to auto-create the datasource. |
 | `grafana-dashboard.json` | Importable Grafana dashboard (`3D-FarmLab`, uid `printfarm-overview`). |
 
 ## How the scrape config works
 
-`prometheus/prometheus.yml` is intentionally small and is shared verbatim by both
-Docker Compose and Kubernetes — `exporter` resolves on the Compose network and
-in the `printfarm` namespace alike:
+`prometheus/prometheus.yml` is intentionally small; `exporter` resolves on the
+Docker Compose network:
 
 ```yaml
 global:
@@ -38,8 +37,8 @@ global:
 
 scrape_configs:
   - job_name: printfarm
-    scrape_interval: 1s              # near-real-time printer state (poller updates DB ~2s)
-    scrape_timeout: 1s
+    scrape_interval: 2s              # printer state; matches the poller's DB update cadence
+    scrape_timeout: 2s
     static_configs:
       - targets: ["exporter:9180"]   # the print-farm metrics
   - job_name: prometheus
@@ -48,7 +47,7 @@ scrape_configs:
 ```
 
 If you change the exporter's port, update **both** `EXPORTER_PORT` and the
-`printfarm` target above (and the `k8s/prometheus.yaml` ConfigMap).
+`printfarm` target above.
 
 ## Running it
 
@@ -73,31 +72,6 @@ docker compose logs -f exporter
 curl -s http://localhost:9090/-/ready          # Prometheus readiness
 docker compose exec exporter \
   python -c "import urllib.request as u; print(u.urlopen('http://localhost:9180/metrics').read()[:500])"
-```
-
-### Kubernetes
-
-The manifests live in `k8s/` and are part of the normal apply:
-
-```bash
-kubectl apply -f k8s/                  # whole stack, or just the two below:
-kubectl apply -f k8s/exporter.yaml -f k8s/prometheus.yaml
-```
-
-- `k8s/exporter.yaml` — exporter Deployment + ClusterIP Service on `:9180`.
-- `k8s/prometheus.yaml` — Prometheus Deployment, a `prometheus-config` ConfigMap
-  (mirrors `prometheus/prometheus.yml`), a 10Gi `prometheus-pvc`, and a
-  **ClusterIP** Service on `:9090`. `Recreate` strategy is used because the
-  ReadWriteOnce PVC can only attach to one pod at a time.
-
-Both Services are ClusterIP (in-cluster only). To reach Prometheus from an
-external Grafana, switch the `prometheus` Service to `NodePort`/`LoadBalancer`
-or add a route in `k8s/ingress.yaml`.
-
-```bash
-kubectl -n printfarm get pods
-kubectl -n printfarm logs -f deployment/prometheus
-kubectl -n printfarm port-forward svc/prometheus 9090:9090   # local access
 ```
 
 ## Ports and environment
@@ -232,9 +206,9 @@ printfarm_scrape_success == 0
   instead of crashing.
 - No connection secrets (printer IP, API key/access code, serial) are emitted as
   metrics or labels.
-- In Kubernetes the Prometheus Service is ClusterIP by default; expose it
-  deliberately (NodePort/LoadBalancer/ingress) only if an external Grafana needs
-  it.
+- Prometheus is not published on its own host port; nginx serves it under
+  `/prometheus` on the main site. Gate that path by network or auth if the
+  dashboard is internet-facing.
 
 ## Troubleshooting
 
@@ -244,4 +218,3 @@ printfarm_scrape_success == 0
 | `printfarm_scrape_success` is `0` | Exporter can't reach PostgreSQL. Verify `DATABASE_URL` and that `db` is healthy; the exporter log prints the error. |
 | Grafana panels say "No data" | Datasource URL not reachable from Grafana, or the dashboard's datasource variable points at the wrong source. Re-check the URL in the datasource provisioning file. |
 | Metrics history gaps after an analytics reset | Expected — `Reset analytics` resets the cumulative counters; use `rate()`/`increase()` which tolerate counter resets. |
-| Empty Prometheus after redeploy (k8s) | The `prometheus-pvc` must detach from the old pod first; the `Recreate` strategy handles this — make sure the PVC bound and the volume mounted. |

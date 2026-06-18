@@ -27,15 +27,14 @@ In scope:
 - The Node `web` API and printer reverse proxy (`server/`).
 - The Python `poller` service (`poller/`).
 - The `nginx` reverse proxy configuration (`nginx/`).
-- Docker (`Dockerfile.*`, `docker-compose.yml`) and Kubernetes (`k8s/`)
-  deployment manifests.
+- Docker (`Dockerfile.*`, `docker-compose.yml`) deployment configuration.
 - Authentication, role handling, and public viewer-mode redaction.
 
 Out of scope:
 
 - Vulnerabilities in third-party dependencies that have no available patch
   (report these upstream; we will update once a fix exists).
-- Issues that require an already-compromised host or cluster.
+- Issues that require an already-compromised host.
 - Findings against deployments that have not changed the default credentials.
 
 ## Deployment Hardening
@@ -43,13 +42,11 @@ Out of scope:
 Operators are responsible for the security of their own deployment. Before
 running this software in production:
 
-- **Change every default secret.** `k8s/secrets.yaml` ships with placeholder
-  values (`stemlab_password`, etc.). Replace `POSTGRES_PASSWORD`,
-  `DATABASE_URL`, and any auth password hash with strong, unique values.
+- **Change every default secret.** `.env.example` ships with placeholder
+  values. Replace `POSTGRES_PASSWORD`, `DATABASE_URL`, and any auth password
+  hash with strong, unique values.
 - **Never commit real secrets.** `.env` is for local use only and must not be
-  committed; document defaults in `.env.example`. Kubernetes secrets should be
-  supplied out-of-band (sealed-secrets, an external secret store, or
-  `kubectl create secret`) rather than checked into Git.
+  committed; document defaults in `.env.example`.
 - **Generate auth password hashes** with the documented SHA-256 command; do not
   store plaintext passwords.
 - **Keep printer connection details private.** Printer IPs, API keys, and
