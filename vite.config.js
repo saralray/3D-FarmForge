@@ -654,7 +654,6 @@ export default defineConfig(({ mode }) => {
         manualChunks(id) {
           if (!id.includes('node_modules')) return
           if (id.includes('recharts') || id.includes('/d3-')) return 'charts'
-          if (id.includes('@mui') || id.includes('@emotion')) return 'mui'
           if (id.includes('@radix-ui')) return 'radix'
           if (
             id.includes('/node_modules/react/') ||

@@ -9,6 +9,10 @@ import { buildPrinterWebcamSnapshotUrl } from '../lib/printerProfiles';
 import { formatMaxTwoDecimals } from '../lib/numberFormat';
 import { useIsMobile } from './ui/use-mobile';
 
+// How often each dashboard card re-fetches its webcam snapshot for a near-live
+// preview. The printer control/detail page shows the fully live feed instead.
+const SNAPSHOT_REFRESH_MS = 2000;
+
 interface PrinterCardProps {
   printer: Printer;
   canManage?: boolean;
@@ -29,8 +33,12 @@ export function PrinterCard({
   const navigate = useNavigate();
   const draggedRef = useRef(false);
   // On phones the webcam preview is hidden to save space — the live view lives
+  // on the printer control page.
+  // On phones the webcam preview is hidden to save space — the live view lives
   // on the printer control page — so we also skip the snapshot polling here.
   const isMobile = useIsMobile();
+  // The dashboard card refreshes a still snapshot on a timer (near-live preview);
+  // the fully live feed lives on the printer control/detail page.
   const [snapshotNonce, setSnapshotNonce] = useState(() => Date.now());
   const webcamSnapshotUrl = `${buildPrinterWebcamSnapshotUrl(printer)}?t=${snapshotNonce}`;
   const isOnline = printer.status !== 'offline';
@@ -49,7 +57,7 @@ export function PrinterCard({
 
     const interval = window.setInterval(() => {
       setSnapshotNonce(Date.now());
-    }, 2000);
+    }, SNAPSHOT_REFRESH_MS);
 
     return () => {
       window.clearInterval(interval);
