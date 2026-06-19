@@ -64,6 +64,7 @@ import {
   redisDel,
   redisGet,
   redisIncrWithTtl,
+  redisSet,
   redisTtl,
 } from './redis.js';
 import {
@@ -776,6 +777,88 @@ function clearSessionCookie(req, res) {
   res.setHeader('Set-Cookie', buildSessionCookie(req, '', 0));
 }
 
+// ── Optional Redis session read-cache ────────────────────────────────────────
+// Every authenticated request resolves the session, which is a Postgres lookup by
+// token hash — the hottest auth query at scale. When Redis is enabled we read it
+// through a short-lived cache so most requests skip Postgres entirely, while
+// Postgres stays the source of truth (a Redis miss/outage just falls back to it).
+//
+// Revocation safety: the cache TTL is short, single-session logout DELetes the
+// exact key, and bulk revocations (account delete, role change, password reset)
+// stamp a per-user revocation marker. A cached entry older than its user's marker
+// is treated as stale, so a revoked cookie can never outlive the change beyond a
+// failed cache check that immediately re-reads (and finds the row gone in) PG.
+const SESSION_CACHE_TTL_SECONDS = 60;
+const sessionCacheKey = (tokenHash) => `session:${tokenHash}`;
+const userRevokeKey = (userId) => `userrevoke:${userId}`;
+
+async function getCachedSession(tokenHash) {
+  if (!isRedisEnabled()) {
+    return null;
+  }
+  const raw = await redisGet(sessionCacheKey(tokenHash));
+  if (!raw) {
+    return null;
+  }
+  let entry;
+  try {
+    entry = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  // Defensive expiry check (the cache TTL normally handles this).
+  if (entry.expires_at && new Date(entry.expires_at).getTime() <= Date.now()) {
+    await redisDel(sessionCacheKey(tokenHash));
+    return null;
+  }
+  // Honor a bulk revocation that happened after this entry was cached.
+  const revoke = await redisGet(userRevokeKey(entry.user_id));
+  if (revoke && Number(revoke) >= (entry._cachedAtMs || 0)) {
+    await redisDel(sessionCacheKey(tokenHash));
+    return null;
+  }
+  delete entry._cachedAtMs;
+  return entry;
+}
+
+async function cacheSession(tokenHash, session) {
+  if (!isRedisEnabled() || !session) {
+    return;
+  }
+  const remainingMs = session.expires_at
+    ? new Date(session.expires_at).getTime() - Date.now()
+    : SESSION_CACHE_TTL_SECONDS * 1000;
+  const ttl = Math.min(SESSION_CACHE_TTL_SECONDS, Math.floor(remainingMs / 1000));
+  if (ttl <= 0) {
+    return;
+  }
+  await redisSet(
+    sessionCacheKey(tokenHash),
+    JSON.stringify({ ...session, _cachedAtMs: Date.now() }),
+    ttl,
+  );
+}
+
+// Drop one cached session (single-session logout). PG deletion is separate.
+async function invalidateCachedSession(tokenHash) {
+  if (isRedisEnabled()) {
+    await redisDel(sessionCacheKey(tokenHash));
+  }
+}
+
+// Stamp a per-user revocation marker so every cached session for the user is
+// treated as stale on its next read. Kept for the maximum session lifetime so it
+// outlives any cookie issued before the revocation.
+async function revokeCachedUserSessions(userId) {
+  if (isRedisEnabled()) {
+    await redisSet(
+      userRevokeKey(userId),
+      String(Date.now()),
+      Math.floor(SESSION_REMEMBER_TTL_MS / 1000),
+    );
+  }
+}
+
 // Resolve (and cache on the request) the current session from the cookie.
 // Returns the session row { user_id, username, name, role } or null.
 async function resolveSession(req) {
@@ -785,8 +868,13 @@ async function resolveSession(req) {
   const token = parseCookies(req)[SESSION_COOKIE];
   let session = null;
   if (token) {
+    const tokenHash = hash(token);
     try {
-      session = await getSession(hash(token));
+      session = await getCachedSession(tokenHash);
+      if (!session) {
+        session = await getSession(tokenHash);
+        await cacheSession(tokenHash, session);
+      }
     } catch {
       session = null;
     }
@@ -3325,7 +3413,9 @@ async function handleApi(req, res, requestUrl) {
   if (requestUrl.pathname === '/api/auth/logout' && req.method === 'POST') {
     const token = parseCookies(req)[SESSION_COOKIE];
     if (token) {
-      await deleteSession(hash(token)).catch(() => {});
+      const tokenHash = hash(token);
+      await deleteSession(tokenHash).catch(() => {});
+      await invalidateCachedSession(tokenHash).catch(() => {});
     }
     clearSessionCookie(req, res);
     sendEmpty(res);
@@ -3436,6 +3526,7 @@ async function handleApi(req, res, requestUrl) {
       // Revoke every existing admin session except the caller's, then re-issue a
       // fresh cookie so the password change instantly invalidates stale sessions.
       await deleteSessionsForUser('admin').catch(() => {});
+      await revokeCachedUserSessions('admin').catch(() => {});
       await issueSession(
         req,
         res,
@@ -3562,6 +3653,7 @@ async function handleApi(req, res, requestUrl) {
       );
       // Revoke the removed account's live sessions immediately.
       await deleteSessionsForUser(userId).catch(() => {});
+      await revokeCachedUserSessions(userId).catch(() => {});
       sendEmpty(res);
       return true;
     }
@@ -3583,6 +3675,7 @@ async function handleApi(req, res, requestUrl) {
       await setAppSetting(STAFF_USERS_KEY, nextUsers);
       // A password change invalidates the account's existing sessions.
       await deleteSessionsForUser(userId).catch(() => {});
+      await revokeCachedUserSessions(userId).catch(() => {});
       sendEmpty(res);
       return true;
     }
@@ -3606,6 +3699,7 @@ async function handleApi(req, res, requestUrl) {
       // Revoke existing sessions so the new role takes effect on next sign-in
       // rather than letting a stale cookie keep the old privileges.
       await deleteSessionsForUser(userId).catch(() => {});
+      await revokeCachedUserSessions(userId).catch(() => {});
       sendJson(res, 200, sanitizeStaffUser(nextUsers[index]));
       return true;
     }
