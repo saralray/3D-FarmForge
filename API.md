@@ -2,9 +2,10 @@
 
 A versioned, API-key-gated HTTP API over the print farm's data. It is served by
 the `web` service (`handleDataApi` in `server/app.js`) and is **entirely
-separate** from the cookieless frontend `/api/*` endpoints the dashboard uses —
-those stay unauthenticated and unchanged. This `/api/v1` namespace is for
-external integrations, scripts, and dashboards.
+separate** from the session-cookie-authenticated frontend `/api/*` endpoints the
+dashboard uses (see [Frontend session API](#frontend-session-api--apiauth) for
+those). This `/api/v1` namespace is for external integrations, scripts, and
+dashboards.
 
 The goal is **full UI/API parity**: every action available in the dashboard can
 be driven through `/api/v1`, so an external print-farm manager (Portainer-style)
@@ -428,6 +429,59 @@ curl -H "X-Api-Key: $KEY" "$BASE/admin-credential"
 curl -H "X-Api-Key: $KEY" "$BASE/manager-requests"
 curl -H "X-Api-Key: $KEY" -X POST "$BASE/manager-requests/<id>/approve"
 ```
+
+---
+
+## Frontend session API (`/api/auth/*`)
+
+The dashboard's own `/api/*` surface is authenticated with a **server-side
+session**, not the `/api/v1` API key. A login issues an opaque token stored in an
+HttpOnly, SameSite=Lax cookie (`pf_session`); only its sha256 hash is persisted
+(in the `sessions` table). The cookie is sent automatically on same-origin
+requests, so the SPA does not handle it directly. Authorization is enforced in
+`server/app.js` (`authorizeFrontendApi`) before any frontend route runs.
+
+> **Cookie `Secure` flag:** set only when the request arrives over HTTPS
+> (`X-Forwarded-Proto: https`) or when `SESSION_COOKIE_SECURE=true`. Set that
+> env var once the site is served over TLS.
+
+### Endpoints
+
+| Method | Path | Auth | Body / result |
+| --- | --- | --- | --- |
+| `POST` | `/api/auth/login` | public | `{ username, passwordHash, remember }` → sets cookie, returns `{ user }`. `passwordHash` is sha256 hex of the password (hashed client-side). Rate-limited per IP (8 failures / 15 min → `429` with `Retry-After`). |
+| `POST` | `/api/auth/logout` | public | Destroys the session and clears the cookie. Idempotent. |
+| `GET` | `/api/auth/session` | public | `{ user }` for the current cookie session, or `{ user: null }`. Used to restore auth state on load. |
+| `POST` | `/api/auth/verify` | public | OAuth/SSO grant exchange. On success **also issues a session cookie**. |
+| `POST` | `/api/slicer-grant/verify` | public | Verifies a slicer "Device" grant and issues an **operator** session cookie. |
+| `POST` | `/api/admin/credential` | public (first-run only) | Sets the initial admin password and issues an admin session. Refuses (`409`) once configured. |
+| `PUT` | `/api/admin/credential` | public + current-password proof | Changes the admin password; **revokes all existing admin sessions** and re-issues the caller's. |
+
+Sessions are also revoked server-side when a staff account is deleted, its
+password is reset, or its role changes, so a stale cookie can't outlive the
+change.
+
+### Authorization matrix (frontend `/api/*`)
+
+Reads are public (the dashboard has an anonymous viewer mode) **except** those
+that expose secrets. Mutations are **default-deny**: anything not explicitly
+classified below requires an admin session.
+
+| Class | Who | Examples |
+| --- | --- | --- |
+| **public read** | anyone | `GET /api/printers`, `GET /api/queue`, `GET /api/analytics/daily`, `GET /api/cameras/health`, branding/layout reads |
+| **admin read** | admin only | `GET /api/users`, `GET /api/slicer-keys`, `GET /api/audit-logs`, `GET /api/notifications/*`, `GET /api/manager/requests`, `GET /api/settings/saml` |
+| **public mutation** | anyone | `POST /api/queue/submit` (student intake), `POST /api/manager/request`, the auth endpoints above |
+| **operator** | operator or admin | `POST /api/printers` (create/edit/reorder), `POST /api/printers/:id/command`, `POST /api/queue/:id/printed` |
+| **authed** | any session | `POST /api/audit-logs` (actor is taken from the session, not the body) |
+| **admin** | admin only | `DELETE /api/printers/:id`, `DELETE /api/queue/:id`, `/api/queue/reset`, `/api/analytics/daily/reset`, all `/api/users/*` writes, all `/api/slicer-keys` writes, `/api/notifications/*` writes, `/api/settings/*` writes, manager request approve/deny/delete |
+
+> **Connection-secret redaction:** `GET /api/printers` and `GET /api/printers/:id`
+> return connection fields (`ipAddress`, `apiKeyHeader`, `serial`, `url`) only to
+> an operator/admin session. Anonymous, viewer, and student sessions always get
+> the redacted record, regardless of `VITE_PUBLIC_VIEWER_MODE`.
+
+Denials return `401` (no/expired session) or `403` (insufficient role).
 
 ---
 

@@ -157,6 +157,25 @@ CREATE TABLE IF NOT EXISTS manager_requests (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Server-side login sessions. The browser holds an opaque random token in an
+-- HttpOnly cookie; only its sha256 hash is stored here, so a database leak can
+-- never be replayed as a live session. Identity (username/name/role) is copied
+-- in at issue time so authorization checks need a single indexed lookup and no
+-- join. Rows are deleted on logout, on credential/role change (revocation), and
+-- swept once expired. This is the server-enforced half of auth — the React role
+-- state is presentation only.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  username TEXT NOT NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_ip TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions (expires_at);
 SELECT pg_advisory_unlock(90210);
 `;
 
@@ -264,6 +283,37 @@ export async function listPrinters(forceSensitive = false) {
   `);
 
   return result.rows[0].data;
+}
+
+// Always-redacted printer list for non-privileged (anonymous / viewer / student)
+// callers. Unlike listPrinters(), which only redacts in PUBLIC_VIEWER_MODE, this
+// forces redaction regardless of mode, so connection secrets (IP, API key,
+// serial, url) never reach a session that isn't operator/admin.
+export async function listPrintersRedacted() {
+  await ensureSchema();
+  const result = await query(`
+    SELECT COALESCE(
+      json_agg(
+        ${buildPrinterListSelect(false)}
+        ORDER BY sort_order ASC, created_at DESC
+      ),
+      '[]'::json
+    ) AS data
+    FROM printers;
+  `);
+
+  return result.rows[0].data;
+}
+
+// Always-redacted single-printer read, the per-id counterpart to
+// listPrintersRedacted (used for non-privileged GET /api/printers/:id).
+export async function getRedactedPrinterById(id) {
+  await ensureSchema();
+  const result = await query(
+    `SELECT ${buildPrinterListSelect(false)} AS printer FROM printers WHERE id = $1;`,
+    [id],
+  );
+  return result.rows[0]?.printer ?? null;
 }
 
 export async function getPrinterById(id) {
@@ -586,6 +636,60 @@ export async function upsertQueueJobs(jobs) {
   );
 
   return result.rows[0].data;
+}
+
+// ── Login sessions ───────────────────────────────────────────────────────────
+
+// Store a freshly issued session. `tokenHash` is sha256(token); the plaintext
+// token only ever lives in the client's HttpOnly cookie.
+export async function createSession({ tokenHash, userId, username, name, role, expiresAt, ip }) {
+  await ensureSchema();
+  await query(
+    `INSERT INTO sessions (token_hash, user_id, username, name, role, expires_at, created_ip)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (token_hash) DO NOTHING;`,
+    [tokenHash, userId, username, name, role, expiresAt, ip || null],
+  );
+}
+
+// Resolve a session by token hash, returning the identity row only when it is
+// still valid. Expired rows are treated as absent (and opportunistically
+// deleted) so a stale cookie can never authorize a request.
+export async function getSession(tokenHash) {
+  await ensureSchema();
+  const result = await query(
+    `SELECT token_hash, user_id, username, name, role, expires_at
+     FROM sessions
+     WHERE token_hash = $1 AND expires_at > NOW();`,
+    [tokenHash],
+  );
+  if (result.rows.length === 0) {
+    // Best-effort cleanup of the matching expired row; never blocks the caller.
+    query('DELETE FROM sessions WHERE token_hash = $1 AND expires_at <= NOW();', [tokenHash]).catch(
+      () => {},
+    );
+    return null;
+  }
+  return result.rows[0];
+}
+
+export async function deleteSession(tokenHash) {
+  await ensureSchema();
+  await query('DELETE FROM sessions WHERE token_hash = $1;', [tokenHash]);
+}
+
+// Revoke every live session for a user — used when an account is deleted, its
+// role changes, or its password is reset, so stale cookies can't outlive the
+// change. The primary admin uses the synthetic user id 'admin'.
+export async function deleteSessionsForUser(userId) {
+  await ensureSchema();
+  await query('DELETE FROM sessions WHERE user_id = $1;', [userId]);
+}
+
+export async function deleteExpiredSessions() {
+  await ensureSchema();
+  const result = await query('DELETE FROM sessions WHERE expires_at <= NOW();');
+  return result.rowCount;
 }
 
 async function listQueueJobsByPrintedStatus(printedStatus) {

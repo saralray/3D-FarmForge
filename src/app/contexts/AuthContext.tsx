@@ -9,10 +9,10 @@ import {
 import { logAuditEvent, setAuditActor } from '../lib/auditApi';
 import { verifySlicerGrant } from '../lib/slicerGrantApi';
 import { verifyOAuthGrant } from '../lib/oauthApi';
+import { fetchSession, loginSession, logoutSession } from '../lib/authSessionApi';
 import {
   changeAdminCredential,
   setupAdminCredential,
-  verifyAdminCredential,
 } from '../lib/adminCredentialApi';
 import {
   changeUserPasswordApi,
@@ -20,7 +20,6 @@ import {
   createUserApi,
   deleteUserApi,
   fetchUsers,
-  verifyUser,
 } from '../lib/usersApi';
 
 interface User {
@@ -90,7 +89,7 @@ interface StoredUserRecord extends User {
   passwordHash: string;
 }
 
-type UserRole = 'admin' | 'operator' | 'viewer';
+type UserRole = 'admin' | 'operator' | 'viewer' | 'student';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -367,47 +366,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false;
 
-    const bootstrap = async () => {
-      const loadedUsers = await loadUsers();
-      if (!cancelled) {
-        setUsers(loadedUsers);
+    // Apply a resolved user to state. The server session cookie is the real
+    // authority now; writeStoredSession is only a local mirror that the
+    // cross-tab logout watcher (below) reads. The staff account list is
+    // admin-only on the server, so only load it for an admin.
+    const establish = async (nextUser: User, opts: { audit?: boolean } = {}) => {
+      if (cancelled) {
+        return;
       }
+      setUser(nextUser);
+      setAuditActor(nextUser);
+      writeStoredSession(nextUser, true);
+      if (opts.audit) {
+        logAuditEvent('auth.login', nextUser.username, { role: nextUser.role });
+      }
+      const nextUsers = nextUser.role === 'admin' ? await loadUsers() : [];
+      if (!cancelled) {
+        setUsers(nextUsers);
+        setIsLoading(false);
+      }
+    };
 
-      // A slicer "Device" link can grant operator access, but only once the
-      // server verifies the signed grant token — a forged or stale token is
-      // rejected and the user falls through to a normal session. The token is
-      // stripped from the URL up front regardless of the outcome.
+    const bootstrap = async () => {
+      // A slicer "Device" link grants operator access only once the server
+      // verifies the signed grant token (which also sets the session cookie); a
+      // forged/stale token is rejected. The token is stripped from the URL up
+      // front regardless of outcome.
       const grantToken = takeSlicerGrantToken();
       if (grantToken && (await verifySlicerGrant(grantToken))) {
-        if (!cancelled) {
-          setUser(SLICER_OPERATOR_USER);
-          writeStoredSession(SLICER_OPERATOR_USER);
-          setIsLoading(false);
-        }
+        await establish((await fetchSession()) ?? SLICER_OPERATOR_USER);
         return;
       }
 
       // OAuth (Google / Microsoft) hand-off: the callback redirects back with a
-      // signed grant token. Verify it server-side, then establish a (read-only
-      // `student`) session — mirroring the slicer grant above.
+      // signed grant token. Verifying it server-side also establishes the
+      // session cookie; we then read the canonical user back from the server.
       const oauthGrant = takeOAuthGrantToken();
       if (oauthGrant) {
         const oauthUser = await verifyOAuthGrant(oauthGrant);
-        if (oauthUser && !cancelled) {
-          setUser(oauthUser);
-          writeStoredSession(oauthUser, true);
-          setAuditActor(oauthUser);
-          logAuditEvent('auth.login', oauthUser.username, { role: oauthUser.role });
-          setIsLoading(false);
+        if (oauthUser) {
+          await establish((await fetchSession()) ?? oauthUser, { audit: true });
           return;
         }
       }
 
-      const storedSession = readStoredSession();
-      if (!cancelled) {
-        setUser(storedSession ? storedSession.user : createViewerSession());
-        setIsLoading(false);
-      }
+      // Restore an existing session from the server cookie; fall back to viewer.
+      const sessionUser = await fetchSession();
+      await establish(sessionUser ?? createViewerSession());
     };
 
     bootstrap();
@@ -466,43 +471,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const passwordHash = await hashPassword(trimmedPassword);
 
-    // The admin account is verified against the server-stored credential, not a
-    // client-side hash. (Operators/viewers remain client-side below.)
-    if (normalizedUsername === ADMIN_USERNAME) {
-      const valid = await verifyAdminCredential(passwordHash);
-      if (!valid) {
-        return { success: false, error: 'Invalid credentials.' };
-      }
-      const userData = sanitizeUser(DEFAULT_ADMIN);
-      setUser(userData);
-      writeStoredSession(userData, remember);
-      setAuditActor(userData);
-      logAuditEvent('auth.login', userData.username, { role: userData.role });
-      return { success: true };
-    }
-
-    const foundUser = await verifyUser(normalizedUsername, passwordHash);
-
-    if (foundUser) {
-      const userData = {
-        id: foundUser.id,
-        name: foundUser.name,
-        username: foundUser.username,
-        role: foundUser.role,
+    // Both the admin account and staff accounts authenticate through one
+    // server endpoint, which verifies the credential and sets the HttpOnly
+    // session cookie that actually authorizes subsequent requests. The server
+    // records the auth.login audit entry, so the client does not duplicate it.
+    const result = await loginSession(normalizedUsername, passwordHash, remember);
+    if (!result.ok || !result.user) {
+      return {
+        success: false,
+        error: result.error ?? 'Invalid credentials.',
       };
-      setUser(userData);
-      writeStoredSession(userData, remember);
-      // Attribute the login (and any immediate follow-up action) to this user
-      // right away, ahead of the actor-sync effect that runs after render.
-      setAuditActor(userData);
-      logAuditEvent('auth.login', userData.username, { role: userData.role });
-      return { success: true };
     }
 
-    return {
-      success: false,
-      error: 'Invalid credentials.',
+    const userData: User = {
+      id: result.user.id,
+      name: result.user.name,
+      username: result.user.username,
+      role: result.user.role,
     };
+    setUser(userData);
+    writeStoredSession(userData, remember);
+    // Attribute follow-up actions to this user ahead of the actor-sync effect.
+    setAuditActor(userData);
+    if (userData.role === 'admin') {
+      setUsers(await loadUsers());
+    }
+    return { success: true };
   };
 
   const loginAsViewer = async (): Promise<LoginResult> => {
@@ -778,11 +772,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Log before swapping to the viewer session so the entry is attributed to the
-    // user who is signing out, not the anonymous viewer.
+    // Log before destroying the session so the entry is attributed to the user
+    // signing out (the audit endpoint requires the still-valid session cookie),
+    // not the anonymous viewer.
     if (user && user.role !== 'viewer') {
       logAuditEvent('auth.logout', user.username, { role: user.role });
     }
+
+    // Best-effort server-side session destruction; the client clears its own
+    // state regardless of the network result.
+    void logoutSession();
 
     const viewerUser = createViewerSession();
     setUser(viewerUser);

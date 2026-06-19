@@ -13,9 +13,16 @@ import {
   clearManagerRequestKeySecret,
   createDiscordWebhook,
   createManagerRequest,
+  createSession,
   createSlicerApiKey,
   deleteDiscordWebhook,
+  deleteExpiredSessions,
   deletePrinter,
+  deleteSession,
+  deleteSessionsForUser,
+  getRedactedPrinterById,
+  getSession,
+  listPrintersRedacted,
   deleteQueueJob,
   deleteQueueJobs,
   deleteSlicerApiKey,
@@ -27,7 +34,6 @@ import {
   getManagerRequest,
   getPrinterById,
   getPrinterByIdOrName,
-  getPublicPrinterById,
   getQueueJobFileMeta,
   readQueueJobFileChunk,
   importQueueJobs,
@@ -575,6 +581,282 @@ function getClientIp(req) {
     return forwarded.split(',')[0].trim();
   }
   return req.socket?.remoteAddress || null;
+}
+
+// ── Server-side sessions + RBAC ──────────────────────────────────────────────
+// The frontend /api/* surface used to be entirely unauthenticated: role checks
+// lived only in React state, so anyone who could reach the port could drive every
+// mutation (create/delete printers, cancel prints, mint full-access API keys).
+// These helpers add a real server session (opaque token in an HttpOnly cookie,
+// sha256 stored in the `sessions` table) and a default-deny authorization gate in
+// front of handleApi. The key-gated /api/v1 surface keeps its own auth and is not
+// affected.
+
+const SESSION_COOKIE = 'pf_session';
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const SESSION_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  const out = {};
+  if (typeof header !== 'string') {
+    return out;
+  }
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) {
+      continue;
+    }
+    const key = part.slice(0, eq).trim();
+    if (key) {
+      out[key] = decodeURIComponent(part.slice(eq + 1).trim());
+    }
+  }
+  return out;
+}
+
+// Secure cookies require HTTPS, but the default Compose deployment serves plain
+// http on :8080, where a Secure cookie would silently never be stored (breaking
+// login). So mark Secure only when the request actually arrived over TLS (nginx
+// sets X-Forwarded-Proto) or when explicitly forced. Set SESSION_COOKIE_SECURE=
+// true once the site is behind HTTPS.
+function sessionCookieIsSecure(req) {
+  return (
+    req.headers['x-forwarded-proto'] === 'https' ||
+    process.env.SESSION_COOKIE_SECURE === 'true'
+  );
+}
+
+function buildSessionCookie(req, value, maxAgeSeconds) {
+  // SameSite=Lax (not Strict) so the cookie survives the top-level redirect back
+  // from an OAuth/SAML IdP, while still blocking cross-site POST CSRF.
+  const attrs = [
+    `${SESSION_COOKIE}=${value}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`,
+  ];
+  if (sessionCookieIsSecure(req)) {
+    attrs.push('Secure');
+  }
+  return attrs.join('; ');
+}
+
+async function issueSession(req, res, user, { remember = false } = {}) {
+  const token = randomBytes(32).toString('base64url');
+  const ttl = remember ? SESSION_REMEMBER_TTL_MS : SESSION_TTL_MS;
+  await createSession({
+    tokenHash: hash(token),
+    userId: user.id,
+    username: user.username,
+    name: user.name,
+    role: user.role,
+    expiresAt: new Date(Date.now() + ttl).toISOString(),
+    ip: getClientIp(req),
+  });
+  res.setHeader('Set-Cookie', buildSessionCookie(req, token, Math.floor(ttl / 1000)));
+}
+
+function clearSessionCookie(req, res) {
+  res.setHeader('Set-Cookie', buildSessionCookie(req, '', 0));
+}
+
+// Resolve (and cache on the request) the current session from the cookie.
+// Returns the session row { user_id, username, name, role } or null.
+async function resolveSession(req) {
+  if (req._session !== undefined) {
+    return req._session;
+  }
+  const token = parseCookies(req)[SESSION_COOKIE];
+  let session = null;
+  if (token) {
+    try {
+      session = await getSession(hash(token));
+    } catch {
+      session = null;
+    }
+  }
+  req._session = session;
+  return session;
+}
+
+function sessionRole(session) {
+  return session ? session.role : null;
+}
+
+function isPrivilegedRole(role) {
+  return role === 'admin' || role === 'operator';
+}
+
+// In-memory login throttle (per client IP). A single web process today, so a Map
+// is enough; when the web tier is scaled to multiple instances this must move to
+// Redis (one shared counter) — see the architecture review's rate-limit note.
+const LOGIN_ATTEMPTS = new Map();
+const LOGIN_MAX_FAILURES = 8;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+
+function checkLoginRate(key, now = Date.now()) {
+  const entry = LOGIN_ATTEMPTS.get(key);
+  if (!entry || now >= entry.resetAt) {
+    return { allowed: true };
+  }
+  if (entry.count >= LOGIN_MAX_FAILURES) {
+    return { allowed: false, retryAfterMs: entry.resetAt - now };
+  }
+  return { allowed: true };
+}
+
+function recordLoginFailure(key, now = Date.now()) {
+  const entry = LOGIN_ATTEMPTS.get(key);
+  if (!entry || now >= entry.resetAt) {
+    LOGIN_ATTEMPTS.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    return;
+  }
+  entry.count += 1;
+}
+
+function clearLoginAttempts(key) {
+  LOGIN_ATTEMPTS.delete(key);
+}
+
+// ── Authorization matrix for the frontend /api/* surface ─────────────────────
+// Reads stay public (the dashboard has an anonymous viewer mode) except for the
+// handful that expose secrets. Mutations are default-deny: anything not
+// explicitly classified as public or operator-level requires an admin session.
+
+const PUBLIC_API_MUTATIONS = new Set([
+  'POST /api/auth/login',
+  'POST /api/auth/logout',
+  'POST /api/auth/verify', // OAuth grant exchange
+  'POST /api/auth/saml/acs', // SAML assertion consumer
+  'POST /api/slicer-grant/verify',
+  'POST /api/admin/credential/verify',
+  'POST /api/users/verify',
+  'POST /api/manager/request', // external manager requests an access key
+  'POST /api/queue/submit', // public student print-request intake
+]);
+
+// GET/HEAD endpoints that must NOT be world-readable because they expose
+// credentials, account lists, audit trails, or IdP config.
+function isSensitiveRead(pathname) {
+  if (pathname === '/api/users' || (pathname.startsWith('/api/users/') && pathname !== '/api/users/verify')) {
+    return true;
+  }
+  if (pathname === '/api/slicer-keys' || pathname.startsWith('/api/slicer-keys/')) {
+    return true;
+  }
+  if (pathname === '/api/audit-logs') {
+    return true;
+  }
+  if (pathname.startsWith('/api/notifications/')) {
+    return true; // Discord webhook URLs are secrets
+  }
+  if (pathname === '/api/manager/requests') {
+    return true;
+  }
+  if (pathname.startsWith('/api/manager/requests/') && !pathname.endsWith('/status')) {
+    return true;
+  }
+  if (pathname === '/api/settings/saml') {
+    return true; // may carry IdP signing config
+  }
+  return false;
+}
+
+function isAdminMutation(method, pathname) {
+  if (pathname === '/api/users' && method === 'POST') return true;
+  if (pathname.startsWith('/api/users/') && pathname !== '/api/users/verify') return true;
+  if (pathname === '/api/slicer-keys' && method === 'POST') return true;
+  if (pathname.startsWith('/api/slicer-keys/') && method === 'DELETE') return true;
+  if (pathname === '/api/admin/credential' && method === 'PUT') return true;
+  if (pathname.startsWith('/api/notifications/')) return true;
+  if (pathname === '/api/settings/saml' || pathname === '/api/settings/saml/test') return true;
+  if (pathname.startsWith('/api/settings/') && method !== 'GET') return true;
+  if (pathname === '/api/analytics/daily/reset') return true;
+  if (pathname === '/api/queue/reset') return true;
+  if (pathname.startsWith('/api/queue/') && method === 'DELETE') return true;
+  if (pathname.startsWith('/api/printers/') && method === 'DELETE') return true;
+  if (pathname.startsWith('/api/manager/requests/') && !pathname.endsWith('/status')) return true;
+  return false;
+}
+
+// Operator-or-admin writes: live print control and queue progress. Printer
+// create/edit/reorder shares one upsert endpoint that operators also use to
+// reorder the dashboard, so it stays here rather than admin-only.
+function isOperatorMutation(method, pathname) {
+  if (pathname === '/api/printers' && method === 'POST') return true;
+  if (pathname.startsWith('/api/printers/') && pathname.endsWith('/command') && method === 'POST') return true;
+  if (pathname.startsWith('/api/queue/') && pathname.endsWith('/printed') && method === 'POST') return true;
+  if (pathname === '/api/queue' && method === 'POST') return true;
+  return false;
+}
+
+// Returns the access class for a frontend API request:
+//   'public'   — no session required
+//   'authed'   — any valid session
+//   'operator' — operator or admin session
+//   'admin'    — admin session only
+function classifyApiRequest(method, pathname) {
+  if (method === 'OPTIONS') {
+    return 'public';
+  }
+  if (method === 'GET' || method === 'HEAD') {
+    return isSensitiveRead(pathname) ? 'admin' : 'public';
+  }
+  // Mutations
+  if (PUBLIC_API_MUTATIONS.has(`${method} ${pathname}`)) {
+    return 'public';
+  }
+  // First-run admin password setup is open, but the handler refuses (409) once a
+  // credential exists, so it can't be reused to hijack the account.
+  if (method === 'POST' && pathname === '/api/admin/credential') {
+    return 'public';
+  }
+  if (pathname === '/api/audit-logs' && method === 'POST') {
+    return 'authed';
+  }
+  if (isOperatorMutation(method, pathname)) {
+    return 'operator';
+  }
+  if (isAdminMutation(method, pathname)) {
+    return 'admin';
+  }
+  // Default-deny: any unclassified mutation requires admin.
+  return 'admin';
+}
+
+// Authorization gate run at the top of handleApi. Resolves the session and
+// enforces the class from classifyApiRequest. On denial it writes the response
+// and returns false; on success it returns true and the route ladder proceeds.
+async function authorizeFrontendApi(req, res, requestUrl) {
+  const { pathname } = requestUrl;
+  // Only the cookie-authenticated frontend surface is gated here. The key-gated
+  // /api/v1 data API authenticates itself in handleDataApi.
+  if (!pathname.startsWith('/api/') || pathname === '/api/v1' || pathname.startsWith('/api/v1/')) {
+    return true;
+  }
+
+  const klass = classifyApiRequest(req.method || 'GET', pathname);
+  if (klass === 'public') {
+    return true;
+  }
+
+  const session = await resolveSession(req);
+  if (!session) {
+    sendJson(res, 401, { error: 'Authentication required.' });
+    return false;
+  }
+  const role = sessionRole(session);
+  if (klass === 'admin' && role !== 'admin') {
+    sendJson(res, 403, { error: 'Administrator access required.' });
+    return false;
+  }
+  if (klass === 'operator' && !isPrivilegedRole(role)) {
+    sendJson(res, 403, { error: 'Operator access required.' });
+    return false;
+  }
+  return true;
 }
 
 function setSecurityHeaders(res) {
@@ -2128,6 +2410,13 @@ async function handleApi(req, res, requestUrl) {
     return true;
   }
 
+  // Server-side authorization gate. Runs before any frontend /api/* route so an
+  // unauthenticated or under-privileged caller can no longer drive mutations the
+  // React UI merely hides. Denied requests are answered here (401/403).
+  if (!(await authorizeFrontendApi(req, res, requestUrl))) {
+    return true;
+  }
+
   // Manager access request endpoints ──────────────────────────────────────────
   // POST /api/manager/request        — public; create a pending access request.
   // GET  /api/manager/requests        — admin frontend; list all requests.
@@ -2275,7 +2564,11 @@ async function handleApi(req, res, requestUrl) {
 
   if (requestUrl.pathname === '/api/printers') {
     if (req.method === 'GET') {
-      sendJson(res, 200, await listPrinters());
+      // Connection secrets (IP, API key, serial, url) only go to an operator/
+      // admin session; anonymous/viewer/student callers always get the redacted
+      // list, regardless of PUBLIC_VIEWER_MODE.
+      const privileged = isPrivilegedRole(sessionRole(await resolveSession(req)));
+      sendJson(res, 200, privileged ? await listPrinters(true) : await listPrintersRedacted());
       return true;
     }
     if (req.method === 'POST') {
@@ -2345,7 +2638,10 @@ async function handleApi(req, res, requestUrl) {
   // public viewer mode, exactly like the list endpoint.
   if (requestUrl.pathname.startsWith('/api/printers/') && req.method === 'GET') {
     const id = decodeURIComponent(requestUrl.pathname.slice('/api/printers/'.length));
-    const printer = await getPublicPrinterById(id);
+    // Full record (with connection secrets) only for an operator/admin session;
+    // everyone else gets the redacted view.
+    const privileged = isPrivilegedRole(sessionRole(await resolveSession(req)));
+    const printer = privileged ? await getPrinterById(id) : await getRedactedPrinterById(id);
     if (!printer) {
       sendJson(res, 404, { error: 'Printer not found' });
       return true;
@@ -2559,6 +2855,14 @@ async function handleApi(req, res, requestUrl) {
       sendJson(res, 401, { error: 'Invalid or expired slicer grant' });
       return true;
     }
+    // A verified slicer "Device" hand-off grants an operator session (pause/
+    // resume/cancel), backed by the same cookie gate as a normal login.
+    await issueSession(
+      req,
+      res,
+      { id: 'slicer-operator', name: 'Slicer Operator', username: 'slicer-operator', role: 'operator' },
+      { remember: false },
+    );
     sendJson(res, 200, { printerId: grant.printerId });
     return true;
   }
@@ -2805,6 +3109,105 @@ async function handleApi(req, res, requestUrl) {
     return true;
   }
 
+  // Username/password login → server session. Verifies against the admin
+  // bootstrap credential or a staff account (same sha256-hash credential format
+  // as before), then issues an HttpOnly session cookie. This is what actually
+  // authorizes subsequent mutations; the client role state is presentation only.
+  if (requestUrl.pathname === '/api/auth/login' && req.method === 'POST') {
+    const rateKey = getClientIp(req) || 'unknown';
+    const rate = checkLoginRate(rateKey);
+    if (!rate.allowed) {
+      res.setHeader('Retry-After', String(Math.ceil(rate.retryAfterMs / 1000)));
+      sendJson(res, 429, {
+        error: 'Too many failed attempts. Please wait and try again.',
+        retryAfterMs: rate.retryAfterMs,
+      });
+      return true;
+    }
+
+    const body = await readJsonBody(req);
+    const username = typeof body?.username === 'string' ? body.username.trim().toLowerCase() : '';
+    const passwordHash = body?.passwordHash;
+    const remember = Boolean(body?.remember);
+
+    if (!username || !isSha256Hex(passwordHash)) {
+      recordLoginFailure(rateKey);
+      sendJson(res, 401, { error: 'Invalid credentials.' });
+      return true;
+    }
+
+    let user = null;
+    if (username === RESERVED_USERNAME) {
+      const stored = await getAppSetting(ADMIN_CREDENTIAL_KEY);
+      const storedHash = stored && typeof stored.passwordHash === 'string' ? stored.passwordHash : '';
+      if (storedHash && timingSafeEqualString(storedHash, passwordHash.toLowerCase())) {
+        user = { id: 'admin', name: 'Print Farm Admin', username: 'admin', role: 'admin' };
+      }
+    } else {
+      const usersList = await readStaffUsers();
+      const found = usersList.find(
+        (candidate) =>
+          candidate.username === username &&
+          timingSafeEqualString(String(candidate.passwordHash || ''), passwordHash.toLowerCase()),
+      );
+      if (found) {
+        user = sanitizeStaffUser(found);
+      }
+    }
+
+    if (!user) {
+      recordLoginFailure(rateKey);
+      sendJson(res, 401, { error: 'Invalid credentials.' });
+      return true;
+    }
+
+    clearLoginAttempts(rateKey);
+    await issueSession(req, res, user, { remember });
+    await recordAuditLog({
+      actorName: user.name,
+      actorUsername: user.username,
+      actorRole: user.role,
+      action: 'auth.login',
+      source: 'web',
+      ip: getClientIp(req),
+    }).catch(() => {});
+    sendJson(res, 200, { user });
+    return true;
+  }
+
+  // Destroy the current session and clear the cookie. Idempotent.
+  if (requestUrl.pathname === '/api/auth/logout' && req.method === 'POST') {
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (token) {
+      await deleteSession(hash(token)).catch(() => {});
+    }
+    clearSessionCookie(req, res);
+    sendEmpty(res);
+    return true;
+  }
+
+  // Who am I? Returns the session's user (or null) so the SPA can restore auth
+  // state on load from the cookie rather than trusting client-held state.
+  if (requestUrl.pathname === '/api/auth/session' && req.method === 'GET') {
+    const session = await resolveSession(req);
+    sendJson(
+      res,
+      200,
+      {
+        user: session
+          ? {
+              id: session.user_id,
+              name: session.name,
+              username: session.username,
+              role: session.role,
+            }
+          : null,
+      },
+      'no-store',
+    );
+    return true;
+  }
+
   if (requestUrl.pathname === '/api/auth/verify' && req.method === 'POST') {
     const secret = await getOAuthSigningSecret();
     const { token } = await readJsonBody(req);
@@ -2813,14 +3216,16 @@ async function handleApi(req, res, requestUrl) {
       sendJson(res, 401, { error: 'Invalid or expired sign-in' });
       return true;
     }
-    sendJson(res, 200, {
-      user: {
-        id: `${grant.provider}:${grant.sub}`,
-        name: grant.name,
-        username: grant.email,
-        role: grant.role,
-      },
-    });
+    const user = {
+      id: `${grant.provider}:${grant.sub}`,
+      name: grant.name,
+      username: grant.email,
+      role: grant.role,
+    };
+    // The OAuth/SSO hand-off establishes a real server session too, so the
+    // resulting (typically read-only) browser is gated by the same cookie.
+    await issueSession(req, res, user, { remember: true });
+    sendJson(res, 200, { user });
     return true;
   }
 
@@ -2854,6 +3259,13 @@ async function handleApi(req, res, requestUrl) {
         return true;
       }
       await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: passwordHash.toLowerCase() });
+      // First-run setup signs the admin in immediately (matches the client flow).
+      await issueSession(
+        req,
+        res,
+        { id: 'admin', name: 'Print Farm Admin', username: 'admin', role: 'admin' },
+        { remember: false },
+      );
       sendEmpty(res, 201);
       return true;
     }
@@ -2875,6 +3287,15 @@ async function handleApi(req, res, requestUrl) {
         return true;
       }
       await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: newPasswordHash.toLowerCase() });
+      // Revoke every existing admin session except the caller's, then re-issue a
+      // fresh cookie so the password change instantly invalidates stale sessions.
+      await deleteSessionsForUser('admin').catch(() => {});
+      await issueSession(
+        req,
+        res,
+        { id: 'admin', name: 'Print Farm Admin', username: 'admin', role: 'admin' },
+        { remember: false },
+      );
       sendEmpty(res);
       return true;
     }
@@ -3003,6 +3424,8 @@ async function handleApi(req, res, requestUrl) {
         STAFF_USERS_KEY,
         usersList.filter((candidate) => candidate.id !== userId),
       );
+      // Revoke the removed account's live sessions immediately.
+      await deleteSessionsForUser(userId).catch(() => {});
       sendEmpty(res);
       return true;
     }
@@ -3022,6 +3445,8 @@ async function handleApi(req, res, requestUrl) {
       const nextUsers = [...usersList];
       nextUsers[index] = { ...nextUsers[index], passwordHash: passwordHash.toLowerCase() };
       await setAppSetting(STAFF_USERS_KEY, nextUsers);
+      // A password change invalidates the account's existing sessions.
+      await deleteSessionsForUser(userId).catch(() => {});
       sendEmpty(res);
       return true;
     }
@@ -3042,6 +3467,9 @@ async function handleApi(req, res, requestUrl) {
       const nextUsers = [...usersList];
       nextUsers[index] = { ...nextUsers[index], role };
       await setAppSetting(STAFF_USERS_KEY, nextUsers);
+      // Revoke existing sessions so the new role takes effect on next sign-in
+      // rather than letting a stale cookie keep the old privileges.
+      await deleteSessionsForUser(userId).catch(() => {});
       sendJson(res, 200, sanitizeStaffUser(nextUsers[index]));
       return true;
     }
@@ -3062,11 +3490,14 @@ async function handleApi(req, res, requestUrl) {
         sendJson(res, 400, { error: 'action is required' });
         return true;
       }
-      const actor = body.actor && typeof body.actor === 'object' ? body.actor : {};
+      // The actor is taken from the server session, never from the request body,
+      // so an audit entry can't be attributed to someone else. This route is
+      // classified 'authed', so a session is guaranteed present here.
+      const session = await resolveSession(req);
       await recordAuditLog({
-        actorName: typeof actor.name === 'string' ? actor.name : null,
-        actorUsername: typeof actor.username === 'string' ? actor.username : null,
-        actorRole: typeof actor.role === 'string' ? actor.role : null,
+        actorName: session ? session.name : null,
+        actorUsername: session ? session.username : null,
+        actorRole: session ? session.role : null,
         action: body.action,
         target: typeof body.target === 'string' ? body.target : null,
         details: body.details ?? null,
@@ -3669,6 +4100,14 @@ await assertProductionInputs();
 ensureSchema().catch((error) => {
   console.error('Initial schema setup failed; will retry on first database request', error);
 });
+
+// Periodically sweep expired login sessions so the table doesn't accumulate dead
+// rows (getSession already ignores expired rows, so this is pure housekeeping).
+setInterval(() => {
+  deleteExpiredSessions().catch((error) => {
+    console.error('Expired-session sweep failed', error);
+  });
+}, 60 * 60 * 1000).unref();
 
 createServer(handleRequest).listen(port, host, () => {
   console.log(`Print Farm server listening on ${host}:${port}`);

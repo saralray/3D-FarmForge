@@ -30,6 +30,8 @@ services:
       MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
       # Shared with slicer-proxy: verifies the signed slicer operator-grant token.
       SLICER_GRANT_SECRET: ${SLICER_GRANT_SECRET:-}
+      # Mark the login session cookie Secure (set true once served over HTTPS).
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       # Max size of a model file uploaded through the in-app print-request form
       # (stored in Postgres). The nginx /api/queue/submit body cap should match.
       QUEUE_UPLOAD_MAX_BYTES: ${QUEUE_UPLOAD_MAX_BYTES:-52428800}
