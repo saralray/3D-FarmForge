@@ -19,6 +19,7 @@ import {
   deleteDiscordWebhook,
   deleteExpiredSessions,
   deletePrinter,
+  encryptPlaintextPrinterSecrets,
   deleteSession,
   deleteSessionsForUser,
   getRedactedPrinterById,
@@ -4196,9 +4197,19 @@ await assertProductionInputs();
 // Ensure the schema proactively, but do not block startup on the database:
 // the SPA must still be served (and the liveness probe stay green) if the
 // database is briefly unavailable. Query paths also call ensureSchema lazily.
-ensureSchema().catch((error) => {
-  console.error('Initial schema setup failed; will retry on first database request', error);
-});
+ensureSchema()
+  .then(() =>
+    // Encrypt any printer secrets still stored in plaintext now that a key is set
+    // (no-op when PRINTER_SECRET_KEY is unset or every row is already encrypted).
+    encryptPlaintextPrinterSecrets().then((count) => {
+      if (count > 0) {
+        console.log(`Encrypted ${count} plaintext printer secret(s) at rest`);
+      }
+    }),
+  )
+  .catch((error) => {
+    console.error('Initial schema setup failed; will retry on first database request', error);
+  });
 
 // Periodically sweep expired login sessions so the table doesn't accumulate dead
 // rows (getSession already ignores expired rows, so this is pure housekeeping).

@@ -32,6 +32,9 @@ services:
       SLICER_GRANT_SECRET: ${SLICER_GRANT_SECRET:-}
       # Mark the login session cookie Secure (set true once served over HTTPS).
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      # Encrypts printer connection secrets (LAN access codes) at rest. Must be
+      # identical across web, slicer-proxy and poller. Empty = stored plaintext.
+      PRINTER_SECRET_KEY: ${PRINTER_SECRET_KEY:-}
       # Max size of a model file uploaded through the in-app print-request form
       # (stored in Postgres). The nginx /api/queue/submit body cap should match.
       QUEUE_UPLOAD_MAX_BYTES: ${QUEUE_UPLOAD_MAX_BYTES:-52428800}
@@ -75,6 +78,8 @@ services:
       PRINTER_POLL_INTERVAL_MS: ${PRINTER_POLL_INTERVAL_MS:-2000}
       PRINTER_REQUEST_TIMEOUT_MS: ${PRINTER_REQUEST_TIMEOUT_MS:-3000}
       PRINTER_OFFLINE_GRACE_SECONDS: ${PRINTER_OFFLINE_GRACE_SECONDS:-30}
+      # Must match the web service: used to decrypt printer secrets read from the DB.
+      PRINTER_SECRET_KEY: ${PRINTER_SECRET_KEY:-}
       # Bambu cameras aren't plain HTTP, so the poller grabs their Discord-snapshot
       # frames from the web service's /__printer_webcam/<id>/snapshot.jpg endpoint
       # over the internal network (it speaks the port-6000 / RTSP camera protocols).
@@ -102,6 +107,9 @@ services:
       # Shared with web: signs the slicer operator-grant token the device-tab
       # redirect carries. Must match the web service's value exactly.
       SLICER_GRANT_SECRET: ${SLICER_GRANT_SECRET:-}
+      # Must match the web service: decrypts the printer secret read from the DB
+      # before dispatching the upload to the printer hardware.
+      PRINTER_SECRET_KEY: ${PRINTER_SECRET_KEY:-}
 
   # Read-only Prometheus exporter: exposes the PostgreSQL print-farm data as
   # metrics on :9180/metrics. Not published to the host — Prometheus scrapes it

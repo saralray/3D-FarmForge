@@ -1,6 +1,19 @@
 import pg from 'pg';
+import { decryptSecret, encryptSecret, isEncryptionEnabled } from './secretCrypto.js';
 
 const { Pool } = pg;
+
+// Printer connection secrets (the api_key_header LAN access code / API key) are
+// encrypted at rest. SQL reads return the stored value; we decrypt it on the JS
+// object before handing it to a caller, and encrypt it on the write path. When
+// PRINTER_SECRET_KEY is unset these are no-ops (plaintext passthrough), so an
+// existing deployment is unaffected until a key is provisioned.
+function decryptPrinterSecrets(printer) {
+  if (printer && typeof printer.apiKeyHeader === 'string' && printer.apiKeyHeader) {
+    printer.apiKeyHeader = decryptSecret(printer.apiKeyHeader);
+  }
+  return printer;
+}
 
 const SCHEMA_SQL = `
 SELECT pg_advisory_lock(90210);
@@ -282,7 +295,12 @@ export async function listPrinters(forceSensitive = false) {
     FROM printers;
   `);
 
-  return result.rows[0].data;
+  const printers = result.rows[0].data;
+  // Redacted lists carry '' for apiKeyHeader, so decrypt is a no-op there.
+  if (includeSensitive && Array.isArray(printers)) {
+    printers.forEach(decryptPrinterSecrets);
+  }
+  return printers;
 }
 
 // Always-redacted printer list for non-privileged (anonymous / viewer / student)
@@ -357,7 +375,7 @@ export async function getPrinterById(id) {
     [id],
   );
 
-  return result.rows[0]?.printer ?? null;
+  return decryptPrinterSecrets(result.rows[0]?.printer ?? null);
 }
 
 // Resolve a printer by its id or, failing that, its (case-insensitive) name —
@@ -393,11 +411,16 @@ export async function getPublicPrinterById(id) {
     [id],
   );
 
-  return result.rows[0]?.printer ?? null;
+  const printer = result.rows[0]?.printer ?? null;
+  return includeSensitive ? decryptPrinterSecrets(printer) : printer;
 }
 
 export async function upsertPrinter(printer) {
   await ensureSchema();
+
+  // Encrypt the connection secret at rest (no-op when PRINTER_SECRET_KEY is
+  // unset). Copy rather than mutate the caller's object.
+  const stored = { ...printer, apiKeyHeader: encryptSecret(printer.apiKeyHeader) };
 
   await query(
     `
@@ -466,13 +489,36 @@ export async function upsertPrinter(printer) {
       serial = EXCLUDED.serial,
       last_maintenance = EXCLUDED.last_maintenance;
   `,
-    [JSON.stringify(printer)],
+    [JSON.stringify(stored)],
   );
 }
 
 export async function deletePrinter(id) {
   await ensureSchema();
   await query('DELETE FROM printers WHERE id = $1;', [id]);
+}
+
+// One-time migration: encrypt any printer api_key_header still stored in
+// plaintext, once a PRINTER_SECRET_KEY is configured. No-op when encryption is
+// disabled or every row is already encrypted, so it is safe to run on every boot.
+// (The poller would also re-encrypt each row on its next write, but this covers a
+// web-only deployment and closes the window immediately.) Returns the row count.
+export async function encryptPlaintextPrinterSecrets() {
+  await ensureSchema();
+  if (!isEncryptionEnabled()) {
+    return 0;
+  }
+  const result = await query(
+    `SELECT id, api_key_header FROM printers
+     WHERE api_key_header <> '' AND api_key_header NOT LIKE 'enc:v1:%';`,
+  );
+  for (const row of result.rows) {
+    await query('UPDATE printers SET api_key_header = $2 WHERE id = $1;', [
+      row.id,
+      encryptSecret(row.api_key_header),
+    ]);
+  }
+  return result.rows.length;
 }
 
 export async function listDailyAnalytics(days = 7) {

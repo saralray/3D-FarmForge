@@ -1,5 +1,7 @@
+import base64
 import calendar
 import ftplib
+import hashlib
 import json
 import os
 import re
@@ -16,6 +18,7 @@ from urllib.parse import quote
 import paho.mqtt.client as mqtt
 import psycopg
 import requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 POLL_INTERVAL_SECONDS = max(int(os.getenv("PRINTER_POLL_INTERVAL_MS", "5000")) / 1000, 1)
 REQUEST_TIMEOUT_SECONDS = max(int(os.getenv("PRINTER_REQUEST_TIMEOUT_MS", "3000")) / 1000, 1)
@@ -175,6 +178,69 @@ def ensure_schema(conn: psycopg.Connection) -> None:
     conn.commit()
 
 
+# ── Printer secret encryption at rest ────────────────────────────────────────
+# The api_key_header (a printer's LAN access code / API key) is encrypted at rest
+# with AES-256-GCM, sharing the PRINTER_SECRET_KEY env var and the
+# enc:v1:<iv>:<ciphertext>:<tag> (all base64) format with the Node services
+# (server/secretCrypto.js) — a value written by either side decrypts on the
+# other. When PRINTER_SECRET_KEY is unset, encryption is disabled and values pass
+# through as plaintext, so an existing deployment is unaffected until a key is
+# provisioned. All three services (web, slicer-proxy, poller) must share the key.
+_SECRET_ENC_PREFIX = "enc:v1:"
+
+
+def _load_secret_key() -> bytes | None:
+    raw = (os.getenv("PRINTER_SECRET_KEY") or "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"[0-9a-fA-F]{64}", raw):
+        return bytes.fromhex(raw)
+    try:
+        decoded = base64.b64decode(raw, validate=True)
+        if len(decoded) == 32:
+            return decoded
+    except Exception:
+        pass
+    return hashlib.sha256(raw.encode("utf-8")).digest()
+
+
+_SECRET_KEY = _load_secret_key()
+
+
+def encrypt_secret(plain: Any) -> Any:
+    if (
+        not isinstance(plain, str)
+        or plain == ""
+        or _SECRET_KEY is None
+        or plain.startswith(_SECRET_ENC_PREFIX)
+    ):
+        return plain
+    iv = os.urandom(12)
+    # AESGCM.encrypt returns ciphertext||tag (16-byte tag last); split to match the
+    # Node layout, which stores ciphertext and tag separately.
+    combined = AESGCM(_SECRET_KEY).encrypt(iv, plain.encode("utf-8"), None)
+    ciphertext, tag = combined[:-16], combined[-16:]
+    return _SECRET_ENC_PREFIX + ":".join(
+        base64.b64encode(part).decode("ascii") for part in (iv, ciphertext, tag)
+    )
+
+
+def decrypt_secret(stored: Any) -> Any:
+    if not isinstance(stored, str) or not stored.startswith(_SECRET_ENC_PREFIX):
+        return stored  # plaintext (pre-encryption row, or encryption disabled)
+    if _SECRET_KEY is None:
+        return ""  # encrypted at rest but no key to recover it
+    parts = stored[len(_SECRET_ENC_PREFIX):].split(":")
+    if len(parts) != 3:
+        return ""
+    try:
+        iv, ciphertext, tag = (base64.b64decode(p) for p in parts)
+        plaintext = AESGCM(_SECRET_KEY).decrypt(iv, ciphertext + tag, None)
+        return plaintext.decode("utf-8")
+    except Exception:
+        return ""
+
+
 def list_printers(conn: psycopg.Connection) -> list[dict[str, Any]]:
     with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
         cur.execute(
@@ -209,7 +275,12 @@ def list_printers(conn: psycopg.Connection) -> list[dict[str, Any]]:
             ORDER BY sort_order ASC, created_at DESC
             """
         )
-        return list(cur.fetchall())
+        rows = list(cur.fetchall())
+        # Decrypt the connection secret so MQTT/FTP/camera auth uses plaintext.
+        for row in rows:
+            if row.get("apiKeyHeader"):
+                row["apiKeyHeader"] = decrypt_secret(row["apiKeyHeader"])
+        return rows
 
 
 def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
@@ -309,7 +380,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
                 "profile": printer["profile"],
                 "url": printer["url"],
                 "ipAddress": printer["ipAddress"],
-                "apiKeyHeader": printer.get("apiKeyHeader", ""),
+                "apiKeyHeader": encrypt_secret(printer.get("apiKeyHeader", "")),
                 "serial": printer.get("serial"),
                 "status": printer["status"],
                 "temperature_nozzle": printer.get("temperature", {}).get("nozzle", 0),
