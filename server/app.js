@@ -63,6 +63,7 @@ import {
   isRedisEnabled,
   redisDel,
   redisGet,
+  redisHGetAll,
   redisIncrWithTtl,
   redisSet,
   redisTtl,
@@ -857,6 +858,52 @@ async function revokeCachedUserSessions(userId) {
       Math.floor(SESSION_REMEMBER_TTL_MS / 1000),
     );
   }
+}
+
+// ── Optional Redis live-telemetry overlay ────────────────────────────────────
+// The poller mirrors each printer's volatile telemetry to a Redis hash
+// (printer:<id>:live) every cycle. When Redis is enabled, printer reads overlay
+// those hot values onto the Postgres row, offloading dashboard reads from PG and
+// decoupling read freshness from write frequency. Postgres is written on change
+// (and on the safety interval) so it stays fresh too — if Redis is missing the
+// hash (off / down / a dead poller's TTL lapsed) reads simply use the PG values,
+// with no added staleness. Only volatile, non-secret fields are mirrored, so this
+// can never reintroduce a connection secret into a redacted/public response.
+const LIVE_TELEMETRY_FIELDS = [
+  'status', 'progress', 'totalPrintTime', 'successRate', 'bedTarget',
+  'chamberTarget', 'lightOn', 'airFilterOn', 'offlineSince', 'temperature',
+  'currentJob', 'nozzleTemperatures', 'nozzleTargets', 'spools', 'fanSpeeds',
+];
+
+async function overlayLiveTelemetry(printer) {
+  if (!isRedisEnabled() || !printer || !printer.id) {
+    return printer;
+  }
+  const live = await redisHGetAll(`printer:${printer.id}:live`);
+  if (!live) {
+    return printer;
+  }
+  for (const field of LIVE_TELEMETRY_FIELDS) {
+    if (live[field] === undefined) {
+      continue;
+    }
+    // The poller stores strings raw and everything else JSON-encoded, so parse
+    // and fall back to the raw value for plain strings (status, offlineSince…).
+    try {
+      printer[field] = JSON.parse(live[field]);
+    } catch {
+      printer[field] = live[field];
+    }
+  }
+  return printer;
+}
+
+async function overlayLiveTelemetryAll(printers) {
+  if (!isRedisEnabled() || !Array.isArray(printers)) {
+    return printers;
+  }
+  await Promise.all(printers.map((printer) => overlayLiveTelemetry(printer)));
+  return printers;
 }
 
 // Resolve (and cache on the request) the current session from the cookie.
@@ -1964,7 +2011,7 @@ async function handleDataApiPrinters(req, res, { apiKey, method, id, sub, action
       // Data API is key-gated, so connection details (url, ip, api key, serial —
       // needed to reach each printer's hardware/webcam) are NOT redacted, even in
       // public viewer mode. This matches the single-printer getPrinterById read.
-      sendJson(res, 200, await listPrinters(true));
+      sendJson(res, 200, await overlayLiveTelemetryAll(await listPrinters(true)));
       return true;
     }
     if (method === 'POST') {
@@ -2083,7 +2130,7 @@ async function handleDataApiPrinters(req, res, { apiKey, method, id, sub, action
       sendJson(res, 404, { error: 'Printer not found' });
       return true;
     }
-    sendJson(res, 200, printer);
+    sendJson(res, 200, await overlayLiveTelemetry(printer));
     return true;
   }
   if (method === 'DELETE') {
@@ -2792,7 +2839,8 @@ async function handleApi(req, res, requestUrl) {
       // admin session; anonymous/viewer/student callers always get the redacted
       // list, regardless of PUBLIC_VIEWER_MODE.
       const privileged = isPrivilegedRole(sessionRole(await resolveSession(req)));
-      sendJson(res, 200, privileged ? await listPrinters(true) : await listPrintersRedacted());
+      const printers = privileged ? await listPrinters(true) : await listPrintersRedacted();
+      sendJson(res, 200, await overlayLiveTelemetryAll(printers));
       return true;
     }
     if (req.method === 'POST') {
@@ -2870,7 +2918,7 @@ async function handleApi(req, res, requestUrl) {
       sendJson(res, 404, { error: 'Printer not found' });
       return true;
     }
-    sendJson(res, 200, printer);
+    sendJson(res, 200, await overlayLiveTelemetry(printer));
     return true;
   }
 

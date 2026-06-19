@@ -20,6 +20,8 @@ import psycopg
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from redis_client import is_redis_enabled, publish_printer_telemetry
+
 POLL_INTERVAL_SECONDS = max(int(os.getenv("PRINTER_POLL_INTERVAL_MS", "5000")) / 1000, 1)
 REQUEST_TIMEOUT_SECONDS = max(int(os.getenv("PRINTER_REQUEST_TIMEOUT_MS", "3000")) / 1000, 1)
 OFFLINE_GRACE_SECONDS = max(int(os.getenv("PRINTER_OFFLINE_GRACE_SECONDS", "30")), 0)
@@ -2239,6 +2241,31 @@ _PERSIST_OBJECT_FIELDS = (
 )
 
 
+# Live, non-secret telemetry mirrored to Redis (printer:<id>:live) each cycle so
+# the web tier can read hot printer state without hitting Postgres on every
+# request. Connection secrets (url, ipAddress, apiKeyHeader, serial) and static
+# config (name, model, profile, sortOrder, lastMaintenance) are deliberately
+# excluded — only volatile state belongs in the cache.
+_TELEMETRY_FIELDS = (
+    "status", "progress", "totalPrintTime", "successRate", "bedTarget",
+    "chamberTarget", "lightOn", "airFilterOn", "offlineSince", "temperature",
+    "currentJob", "nozzleTemperatures", "nozzleTargets", "spools", "fanSpeeds",
+)
+# Outlive a few missed cycles (poller hiccup) but let a dead poller's state expire
+# so reads fall back to Postgres rather than serving frozen data forever.
+_TELEMETRY_TTL_SECONDS = max(int(POLL_INTERVAL_SECONDS) * 10, 60)
+
+
+def publish_live_telemetry(printer_id: str, printer: dict[str, Any]) -> None:
+    """Best-effort mirror of one printer's volatile telemetry to Redis. No-op when
+    Redis is disabled; never raises into the poll loop."""
+    if not is_redis_enabled() or not printer_id:
+        return
+    telemetry = {field: printer.get(field) for field in _TELEMETRY_FIELDS}
+    telemetry["lastUpdated"] = int(time.time() * 1000)
+    publish_printer_telemetry(printer_id, telemetry, _TELEMETRY_TTL_SECONDS)
+
+
 def persist_signature(printer: dict[str, Any]) -> str:
     """Deterministic signature of the fields upsert_printer would write."""
     payload = {field: printer.get(field) for field in _PERSIST_SCALAR_FIELDS}
@@ -2333,6 +2360,11 @@ def run() -> None:
                     upsert_printer(conn, next_printer)
                     _LAST_PERSIST_SIG[printer_id] = signature
                     _LAST_PG_WRITE[printer_id] = now
+                # Mirror live telemetry to Redis every cycle (cheap, no-op when
+                # Redis is off). Postgres stays fresh via the write-on-change path
+                # above, so a Redis outage simply falls back to it — no added
+                # staleness — while readers can serve hot state from Redis.
+                publish_live_telemetry(printer_id, next_printer)
             conn.commit()
         except Exception as error:
             print(f"printer poller error: {error}", flush=True)
