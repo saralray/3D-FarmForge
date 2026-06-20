@@ -7,7 +7,6 @@ import {
   Bar,
   PieChart,
   Pie,
-  Treemap,
   Cell,
   XAxis,
   YAxis,
@@ -32,31 +31,6 @@ import {
   type AnalyticsCardId,
   type AnalyticsLayout,
 } from '../lib/analyticsLayoutApi';
-
-const UTILIZATION_COLORS = ['#3b82f6', '#6366f1', '#06b6d4', '#0ea5e9', '#8b5cf6', '#14b8a6'];
-
-// Custom Treemap cell: colored rectangle with the printer name (and hours when it fits).
-function PrinterUtilizationCell(props: any) {
-  const { x, y, width, height, index, name, value } = props;
-  const fill = UTILIZATION_COLORS[index % UTILIZATION_COLORS.length];
-  const showLabel = width > 50 && height > 24;
-  const showValue = width > 70 && height > 40;
-  return (
-    <g>
-      <rect x={x} y={y} width={width} height={height} fill={fill} stroke="#fff" strokeWidth={2} />
-      {showLabel && (
-        <text x={x + 6} y={y + 18} fill="#fff" fontSize={12} className="pointer-events-none">
-          {name}
-        </text>
-      )}
-      {showValue && typeof value === 'number' && (
-        <text x={x + 6} y={y + 34} fill="#e2e8f0" fontSize={11} className="pointer-events-none">
-          {formatMaxTwoDecimals(value)} h
-        </text>
-      )}
-    </g>
-  );
-}
 
 export function Analytics() {
   const { user } = useAuth();
@@ -138,12 +112,6 @@ export function Analytics() {
   ].filter((status) => status.value > 0);
 
   const COLORS = ['#3b82f6', '#22c55e', '#eab308', '#ef4444', '#6b7280'];
-
-  const printerUtilization = printers.map((p) => ({
-    name: p.name,
-    hours: p.totalPrintTime,
-    success: p.successRate,
-  }));
 
   const handleResetAnalytics = async () => {
     if (user?.role !== 'admin' || resetInFlight) {
@@ -319,21 +287,20 @@ export function Analytics() {
     ),
     printerUtilization: (
       <Card className="flex h-full flex-col p-6 dark:bg-gray-800 dark:border-gray-700">
-        <h2 className="text-xl font-semibold mb-4 dark:text-white">Printer Utilization (Hours)</h2>
+        <h2 className="text-xl font-semibold mb-4 dark:text-white">Print Time (Hours)</h2>
         <div className="min-h-0 flex-1">
           <ResponsiveContainer width="100%" height="100%">
-            <Treemap
-              data={printerUtilization}
-              dataKey="hours"
-              nameKey="name"
-              stroke="#fff"
-              content={<PrinterUtilizationCell />}
-            >
+            <BarChart data={analyticsData}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
+              <XAxis dataKey="date" tickFormatter={(value) => value.split('-')[2]} className="text-gray-600 dark:text-gray-400" />
+              <YAxis className="text-gray-600 dark:text-gray-400" />
               <Tooltip
                 contentStyle={{ backgroundColor: 'var(--color-bg)', border: '1px solid var(--color-border)' }}
-                formatter={(value: number) => [`${formatMaxTwoDecimals(value)} h`, 'Total Hours']}
+                formatter={(value: number) => [`${formatMaxTwoDecimals(value)} h`, 'Print Time']}
               />
-            </Treemap>
+              <Legend />
+              <Bar dataKey="printTime" fill="#a855f7" name="Print Time (h)" />
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </Card>
