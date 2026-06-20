@@ -10,6 +10,9 @@ export interface DiscordWebhook {
   // When false, the webhook is muted entirely regardless of its event
   // subscription. Undefined/true => notifications are sent (historical default).
   enabled?: boolean;
+  // When true, notifications are delivered as Discord text-to-speech (a spoken
+  // content line alongside the embed). Undefined/false => silent embed only.
+  tts?: boolean;
   createdAt?: string;
 }
 

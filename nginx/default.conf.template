@@ -79,7 +79,11 @@ server {
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-Host $host;
+    # Use $http_host (the raw Host header, *including* the port) rather than
+    # $host (which strips it), so the slicer "Device" tab's redirect to the
+    # dashboard keeps the :8080 port — otherwise it lands on port 80 and the
+    # device page fails to load.
+    proxy_set_header X-Forwarded-Host $http_host;
     client_max_body_size 0;
     proxy_request_buffering off;
     proxy_read_timeout 3600s;

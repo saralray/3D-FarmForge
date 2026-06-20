@@ -105,6 +105,9 @@ ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS events JSONB;
 -- Master on/off switch per webhook. TRUE means notifications are sent (the
 -- historical default); FALSE mutes the webhook entirely.
 ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
+-- When TRUE, notifications are sent as Discord text-to-speech (tts=true with a
+-- spoken content line); FALSE (default) sends a silent embed only.
+ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS tts BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value JSONB NOT NULL,
@@ -1240,6 +1243,7 @@ export async function listDiscordWebhooks() {
           'webhookUrl', webhook_url,
           'events', events,
           'enabled', enabled,
+          'tts', tts,
           'createdAt', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
         )
         ORDER BY created_at ASC
@@ -1265,7 +1269,8 @@ export async function createDiscordWebhook(webhook) {
       name,
       webhook_url,
       events,
-      enabled
+      enabled,
+      tts
     )
     SELECT
       data->>'id',
@@ -1275,13 +1280,15 @@ export async function createDiscordWebhook(webhook) {
         WHEN jsonb_typeof(data->'events') = 'array' THEN data->'events'
         ELSE NULL
       END,
-      COALESCE((data->>'enabled')::boolean, TRUE)
+      COALESCE((data->>'enabled')::boolean, TRUE),
+      COALESCE((data->>'tts')::boolean, FALSE)
     FROM input
     ON CONFLICT (id) DO UPDATE SET
       name = EXCLUDED.name,
       webhook_url = EXCLUDED.webhook_url,
       events = EXCLUDED.events,
-      enabled = EXCLUDED.enabled;
+      enabled = EXCLUDED.enabled,
+      tts = EXCLUDED.tts;
   `,
     [JSON.stringify(webhook)],
   );

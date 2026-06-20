@@ -154,6 +154,9 @@ ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS events JSONB;
 -- Master on/off switch per webhook. TRUE means notifications are sent (the
 -- historical default); FALSE mutes the webhook entirely.
 ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
+-- When TRUE, notifications are sent as Discord text-to-speech (tts=true with a
+-- spoken content line); FALSE (default) sends a silent embed only.
+ALTER TABLE discord_webhooks ADD COLUMN IF NOT EXISTS tts BOOLEAN NOT NULL DEFAULT FALSE;
 -- Slicer-derived filament estimate per print (grams), written by the slicer-proxy
 -- when a .3mf is uploaded and read here to populate per-job filament usage. Keyed
 -- by printer + the subtask name the print is started with. Owned by the web schema
@@ -521,7 +524,8 @@ def list_discord_webhooks(conn: psycopg.Connection) -> list[dict[str, Any]]:
               name,
               webhook_url AS "webhookUrl",
               events,
-              enabled
+              enabled,
+              tts
             FROM discord_webhooks
             ORDER BY created_at ASC
             """
@@ -1873,6 +1877,16 @@ def webhook_wants(webhook: dict[str, Any], event_key: str) -> bool:
     return event_key in events
 
 
+def tts_content_for_embed(embed: dict[str, Any]) -> str:
+    """Discord only speaks the message `content` aloud (embeds are never read by
+    TTS), so derive a short spoken line from the embed's title. The description is
+    skipped on purpose — it holds the filename, which we don't want read aloud."""
+    title = embed.get("title")
+    spoken = title.strip() if isinstance(title, str) else ""
+    # Discord ignores tts when content is blank, so always fall back to a spoken line.
+    return (spoken or "Print farm notification")[:2000]
+
+
 def send_discord_embed(
     webhooks: list[dict[str, Any]],
     embed: dict[str, Any],
@@ -1888,8 +1902,30 @@ def send_discord_embed(
             continue
 
         username = webhook.get("name") or "PrintFarm Bot"
+        # TTS mode sends plain spoken text (Discord only reads `content` aloud,
+        # never embeds); otherwise send the rich embed.
+        tts_on = bool(webhook.get("tts"))
         try:
-            if snapshot_bytes:
+            if tts_on:
+                payload = {
+                    "username": username,
+                    "tts": True,
+                    "content": tts_content_for_embed(embed),
+                }
+                if snapshot_bytes:
+                    requests.post(
+                        webhook_url,
+                        data={"payload_json": json.dumps(payload)},
+                        files={"file": ("snapshot.jpg", BytesIO(snapshot_bytes), "image/jpeg")},
+                        timeout=REQUEST_TIMEOUT_SECONDS,
+                    ).raise_for_status()
+                else:
+                    requests.post(
+                        webhook_url,
+                        json=payload,
+                        timeout=REQUEST_TIMEOUT_SECONDS,
+                    ).raise_for_status()
+            elif snapshot_bytes:
                 embed_with_image = {**embed, "image": {"url": "attachment://snapshot.jpg"}}
                 requests.post(
                     webhook_url,

@@ -617,6 +617,31 @@ export function Settings() {
     }
   };
 
+  const isWebhookTts = (webhook: DiscordWebhook): boolean => webhook.tts === true;
+
+  const handleToggleTts = async (webhook: DiscordWebhook, tts: boolean) => {
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can manage Discord notifications.');
+      return;
+    }
+
+    setTogglingWebhookId(webhook.id);
+
+    try {
+      await saveDiscordWebhook({ ...webhook, tts });
+      await refreshDiscordWebhooks();
+      toast.success(tts ? 'Text-to-speech enabled' : 'Text-to-speech disabled', {
+        description: webhook.name,
+      });
+    } catch (error) {
+      toast.error('Unable to update notification settings', {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setTogglingWebhookId(null);
+    }
+  };
+
   // ~512 KB raw image — matches the server's MAX_LOGO_DATA_URL_BYTES cap once
   // base64-encoded. Keeping the check client-side too gives instant feedback.
   const MAX_LOGO_BYTES = 512 * 1024;
@@ -1268,6 +1293,24 @@ export function Settings() {
                                     disabled={togglingWebhookId !== null}
                                     onCheckedChange={(checked) => handleToggleEnabled(webhook, checked === true)}
                                     aria-label={`Toggle notifications for ${webhook.name}`}
+                                  />
+                                </div>
+                                <div className="flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-800 dark:bg-gray-900">
+                                  <div className="min-w-0">
+                                    <div className="font-medium text-gray-900 dark:text-white">
+                                      Text-to-speech
+                                    </div>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                                      {isWebhookTts(webhook)
+                                        ? 'Discord reads these notifications aloud.'
+                                        : 'Notifications are delivered silently.'}
+                                    </p>
+                                  </div>
+                                  <Switch
+                                    checked={isWebhookTts(webhook)}
+                                    disabled={togglingWebhookId !== null}
+                                    onCheckedChange={(checked) => handleToggleTts(webhook, checked === true)}
+                                    aria-label={`Toggle text-to-speech for ${webhook.name}`}
                                   />
                                 </div>
                                 <div>

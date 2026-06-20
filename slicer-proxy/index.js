@@ -147,6 +147,20 @@ async function authenticate(req) {
   return record;
 }
 
+// Gate an OctoPrint endpoint on a valid API key. OctoPrint answers its protected
+// endpoints (incl. /api/version, which the slicer's "Test" button hits) with 403
+// when the key is wrong or absent, and a slicer treats any non-2xx as "cannot
+// connect". Mirror that so a bad key fails the test instead of silently passing.
+// Returns the key record, or null after having sent the 403 response.
+async function requireKey(req, res) {
+  const key = await authenticate(req);
+  if (!key) {
+    sendJson(res, 403, { error: 'Invalid or missing API key' });
+    return null;
+  }
+  return key;
+}
+
 // Read the multipart body and return the first part named "file".
 function parseUpload(req) {
   return new Promise((resolve, reject) => {
@@ -439,11 +453,7 @@ const DEVICE_STATE_PATHS = new Set(['/api/connection', '/api/printer', '/api/job
 // shapes so the slicer's device page connects. Authenticated like the filament
 // reads (any valid key, read-only, no connection secrets returned).
 async function handleDeviceState(req, res, printerId, apiPath) {
-  const key = await authenticate(req);
-  if (!key) {
-    sendJson(res, 401, { error: 'Invalid or missing API key' });
-    return;
-  }
+  if (!(await requireKey(req, res))) return;
 
   const printer = await getPrinterById(printerId);
   if (!printer) {
@@ -471,11 +481,7 @@ const FILAMENT_SYNC_PATHS = new Set([
 // Authenticated with the same API key as uploads (read-only; no scope required,
 // no connection secrets returned), so the slicer's X-Api-Key reaches it.
 async function handleFilamentSync(req, res, printerId, apiPath) {
-  const key = await authenticate(req);
-  if (!key) {
-    sendJson(res, 401, { error: 'Invalid or missing API key' });
-    return;
-  }
+  if (!(await requireKey(req, res))) return;
 
   const printer = await getPrinterById(printerId);
   if (!printer) {
@@ -519,17 +525,22 @@ async function handleRequest(req, res) {
     const printerId = decodeURIComponent(match[1]);
     const apiPath = `/${match[2]}`;
 
-    // Connection handshake — slicers probe this before uploading.
+    // Connection handshake — the slicer's "Test" button hits /api/version with
+    // the X-Api-Key header. Validate the key (403 on wrong/missing) so a bad key
+    // reports "cannot connect" rather than silently passing the test.
     if (apiPath === '/api/version' && req.method === 'GET') {
+      if (!(await requireKey(req, res))) return;
       sendJson(res, 200, { api: '0.1', server: '1.9.0', text: 'OctoPrint 1.9.0' });
       return;
     }
     if (apiPath === '/api/server' && req.method === 'GET') {
+      if (!(await requireKey(req, res))) return;
       sendJson(res, 200, { version: '1.9.0', plugins: {} });
       return;
     }
     // Advertise the filament plugins so the slicer offers a "sync filament" action.
     if (apiPath === '/api/settings' && req.method === 'GET') {
+      if (!(await requireKey(req, res))) return;
       sendJson(res, 200, { version: '1.9.0', plugins: FILAMENT_PLUGIN_SETTINGS });
       return;
     }

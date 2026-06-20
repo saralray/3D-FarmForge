@@ -1431,6 +1431,15 @@ function buildQueueAddedEmbed(job) {
   };
 }
 
+// Discord only speaks the message `content` aloud (embeds are never read by TTS),
+// so derive a short spoken line from the embed's title. The description is
+// skipped on purpose — it holds the filename, which we don't want read aloud.
+function ttsContentForEmbed(embed) {
+  const title = typeof embed?.title === 'string' ? embed.title.trim() : '';
+  // Discord ignores tts when content is blank, so always fall back to a spoken line.
+  return (title || 'Print farm notification').slice(0, 2000);
+}
+
 // A webhook with events === null receives every event (historical default); an
 // array restricts it to the listed event keys.
 function webhookWantsEvent(webhook, eventKey) {
@@ -1463,10 +1472,20 @@ async function sendQueueAddedNotifications(jobs) {
           fetch(webhook.webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              username: webhook.name || 'PrintFarm Bot',
-              embeds: [embed],
-            }),
+            // TTS mode sends plain spoken text (Discord only reads `content` aloud,
+            // never embeds); otherwise send the rich embed.
+            body: JSON.stringify(
+              webhook.tts
+                ? {
+                    username: webhook.name || 'PrintFarm Bot',
+                    tts: true,
+                    content: ttsContentForEmbed(embed),
+                  }
+                : {
+                    username: webhook.name || 'PrintFarm Bot',
+                    embeds: [embed],
+                  },
+            ),
           }).then((response) => {
             if (!response.ok) {
               throw new Error(`Discord webhook failed with ${response.status}`);

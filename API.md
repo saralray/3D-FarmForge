@@ -265,9 +265,16 @@ curl -H "X-Api-Key: $SRC_KEY" -X POST "$SRC/queue/delete" \
   "name": "Build Room",
   "webhookUrl": "https://discord.com/api/webhooks/...",
   "events": ["queue_added", "print_done"],
-  "enabled": true
+  "enabled": true,
+  "tts": false
 }
 ```
+
+`tts` (default `false`): when `true`, notifications are delivered as Discord
+text-to-speech — the payload is sent as **plain `content` text with `tts: true`
+and no embed** (Discord only reads `content` aloud, never embeds), with the
+spoken line derived from the embed title/description. Defaults to a silent,
+richly-formatted embed-only message.
 
 ---
 
