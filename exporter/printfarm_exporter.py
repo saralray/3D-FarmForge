@@ -22,6 +22,9 @@ EXPORTER_PORT = int(os.getenv("EXPORTER_PORT", "9180"))
 # Cap how long a single scrape waits to reach PostgreSQL; a hung connect would
 # otherwise stall the scrape until Prometheus's own scrape_timeout fires.
 DB_CONNECT_TIMEOUT_SECONDS = max(int(os.getenv("EXPORTER_DB_TIMEOUT_SECONDS", "5")), 1)
+# Also bound each scrape query server-side, so a slow/locked query fails the
+# scrape fast (reported as printfarm_scrape_success 0) instead of hanging.
+DB_STATEMENT_TIMEOUT_MS = max(int(os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", "30000")), 0)
 
 # Only "สั่งพิมพ์งาน 3D Print" rows are real print-queue jobs (matches
 # QUEUE_FORM_TYPE in server/postgres.js); soft-deleted rows are excluded.
@@ -47,7 +50,11 @@ class PrintFarmCollector:
         success = 1
         metrics = []
         try:
-            with psycopg.connect(db_url(), connect_timeout=DB_CONNECT_TIMEOUT_SECONDS) as conn:
+            with psycopg.connect(
+                db_url(),
+                connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
+                options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
+            ) as conn:
                 metrics = self._build_metrics(conn)
         except Exception as error:  # noqa: BLE001 - report as a failed scrape, never crash
             success = 0
@@ -79,7 +86,71 @@ class PrintFarmCollector:
         metrics.extend(self._printer_metrics(conn))
         metrics.extend(self._analytics_metrics(conn))
         metrics.append(self._queue_metric(conn))
+        metrics.extend(self._poller_metrics(conn))
         return metrics
+
+    def _poller_metrics(self, conn):
+        """Poller liveness/lag from the poller_health table (one row per shard).
+        Tolerates the table not existing yet (a DB where the poller hasn't run),
+        returning no poller metrics rather than failing the whole scrape."""
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.poller_health');")
+            if cur.fetchone()[0] is None:
+                return []
+
+        last_run = GaugeMetricFamily(
+            "printfarm_poller_last_run_timestamp_seconds",
+            "Unix time of the shard's last completed poll cycle (alert when stale)",
+            labels=["shard"],
+        )
+        cycle_duration = GaugeMetricFamily(
+            "printfarm_poller_cycle_duration_seconds",
+            "Duration of the shard's last poll cycle, in seconds",
+            labels=["shard"],
+        )
+        printers_polled = GaugeMetricFamily(
+            "printfarm_poller_printers_polled",
+            "Printers the shard polled in its last cycle",
+            labels=["shard"],
+        )
+        rows_written = GaugeMetricFamily(
+            "printfarm_poller_rows_written",
+            "Printer rows the shard wrote to Postgres in its last cycle",
+            labels=["shard"],
+        )
+        refresh_failures = GaugeMetricFamily(
+            "printfarm_poller_refresh_failures",
+            "Printers whose refresh failed (fell back to offline grace) last cycle",
+            labels=["shard"],
+        )
+        shard_count = GaugeMetricFamily(
+            "printfarm_poller_shard_count",
+            "Number of poller shards configured",
+        )
+
+        max_shard_count = 1
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT shard_index, shard_count,
+                       EXTRACT(EPOCH FROM last_run_at),
+                       cycle_duration_ms, printers_polled, rows_written,
+                       refresh_failures
+                FROM poller_health;
+                """
+            )
+            for (idx, count, last_epoch, dur_ms, polled, written, failures) in cur:
+                shard = str(idx)
+                last_run.add_metric([shard], float(last_epoch or 0))
+                cycle_duration.add_metric([shard], float(dur_ms or 0) / 1000.0)
+                printers_polled.add_metric([shard], int(polled or 0))
+                rows_written.add_metric([shard], int(written or 0))
+                refresh_failures.add_metric([shard], int(failures or 0))
+                max_shard_count = max(max_shard_count, int(count or 1))
+
+        shard_count.add_metric([], max_shard_count)
+        return [last_run, cycle_duration, printers_polled, rows_written,
+                refresh_failures, shard_count]
 
     def _printer_metrics(self, conn):
         # Per-printer value metrics are labelled by the human-readable `name`

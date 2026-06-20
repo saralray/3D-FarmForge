@@ -14,6 +14,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # Optional Redis acceleration layer (sessions, login rate-limit, live-telemetry
+  # cache). Not published to the host — only the web and poller reach it over the
+  # internal network. AOF persistence so a restart keeps live sessions/counters.
+  # The whole stack runs fine without it: leave REDIS_URL empty in .env to disable
+  # (web/poller fall back to Postgres/in-memory) and this service idles harmlessly.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   web:
     build:
       context: .
@@ -24,12 +41,38 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Non-blocking: the Redis client connects lazily and tolerates an outage, so
+      # web never waits on Redis health — this only nudges start ordering.
+      redis:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      # Postgres connection-pool sizing and safety timeouts (ms; 0 disables a
+      # timeout). Size the pool to the web-replica count vs Postgres max_connections.
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      DATABASE_POOL_IDLE_MS: ${DATABASE_POOL_IDLE_MS:-30000}
+      DATABASE_CONNECT_TIMEOUT_MS: ${DATABASE_CONNECT_TIMEOUT_MS:-5000}
+      DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
+      DATABASE_IDLE_TX_TIMEOUT_MS: ${DATABASE_IDLE_TX_TIMEOUT_MS:-60000}
+      # Optional Redis acceleration. Empty = disabled (falls back to Postgres /
+      # in-memory). Reaches the redis service over the internal compose network.
+      REDIS_URL: ${REDIS_URL:-}
+      # Observability. LOG_LEVEL (debug|info|warn|error); LOG_FORMAT (text|json —
+      # use json to ship structured logs to an aggregator); LOG_HTTP (sample|all|
+      # off) controls the per-request access log. Request metrics are always at
+      # the internal /metrics (scraped by Prometheus, 404 on the public site).
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+      LOG_HTTP: ${LOG_HTTP:-sample}
       VITE_PUBLIC_VIEWER_MODE: ${VITE_PUBLIC_VIEWER_MODE:-false}
       MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
       # Shared with slicer-proxy: verifies the signed slicer operator-grant token.
       SLICER_GRANT_SECRET: ${SLICER_GRANT_SECRET:-}
+      # Mark the login session cookie Secure (set true once served over HTTPS).
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      # Encrypts printer connection secrets (LAN access codes) at rest. Must be
+      # identical across web, slicer-proxy and poller. Empty = stored plaintext.
+      PRINTER_SECRET_KEY: ${PRINTER_SECRET_KEY:-}
       # Max size of a model file uploaded through the in-app print-request form
       # (stored in Postgres). The nginx /api/queue/submit body cap should match.
       QUEUE_UPLOAD_MAX_BYTES: ${QUEUE_UPLOAD_MAX_BYTES:-52428800}
@@ -68,11 +111,36 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Non-blocking (see web): the poller's Redis client tolerates an outage.
+      redis:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      # Postgres connection safety timeouts (ms; 0 disables). Mirror the Node pool.
+      DATABASE_CONNECT_TIMEOUT_MS: ${DATABASE_CONNECT_TIMEOUT_MS:-5000}
+      DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
+      DATABASE_IDLE_TX_TIMEOUT_MS: ${DATABASE_IDLE_TX_TIMEOUT_MS:-60000}
+      # Optional Redis acceleration. Empty = disabled (telemetry stays Postgres-only).
+      REDIS_URL: ${REDIS_URL:-}
       PRINTER_POLL_INTERVAL_MS: ${PRINTER_POLL_INTERVAL_MS:-2000}
       PRINTER_REQUEST_TIMEOUT_MS: ${PRINTER_REQUEST_TIMEOUT_MS:-3000}
       PRINTER_OFFLINE_GRACE_SECONDS: ${PRINTER_OFFLINE_GRACE_SECONDS:-30}
+      # The poller writes a printer row only when its telemetry changed; this caps
+      # how long an unchanged row can go without a write (safety net). 0 = write
+      # every cycle (the previous behavior).
+      PRINTER_PERSIST_MAX_INTERVAL_MS: ${PRINTER_PERSIST_MAX_INTERVAL_MS:-30000}
+      # Refresh concurrency. 0 = auto-size the worker pool to the printer count
+      # (capped by _MAX); set an explicit number to pin it. Raise _MAX if cycles
+      # overrun the interval with many slow/offline printers.
+      PRINTER_POLL_CONCURRENCY: ${PRINTER_POLL_CONCURRENCY:-0}
+      PRINTER_POLL_CONCURRENCY_MAX: ${PRINTER_POLL_CONCURRENCY_MAX:-64}
+      # Horizontal sharding. Default is a single shard owning every printer. To
+      # split the farm across replicas, define one poller service per shard, each
+      # with the same POLLER_SHARD_COUNT and a distinct POLLER_SHARD_INDEX (0..N-1).
+      POLLER_SHARD_COUNT: ${POLLER_SHARD_COUNT:-1}
+      POLLER_SHARD_INDEX: ${POLLER_SHARD_INDEX:-0}
+      # Must match the web service: used to decrypt printer secrets read from the DB.
+      PRINTER_SECRET_KEY: ${PRINTER_SECRET_KEY:-}
       # Bambu cameras aren't plain HTTP, so the poller grabs their Discord-snapshot
       # frames from the web service's /__printer_webcam/<id>/snapshot.jpg endpoint
       # over the internal network (it speaks the port-6000 / RTSP camera protocols).
@@ -93,6 +161,12 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      # Shares server/postgres.js with web, so the same pool sizing/timeout knobs apply.
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      DATABASE_POOL_IDLE_MS: ${DATABASE_POOL_IDLE_MS:-30000}
+      DATABASE_CONNECT_TIMEOUT_MS: ${DATABASE_CONNECT_TIMEOUT_MS:-5000}
+      DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
+      DATABASE_IDLE_TX_TIMEOUT_MS: ${DATABASE_IDLE_TX_TIMEOUT_MS:-60000}
       SLICER_PROXY_PORT: ${SLICER_PROXY_PORT:-8091}
       # Used to redirect a slicer's "Device" tab to the dashboard's printer page.
       HTTP_PORT: ${HTTP_PORT:-8080}
@@ -100,6 +174,9 @@ services:
       # Shared with web: signs the slicer operator-grant token the device-tab
       # redirect carries. Must match the web service's value exactly.
       SLICER_GRANT_SECRET: ${SLICER_GRANT_SECRET:-}
+      # Must match the web service: decrypts the printer secret read from the DB
+      # before dispatching the upload to the printer hardware.
+      PRINTER_SECRET_KEY: ${PRINTER_SECRET_KEY:-}
 
   # Read-only Prometheus exporter: exposes the PostgreSQL print-farm data as
   # metrics on :9180/metrics. Not published to the host — Prometheus scrapes it
@@ -114,6 +191,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      # Bound each scrape query so a slow/locked query fails the scrape fast (0 disables).
+      DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
       # If you change this, also update the target in
       # monitoring/prometheus/prometheus.yml.
       EXPORTER_PORT: ${EXPORTER_PORT:-9180}
@@ -137,8 +216,10 @@ services:
       - '--web.route-prefix=/prometheus'
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
 
 volumes:
   postgres_data:
   prometheus_data:
+  redis_data:

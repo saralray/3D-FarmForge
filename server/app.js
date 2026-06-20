@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -6,6 +6,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import mqtt from 'mqtt';
 import busboy from 'busboy';
 import {
@@ -13,9 +14,17 @@ import {
   clearManagerRequestKeySecret,
   createDiscordWebhook,
   createManagerRequest,
+  createSession,
   createSlicerApiKey,
   deleteDiscordWebhook,
+  deleteExpiredSessions,
   deletePrinter,
+  encryptPlaintextPrinterSecrets,
+  deleteSession,
+  deleteSessionsForUser,
+  getRedactedPrinterById,
+  getSession,
+  listPrintersRedacted,
   deleteQueueJob,
   deleteQueueJobs,
   deleteSlicerApiKey,
@@ -27,11 +36,11 @@ import {
   getManagerRequest,
   getPrinterById,
   getPrinterByIdOrName,
-  getPublicPrinterById,
   getQueueJobFileMeta,
   readQueueJobFileChunk,
   importQueueJobs,
   insertQueueSubmission,
+  pingDatabase,
   setQueueJobFile,
   listDailyAnalytics,
   listDiscordWebhooks,
@@ -51,6 +60,23 @@ import {
   upsertQueueJobs,
 } from './postgres.js';
 import { verifySlicerGrant } from './slicerGrant.js';
+import {
+  isRedisEnabled,
+  redisDel,
+  redisGet,
+  redisHGetAll,
+  redisIncrWithTtl,
+  redisPing,
+  redisSet,
+  redisTtl,
+} from './redis.js';
+import { logger } from './logger.js';
+import {
+  classifyRoute,
+  recordRequestEnd,
+  recordRequestStart,
+  renderMetrics,
+} from './metrics.js';
 import {
   mintAuthGrant,
   signState,
@@ -540,10 +566,115 @@ function timingSafeEqualString(a, b) {
   return timingSafeEqual(aBuffer, bBuffer);
 }
 
+// ── Password hashing at rest (server-side KDF) ───────────────────────────────
+// The browser still hashes the password to a sha256 before sending it, so the
+// plaintext never crosses the wire even on a plain-http :8080 deployment. The
+// server then runs that sha256 through a slow, salted scrypt KDF before storing
+// it. A leaked database therefore no longer yields a fast, unsalted, directly
+// replayable hash — an attacker must brute-force scrypt per account. Stored
+// format is a single self-describing string:
+//   scrypt$<N>$<r>$<p>$<saltHex>$<hashHex>
+// Records created before this change are a bare 64-char sha256 hex; verifyPassword
+// accepts both, and the login path lazily re-stores legacy records in the new
+// format on the next successful sign-in (transparent migration).
+const scryptAsync = promisify(scrypt);
+const SCRYPT_N = 16384; // CPU/memory cost (~16 MB at r=8); within node's 32 MB default maxmem.
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const SCRYPT_KEYLEN = 32;
+
+function isScryptHash(value) {
+  return typeof value === 'string' && value.startsWith('scrypt$');
+}
+
+// A value accepted as input when storing a credential: either a fresh client
+// sha256 (which we derive) or an already-derived scrypt string (host→host user
+// migration through the key-gated /api/v1 surface, stored verbatim).
+function isStorablePasswordHash(value) {
+  return isSha256Hex(value) || isScryptHash(value);
+}
+
+// Derive the stored credential string from a client-supplied sha256 hex.
+async function derivePasswordHash(clientSha256) {
+  const normalized = String(clientSha256).toLowerCase();
+  const salt = randomBytes(16);
+  const derived = await scryptAsync(normalized, salt, SCRYPT_KEYLEN, {
+    N: SCRYPT_N,
+    r: SCRYPT_R,
+    p: SCRYPT_P,
+  });
+  return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${derived.toString('hex')}`;
+}
+
+// Coerce a credential input into its stored form: derive a sha256, pass a scrypt
+// string through unchanged, or return null when the input is neither.
+async function toStoredPasswordHash(value) {
+  if (isScryptHash(value)) {
+    return value;
+  }
+  if (isSha256Hex(value)) {
+    return derivePasswordHash(value);
+  }
+  return null;
+}
+
+// True when a stored credential is in the legacy bare-sha256 format and should be
+// upgraded to scrypt after a successful verify.
+function passwordNeedsUpgrade(stored) {
+  return isSha256Hex(stored);
+}
+
+// Verify a client-supplied sha256 against a stored credential (scrypt or legacy
+// bare-sha256), in constant time.
+async function verifyPassword(stored, clientSha256) {
+  if (typeof stored !== 'string' || !stored || !isSha256Hex(clientSha256)) {
+    return false;
+  }
+  const normalized = clientSha256.toLowerCase();
+  if (!isScryptHash(stored)) {
+    // Legacy record: compare against the stored sha256 directly.
+    return timingSafeEqualString(stored.toLowerCase(), normalized);
+  }
+  const parts = stored.split('$'); // scrypt, N, r, p, saltHex, hashHex
+  if (parts.length !== 6) {
+    return false;
+  }
+  const N = Number(parts[1]);
+  const r = Number(parts[2]);
+  const p = Number(parts[3]);
+  const salt = Buffer.from(parts[4], 'hex');
+  const expected = Buffer.from(parts[5], 'hex');
+  if (!N || !r || !p || salt.length === 0 || expected.length === 0) {
+    return false;
+  }
+  let derived;
+  try {
+    derived = await scryptAsync(normalized, salt, expected.length, { N, r, p });
+  } catch {
+    return false;
+  }
+  return derived.length === expected.length && timingSafeEqual(derived, expected);
+}
+
 // The stored staff-user list, or [] when none have been created yet.
 async function readStaffUsers() {
   const stored = await getAppSetting(STAFF_USERS_KEY);
   return Array.isArray(stored) ? stored : [];
+}
+
+// Find the staff record matching a username + client sha256, verifying the
+// password against either credential format (scrypt or legacy). A plain Array
+// .find can't be used because verifyPassword is async.
+async function findUserByCredential(usersList, username, clientSha256) {
+  for (const candidate of usersList) {
+    if (
+      candidate.username === username &&
+      (await verifyPassword(candidate.passwordHash, clientSha256))
+    ) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 // Drop the password hash before a record leaves the server.
@@ -577,12 +708,545 @@ function getClientIp(req) {
   return req.socket?.remoteAddress || null;
 }
 
-function setSecurityHeaders(res) {
+// ── Server-side sessions + RBAC ──────────────────────────────────────────────
+// The frontend /api/* surface used to be entirely unauthenticated: role checks
+// lived only in React state, so anyone who could reach the port could drive every
+// mutation (create/delete printers, cancel prints, mint full-access API keys).
+// These helpers add a real server session (opaque token in an HttpOnly cookie,
+// sha256 stored in the `sessions` table) and a default-deny authorization gate in
+// front of handleApi. The key-gated /api/v1 surface keeps its own auth and is not
+// affected.
+
+const SESSION_COOKIE = 'pf_session';
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const SESSION_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  const out = {};
+  if (typeof header !== 'string') {
+    return out;
+  }
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) {
+      continue;
+    }
+    const key = part.slice(0, eq).trim();
+    if (key) {
+      out[key] = decodeURIComponent(part.slice(eq + 1).trim());
+    }
+  }
+  return out;
+}
+
+// Secure cookies require HTTPS, but the default Compose deployment serves plain
+// http on :8080, where a Secure cookie would silently never be stored (breaking
+// login). So mark Secure only when the request actually arrived over TLS (nginx
+// sets X-Forwarded-Proto) or when explicitly forced. Set SESSION_COOKIE_SECURE=
+// true once the site is behind HTTPS.
+function sessionCookieIsSecure(req) {
+  return (
+    req.headers['x-forwarded-proto'] === 'https' ||
+    process.env.SESSION_COOKIE_SECURE === 'true'
+  );
+}
+
+function buildSessionCookie(req, value, maxAgeSeconds) {
+  // SameSite=Lax (not Strict) so the cookie survives the top-level redirect back
+  // from an OAuth/SAML IdP, while still blocking cross-site POST CSRF.
+  const attrs = [
+    `${SESSION_COOKIE}=${value}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`,
+  ];
+  if (sessionCookieIsSecure(req)) {
+    attrs.push('Secure');
+  }
+  return attrs.join('; ');
+}
+
+async function issueSession(req, res, user, { remember = false } = {}) {
+  const token = randomBytes(32).toString('base64url');
+  const ttl = remember ? SESSION_REMEMBER_TTL_MS : SESSION_TTL_MS;
+  await createSession({
+    tokenHash: hash(token),
+    userId: user.id,
+    username: user.username,
+    name: user.name,
+    role: user.role,
+    expiresAt: new Date(Date.now() + ttl).toISOString(),
+    ip: getClientIp(req),
+  });
+  res.setHeader('Set-Cookie', buildSessionCookie(req, token, Math.floor(ttl / 1000)));
+}
+
+function clearSessionCookie(req, res) {
+  res.setHeader('Set-Cookie', buildSessionCookie(req, '', 0));
+}
+
+// ── Optional Redis session read-cache ────────────────────────────────────────
+// Every authenticated request resolves the session, which is a Postgres lookup by
+// token hash — the hottest auth query at scale. When Redis is enabled we read it
+// through a short-lived cache so most requests skip Postgres entirely, while
+// Postgres stays the source of truth (a Redis miss/outage just falls back to it).
+//
+// Revocation safety: the cache TTL is short, single-session logout DELetes the
+// exact key, and bulk revocations (account delete, role change, password reset)
+// stamp a per-user revocation marker. A cached entry older than its user's marker
+// is treated as stale, so a revoked cookie can never outlive the change beyond a
+// failed cache check that immediately re-reads (and finds the row gone in) PG.
+const SESSION_CACHE_TTL_SECONDS = 60;
+const sessionCacheKey = (tokenHash) => `session:${tokenHash}`;
+const userRevokeKey = (userId) => `userrevoke:${userId}`;
+
+async function getCachedSession(tokenHash) {
+  if (!isRedisEnabled()) {
+    return null;
+  }
+  const raw = await redisGet(sessionCacheKey(tokenHash));
+  if (!raw) {
+    return null;
+  }
+  let entry;
+  try {
+    entry = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  // Defensive expiry check (the cache TTL normally handles this).
+  if (entry.expires_at && new Date(entry.expires_at).getTime() <= Date.now()) {
+    await redisDel(sessionCacheKey(tokenHash));
+    return null;
+  }
+  // Honor a bulk revocation that happened after this entry was cached.
+  const revoke = await redisGet(userRevokeKey(entry.user_id));
+  if (revoke && Number(revoke) >= (entry._cachedAtMs || 0)) {
+    await redisDel(sessionCacheKey(tokenHash));
+    return null;
+  }
+  delete entry._cachedAtMs;
+  return entry;
+}
+
+async function cacheSession(tokenHash, session) {
+  if (!isRedisEnabled() || !session) {
+    return;
+  }
+  const remainingMs = session.expires_at
+    ? new Date(session.expires_at).getTime() - Date.now()
+    : SESSION_CACHE_TTL_SECONDS * 1000;
+  const ttl = Math.min(SESSION_CACHE_TTL_SECONDS, Math.floor(remainingMs / 1000));
+  if (ttl <= 0) {
+    return;
+  }
+  await redisSet(
+    sessionCacheKey(tokenHash),
+    JSON.stringify({ ...session, _cachedAtMs: Date.now() }),
+    ttl,
+  );
+}
+
+// Drop one cached session (single-session logout). PG deletion is separate.
+async function invalidateCachedSession(tokenHash) {
+  if (isRedisEnabled()) {
+    await redisDel(sessionCacheKey(tokenHash));
+  }
+}
+
+// Stamp a per-user revocation marker so every cached session for the user is
+// treated as stale on its next read. Kept for the maximum session lifetime so it
+// outlives any cookie issued before the revocation.
+async function revokeCachedUserSessions(userId) {
+  if (isRedisEnabled()) {
+    await redisSet(
+      userRevokeKey(userId),
+      String(Date.now()),
+      Math.floor(SESSION_REMEMBER_TTL_MS / 1000),
+    );
+  }
+}
+
+// ── Optional Redis live-telemetry overlay ────────────────────────────────────
+// The poller mirrors each printer's volatile telemetry to a Redis hash
+// (printer:<id>:live) every cycle. When Redis is enabled, printer reads overlay
+// those hot values onto the Postgres row, offloading dashboard reads from PG and
+// decoupling read freshness from write frequency. Postgres is written on change
+// (and on the safety interval) so it stays fresh too — if Redis is missing the
+// hash (off / down / a dead poller's TTL lapsed) reads simply use the PG values,
+// with no added staleness. Only volatile, non-secret fields are mirrored, so this
+// can never reintroduce a connection secret into a redacted/public response.
+const LIVE_TELEMETRY_FIELDS = [
+  'status', 'progress', 'totalPrintTime', 'successRate', 'bedTarget',
+  'chamberTarget', 'lightOn', 'airFilterOn', 'offlineSince', 'temperature',
+  'currentJob', 'nozzleTemperatures', 'nozzleTargets', 'spools', 'fanSpeeds',
+];
+
+async function overlayLiveTelemetry(printer) {
+  if (!isRedisEnabled() || !printer || !printer.id) {
+    return printer;
+  }
+  const live = await redisHGetAll(`printer:${printer.id}:live`);
+  if (!live) {
+    return printer;
+  }
+  for (const field of LIVE_TELEMETRY_FIELDS) {
+    if (live[field] === undefined) {
+      continue;
+    }
+    // The poller stores strings raw and everything else JSON-encoded, so parse
+    // and fall back to the raw value for plain strings (status, offlineSince…).
+    try {
+      printer[field] = JSON.parse(live[field]);
+    } catch {
+      printer[field] = live[field];
+    }
+  }
+  return printer;
+}
+
+async function overlayLiveTelemetryAll(printers) {
+  if (!isRedisEnabled() || !Array.isArray(printers)) {
+    return printers;
+  }
+  await Promise.all(printers.map((printer) => overlayLiveTelemetry(printer)));
+  return printers;
+}
+
+// Resolve (and cache on the request) the current session from the cookie.
+// Returns the session row { user_id, username, name, role } or null.
+async function resolveSession(req) {
+  if (req._session !== undefined) {
+    return req._session;
+  }
+  const token = parseCookies(req)[SESSION_COOKIE];
+  let session = null;
+  if (token) {
+    const tokenHash = hash(token);
+    try {
+      session = await getCachedSession(tokenHash);
+      if (!session) {
+        session = await getSession(tokenHash);
+        await cacheSession(tokenHash, session);
+      }
+    } catch {
+      session = null;
+    }
+  }
+  req._session = session;
+  return session;
+}
+
+function sessionRole(session) {
+  return session ? session.role : null;
+}
+
+function isPrivilegedRole(role) {
+  return role === 'admin' || role === 'operator';
+}
+
+// Login throttle (per client IP). Backed by Redis when REDIS_URL is set — a single
+// shared counter so the limit holds across multiple web instances — and by this
+// in-memory Map otherwise (or whenever Redis is unreachable). Both signals are
+// consulted on check so a Redis outage mid-window can't silently reset a client's
+// failure count; failures are recorded to whichever backend is live.
+const LOGIN_ATTEMPTS = new Map();
+const LOGIN_MAX_FAILURES = 8;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_WINDOW_SECONDS = Math.floor(LOGIN_WINDOW_MS / 1000);
+const loginAttemptKey = (key) => `loginfail:${key}`;
+
+function checkLoginRateMemory(key, now = Date.now()) {
+  const entry = LOGIN_ATTEMPTS.get(key);
+  if (!entry || now >= entry.resetAt) {
+    return { allowed: true };
+  }
+  if (entry.count >= LOGIN_MAX_FAILURES) {
+    return { allowed: false, retryAfterMs: entry.resetAt - now };
+  }
+  return { allowed: true };
+}
+
+function recordLoginFailureMemory(key, now = Date.now()) {
+  const entry = LOGIN_ATTEMPTS.get(key);
+  if (!entry || now >= entry.resetAt) {
+    LOGIN_ATTEMPTS.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    return;
+  }
+  entry.count += 1;
+}
+
+async function checkLoginRate(key) {
+  if (isRedisEnabled()) {
+    const raw = await redisGet(loginAttemptKey(key));
+    if (raw !== null && Number(raw) >= LOGIN_MAX_FAILURES) {
+      const ttl = await redisTtl(loginAttemptKey(key));
+      return { allowed: false, retryAfterMs: (ttl ?? LOGIN_WINDOW_SECONDS) * 1000 };
+    }
+  }
+  // Always honor the in-memory signal too (covers Redis-down windows).
+  return checkLoginRateMemory(key);
+}
+
+async function recordLoginFailure(key) {
+  if (isRedisEnabled()) {
+    const count = await redisIncrWithTtl(loginAttemptKey(key), LOGIN_WINDOW_SECONDS);
+    if (count !== null) {
+      return; // recorded in Redis (the shared counter)
+    }
+  }
+  recordLoginFailureMemory(key); // Redis disabled or unreachable → in-memory
+}
+
+async function clearLoginAttempts(key) {
+  if (isRedisEnabled()) {
+    await redisDel(loginAttemptKey(key));
+  }
+  LOGIN_ATTEMPTS.delete(key);
+}
+
+// ── Authorization matrix for the frontend /api/* surface ─────────────────────
+// Reads stay public (the dashboard has an anonymous viewer mode) except for the
+// handful that expose secrets. Mutations are default-deny: anything not
+// explicitly classified as public or operator-level requires an admin session.
+
+const PUBLIC_API_MUTATIONS = new Set([
+  'POST /api/auth/login',
+  'POST /api/auth/logout',
+  'POST /api/auth/verify', // OAuth grant exchange
+  'POST /api/auth/saml/acs', // SAML assertion consumer
+  'POST /api/slicer-grant/verify',
+  'POST /api/admin/credential/verify',
+  'POST /api/users/verify',
+  'POST /api/manager/request', // external manager requests an access key
+  'POST /api/queue/submit', // public student print-request intake
+]);
+
+// GET/HEAD endpoints that must NOT be world-readable because they expose
+// credentials, account lists, audit trails, or IdP config.
+function isSensitiveRead(pathname) {
+  if (pathname === '/api/users' || (pathname.startsWith('/api/users/') && pathname !== '/api/users/verify')) {
+    return true;
+  }
+  if (pathname === '/api/slicer-keys' || pathname.startsWith('/api/slicer-keys/')) {
+    return true;
+  }
+  if (pathname === '/api/audit-logs') {
+    return true;
+  }
+  if (pathname.startsWith('/api/notifications/')) {
+    return true; // Discord webhook URLs are secrets
+  }
+  if (pathname === '/api/manager/requests') {
+    return true;
+  }
+  if (pathname.startsWith('/api/manager/requests/') && !pathname.endsWith('/status')) {
+    return true;
+  }
+  if (pathname === '/api/settings/saml') {
+    return true; // may carry IdP signing config
+  }
+  return false;
+}
+
+function isAdminMutation(method, pathname) {
+  if (pathname === '/api/users' && method === 'POST') return true;
+  if (pathname.startsWith('/api/users/') && pathname !== '/api/users/verify') return true;
+  if (pathname === '/api/slicer-keys' && method === 'POST') return true;
+  if (pathname.startsWith('/api/slicer-keys/') && method === 'DELETE') return true;
+  if (pathname === '/api/admin/credential' && method === 'PUT') return true;
+  if (pathname.startsWith('/api/notifications/')) return true;
+  if (pathname === '/api/settings/saml' || pathname === '/api/settings/saml/test') return true;
+  if (pathname.startsWith('/api/settings/') && method !== 'GET') return true;
+  if (pathname === '/api/analytics/daily/reset') return true;
+  if (pathname === '/api/queue/reset') return true;
+  if (pathname.startsWith('/api/queue/') && method === 'DELETE') return true;
+  if (pathname.startsWith('/api/printers/') && method === 'DELETE') return true;
+  if (pathname.startsWith('/api/manager/requests/') && !pathname.endsWith('/status')) return true;
+  return false;
+}
+
+// Operator-or-admin writes: live print control and queue progress. Printer
+// create/edit/reorder shares one upsert endpoint that operators also use to
+// reorder the dashboard, so it stays here rather than admin-only.
+function isOperatorMutation(method, pathname) {
+  if (pathname === '/api/printers' && method === 'POST') return true;
+  if (pathname.startsWith('/api/printers/') && pathname.endsWith('/command') && method === 'POST') return true;
+  if (pathname.startsWith('/api/queue/') && pathname.endsWith('/printed') && method === 'POST') return true;
+  if (pathname === '/api/queue' && method === 'POST') return true;
+  return false;
+}
+
+// Returns the access class for a frontend API request:
+//   'public'   — no session required
+//   'authed'   — any valid session
+//   'operator' — operator or admin session
+//   'admin'    — admin session only
+function classifyApiRequest(method, pathname) {
+  if (method === 'OPTIONS') {
+    return 'public';
+  }
+  if (method === 'GET' || method === 'HEAD') {
+    return isSensitiveRead(pathname) ? 'admin' : 'public';
+  }
+  // Mutations
+  if (PUBLIC_API_MUTATIONS.has(`${method} ${pathname}`)) {
+    return 'public';
+  }
+  // First-run admin password setup is open, but the handler refuses (409) once a
+  // credential exists, so it can't be reused to hijack the account.
+  if (method === 'POST' && pathname === '/api/admin/credential') {
+    return 'public';
+  }
+  if (pathname === '/api/audit-logs' && method === 'POST') {
+    return 'authed';
+  }
+  if (isOperatorMutation(method, pathname)) {
+    return 'operator';
+  }
+  if (isAdminMutation(method, pathname)) {
+    return 'admin';
+  }
+  // Default-deny: any unclassified mutation requires admin.
+  return 'admin';
+}
+
+// True when a state-changing request demonstrably comes from our own site (or
+// carries no browser origin context at all). Compares the Origin (then Referer)
+// hostname against the request host. Behind nginx the proxied Host header has no
+// port (proxy_set_header Host $host) while a browser Origin includes it, so we
+// compare hostnames only — sufficient for CSRF (a different port on the same host
+// is not the threat). When neither Origin nor Referer is present (a non-browser
+// client such as curl or a server-to-server call) we allow it: CSRF is a
+// browser-only attack, and the key-gated /api/v1 API is the path for automation.
+function isSameOriginWrite(req) {
+  const source = req.headers.origin || req.headers.referer;
+  if (!source) {
+    return true;
+  }
+  let sourceHost;
+  try {
+    sourceHost = new URL(source).hostname.toLowerCase();
+  } catch {
+    return false; // malformed Origin/Referer → treat as cross-origin
+  }
+  const stripPort = (host) => host.split(':')[0].trim().toLowerCase();
+  const allowed = new Set();
+  if (typeof req.headers.host === 'string') {
+    allowed.add(stripPort(req.headers.host));
+  }
+  const forwardedHost = req.headers['x-forwarded-host'];
+  if (typeof forwardedHost === 'string') {
+    forwardedHost.split(',').forEach((host) => allowed.add(stripPort(host)));
+  }
+  return allowed.has(sourceHost);
+}
+
+// Authorization gate run at the top of handleApi. Resolves the session and
+// enforces the class from classifyApiRequest. On denial it writes the response
+// and returns false; on success it returns true and the route ladder proceeds.
+async function authorizeFrontendApi(req, res, requestUrl) {
+  const { pathname } = requestUrl;
+  // Only the cookie-authenticated frontend surface is gated here. The key-gated
+  // /api/v1 data API authenticates itself in handleDataApi.
+  if (!pathname.startsWith('/api/') || pathname === '/api/v1' || pathname.startsWith('/api/v1/')) {
+    return true;
+  }
+
+  const klass = classifyApiRequest(req.method || 'GET', pathname);
+  if (klass === 'public') {
+    return true;
+  }
+
+  // CSRF defense-in-depth for cookie-authenticated mutations. SameSite=Lax
+  // already keeps the session cookie off cross-site writes; this is a second,
+  // independent control — a state-changing request must originate from our own
+  // site. Only non-public mutations reach here (the public intake endpoints —
+  // login, SAML ACS, manager request, queue submit — returned 'public' above,
+  // so the IdP's cross-origin ACS POST and the CORS manager API are unaffected).
+  // GET/HEAD are exempt (not state-changing). The key-gated /api/v1 surface is
+  // separate and never reaches this gate.
+  const method = (req.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD' && !isSameOriginWrite(req)) {
+    sendJson(res, 403, { error: 'Cross-origin request blocked.' });
+    return false;
+  }
+
+  const session = await resolveSession(req);
+  if (!session) {
+    sendJson(res, 401, { error: 'Authentication required.' });
+    return false;
+  }
+  const role = sessionRole(session);
+  if (klass === 'admin' && role !== 'admin') {
+    sendJson(res, 403, { error: 'Administrator access required.' });
+    return false;
+  }
+  if (klass === 'operator' && !isPrivilegedRole(role)) {
+    sendJson(res, 403, { error: 'Operator access required.' });
+    return false;
+  }
+  return true;
+}
+
+// Content-Security-Policy. The built SPA loads only same-origin external module
+// scripts (no inline <script>), so script-src 'self' is safe; styles need
+// 'unsafe-inline' (React/Radix inject style attributes) and images need data:
+// (branding background + inline SVG fallback) and blob: (object URLs). No
+// external CDN/font hosts are used. Tunable at runtime: CONTENT_SECURITY_POLICY
+// overrides the whole string ("off" disables it), and CSP_REPORT_ONLY=true emits
+// it as report-only so an operator can validate a policy before enforcing.
+const DEFAULT_CSP = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self'",
+  "connect-src 'self'",
+  "frame-src 'self'",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+].join('; ');
+
+function resolveCsp() {
+  const raw = process.env.CONTENT_SECURITY_POLICY;
+  if (raw === undefined || raw === '') {
+    return DEFAULT_CSP;
+  }
+  return raw.toLowerCase() === 'off' ? null : raw;
+}
+
+const CSP_VALUE = resolveCsp();
+const CSP_HEADER = process.env.CSP_REPORT_ONLY === 'true'
+  ? 'Content-Security-Policy-Report-Only'
+  : 'Content-Security-Policy';
+
+// HSTS is only meaningful over HTTPS (browsers ignore it on plain http), so it is
+// emitted only when the request actually arrived over TLS (nginx sets
+// X-Forwarded-Proto). HSTS_MAX_AGE=0 disables it; default is 180 days.
+const HSTS_MAX_AGE = (() => {
+  const value = Number.parseInt(process.env.HSTS_MAX_AGE ?? '', 10);
+  return Number.isFinite(value) && value >= 0 ? value : 15552000;
+})();
+
+function setSecurityHeaders(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  if (CSP_VALUE) {
+    res.setHeader(CSP_HEADER, CSP_VALUE);
+  }
+  if (HSTS_MAX_AGE > 0 && req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', `max-age=${HSTS_MAX_AGE}; includeSubDomains`);
+  }
 }
 
 function sendJson(res, statusCode, payload, cacheControl = 'no-store') {
@@ -1250,9 +1914,12 @@ async function handleBambuWebcam(req, res, printer, pathParts) {
     // but the <img> swallows the 502 body — so log the real cause server-side
     // (visible via `docker compose logs web`) to diagnose camera issues.
     const message = error instanceof Error ? error.message : 'Bambu camera unavailable';
-    console.error(
-      `bambu camera capture failed (${printer.profile} ${printer.name} @ ${printer.ipAddress}): ${message}`,
-    );
+    logger.error('bambu camera capture failed', {
+      profile: printer.profile,
+      printer: printer.name,
+      ip: printer.ipAddress,
+      err: message,
+    });
     sendJson(res, 502, { error: message });
   }
 }
@@ -1358,7 +2025,7 @@ async function authenticateDataApi(req) {
     return null;
   }
   touchSlicerApiKey(record.id).catch((error) => {
-    console.error('Failed to stamp API key usage', error);
+    logger.error('failed to stamp API key usage', error);
   });
   return record;
 }
@@ -1375,7 +2042,7 @@ function auditDataApi(req, apiKey, action, target, details) {
     source: 'api',
     ip: getClientIp(req),
   }).catch((error) => {
-    console.error('Failed to record API audit log', error);
+    logger.error('failed to record API audit log', error);
   });
 }
 
@@ -1451,7 +2118,7 @@ async function handleDataApiPrinters(req, res, { apiKey, method, id, sub, action
       // Data API is key-gated, so connection details (url, ip, api key, serial —
       // needed to reach each printer's hardware/webcam) are NOT redacted, even in
       // public viewer mode. This matches the single-printer getPrinterById read.
-      sendJson(res, 200, await listPrinters(true));
+      sendJson(res, 200, await overlayLiveTelemetryAll(await listPrinters(true)));
       return true;
     }
     if (method === 'POST') {
@@ -1570,7 +2237,7 @@ async function handleDataApiPrinters(req, res, { apiKey, method, id, sub, action
       sendJson(res, 404, { error: 'Printer not found' });
       return true;
     }
-    sendJson(res, 200, printer);
+    sendJson(res, 200, await overlayLiveTelemetry(printer));
     return true;
   }
   if (method === 'DELETE') {
@@ -1887,7 +2554,7 @@ async function handleDataApiUsers(req, res, { apiKey, method, id, sub }) {
         sendJson(res, 400, { error: 'role must be admin, operator, or viewer' });
         return true;
       }
-      if (!isSha256Hex(passwordHash)) {
+      if (!isStorablePasswordHash(passwordHash)) {
         sendJson(res, 400, { error: 'passwordHash must be a sha256 hex string' });
         return true;
       }
@@ -1900,7 +2567,7 @@ async function handleDataApiUsers(req, res, { apiKey, method, id, sub }) {
         sendJson(res, 409, { error: 'That username is already in use.' });
         return true;
       }
-      const newUser = { id: randomUUID(), name, username, role, passwordHash: passwordHash.toLowerCase() };
+      const newUser = { id: randomUUID(), name, username, role, passwordHash: await toStoredPasswordHash(passwordHash) };
       await setAppSetting(STAFF_USERS_KEY, [...usersList, newUser]);
       auditDataApi(req, apiKey, 'user.create', newUser.id, { username, role });
       sendJson(res, 201, staffUserWithHash(newUser));
@@ -1916,11 +2583,7 @@ async function handleDataApiUsers(req, res, { apiKey, method, id, sub }) {
     const { passwordHash } = body || {};
     const usersList = await readStaffUsers();
     const found = isSha256Hex(passwordHash)
-      ? usersList.find(
-          (candidate) =>
-            candidate.username === username &&
-            timingSafeEqualString(String(candidate.passwordHash || ''), passwordHash.toLowerCase()),
-        )
+      ? await findUserByCredential(usersList, username, passwordHash)
       : undefined;
     if (!found) {
       sendJson(res, 401, { valid: false });
@@ -1932,7 +2595,7 @@ async function handleDataApiUsers(req, res, { apiKey, method, id, sub }) {
 
   if (sub === 'password' && method === 'PUT') {
     const { passwordHash } = await readJsonBody(req);
-    if (!isSha256Hex(passwordHash)) {
+    if (!isStorablePasswordHash(passwordHash)) {
       sendJson(res, 400, { error: 'passwordHash must be a sha256 hex string' });
       return true;
     }
@@ -1943,7 +2606,7 @@ async function handleDataApiUsers(req, res, { apiKey, method, id, sub }) {
       return true;
     }
     const nextUsers = [...usersList];
-    nextUsers[index] = { ...nextUsers[index], passwordHash: passwordHash.toLowerCase() };
+    nextUsers[index] = { ...nextUsers[index], passwordHash: await toStoredPasswordHash(passwordHash) };
     await setAppSetting(STAFF_USERS_KEY, nextUsers);
     auditDataApi(req, apiKey, 'user.password', id);
     sendEmpty(res);
@@ -1999,10 +2662,7 @@ async function handleDataApiAdminCredential(req, res, { apiKey, method, id }) {
 
   if (id === 'verify' && method === 'POST') {
     const { passwordHash } = await readJsonBody(req);
-    const valid =
-      storedHash.length > 0 &&
-      isSha256Hex(passwordHash) &&
-      timingSafeEqualString(storedHash, passwordHash.toLowerCase());
+    const valid = storedHash.length > 0 && (await verifyPassword(storedHash, passwordHash));
     sendJson(res, valid ? 200 : 401, { valid });
     return true;
   }
@@ -2017,11 +2677,11 @@ async function handleDataApiAdminCredential(req, res, { apiKey, method, id }) {
   }
   if (method === 'PUT') {
     const { passwordHash } = await readJsonBody(req);
-    if (!isSha256Hex(passwordHash)) {
+    if (!isStorablePasswordHash(passwordHash)) {
       sendJson(res, 400, { error: 'passwordHash must be a sha256 hex string' });
       return true;
     }
-    await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: passwordHash.toLowerCase() });
+    await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: await toStoredPasswordHash(passwordHash) });
     auditDataApi(req, apiKey, 'admin-credential.set', null);
     sendEmpty(res, storedHash.length > 0 ? 200 : 201);
     return true;
@@ -2125,6 +2785,13 @@ async function handleApi(req, res, requestUrl) {
   }
 
   if (await handleDataApi(req, res, requestUrl)) {
+    return true;
+  }
+
+  // Server-side authorization gate. Runs before any frontend /api/* route so an
+  // unauthenticated or under-privileged caller can no longer drive mutations the
+  // React UI merely hides. Denied requests are answered here (401/403).
+  if (!(await authorizeFrontendApi(req, res, requestUrl))) {
     return true;
   }
 
@@ -2275,7 +2942,12 @@ async function handleApi(req, res, requestUrl) {
 
   if (requestUrl.pathname === '/api/printers') {
     if (req.method === 'GET') {
-      sendJson(res, 200, await listPrinters());
+      // Connection secrets (IP, API key, serial, url) only go to an operator/
+      // admin session; anonymous/viewer/student callers always get the redacted
+      // list, regardless of PUBLIC_VIEWER_MODE.
+      const privileged = isPrivilegedRole(sessionRole(await resolveSession(req)));
+      const printers = privileged ? await listPrinters(true) : await listPrintersRedacted();
+      sendJson(res, 200, await overlayLiveTelemetryAll(printers));
       return true;
     }
     if (req.method === 'POST') {
@@ -2345,12 +3017,15 @@ async function handleApi(req, res, requestUrl) {
   // public viewer mode, exactly like the list endpoint.
   if (requestUrl.pathname.startsWith('/api/printers/') && req.method === 'GET') {
     const id = decodeURIComponent(requestUrl.pathname.slice('/api/printers/'.length));
-    const printer = await getPublicPrinterById(id);
+    // Full record (with connection secrets) only for an operator/admin session;
+    // everyone else gets the redacted view.
+    const privileged = isPrivilegedRole(sessionRole(await resolveSession(req)));
+    const printer = privileged ? await getPrinterById(id) : await getRedactedPrinterById(id);
     if (!printer) {
       sendJson(res, 404, { error: 'Printer not found' });
       return true;
     }
-    sendJson(res, 200, printer);
+    sendJson(res, 200, await overlayLiveTelemetry(printer));
     return true;
   }
 
@@ -2449,7 +3124,7 @@ async function handleApi(req, res, requestUrl) {
     await insertQueueSubmission(job);
     sendQueueAddedNotifications([{ ...job, stlFileUrl: `/api/queue/${id}/file` }]).catch(
       (error) => {
-        console.error('Failed to send queue add notification', error);
+        logger.error('failed to send queue add notification', error);
       },
     );
     sendJson(res, 201, { ok: true, id });
@@ -2559,6 +3234,14 @@ async function handleApi(req, res, requestUrl) {
       sendJson(res, 401, { error: 'Invalid or expired slicer grant' });
       return true;
     }
+    // A verified slicer "Device" hand-off grants an operator session (pause/
+    // resume/cancel), backed by the same cookie gate as a normal login.
+    await issueSession(
+      req,
+      res,
+      { id: 'slicer-operator', name: 'Slicer Operator', username: 'slicer-operator', role: 'operator' },
+      { remember: false },
+    );
     sendJson(res, 200, { printerId: grant.printerId });
     return true;
   }
@@ -2805,6 +3488,117 @@ async function handleApi(req, res, requestUrl) {
     return true;
   }
 
+  // Username/password login → server session. Verifies against the admin
+  // bootstrap credential or a staff account (same sha256-hash credential format
+  // as before), then issues an HttpOnly session cookie. This is what actually
+  // authorizes subsequent mutations; the client role state is presentation only.
+  if (requestUrl.pathname === '/api/auth/login' && req.method === 'POST') {
+    const rateKey = getClientIp(req) || 'unknown';
+    const rate = await checkLoginRate(rateKey);
+    if (!rate.allowed) {
+      res.setHeader('Retry-After', String(Math.ceil(rate.retryAfterMs / 1000)));
+      sendJson(res, 429, {
+        error: 'Too many failed attempts. Please wait and try again.',
+        retryAfterMs: rate.retryAfterMs,
+      });
+      return true;
+    }
+
+    const body = await readJsonBody(req);
+    const username = typeof body?.username === 'string' ? body.username.trim().toLowerCase() : '';
+    const passwordHash = body?.passwordHash;
+    const remember = Boolean(body?.remember);
+
+    if (!username || !isSha256Hex(passwordHash)) {
+      await recordLoginFailure(rateKey);
+      sendJson(res, 401, { error: 'Invalid credentials.' });
+      return true;
+    }
+
+    let user = null;
+    if (username === RESERVED_USERNAME) {
+      const stored = await getAppSetting(ADMIN_CREDENTIAL_KEY);
+      const storedHash = stored && typeof stored.passwordHash === 'string' ? stored.passwordHash : '';
+      if (storedHash && (await verifyPassword(storedHash, passwordHash))) {
+        user = { id: 'admin', name: 'Print Farm Admin', username: 'admin', role: 'admin' };
+        // Transparently upgrade a legacy bare-sha256 credential to scrypt.
+        if (passwordNeedsUpgrade(storedHash)) {
+          await setAppSetting(ADMIN_CREDENTIAL_KEY, {
+            passwordHash: await derivePasswordHash(passwordHash),
+          }).catch(() => {});
+        }
+      }
+    } else {
+      const usersList = await readStaffUsers();
+      const found = await findUserByCredential(usersList, username, passwordHash);
+      if (found) {
+        user = sanitizeStaffUser(found);
+        // Transparently upgrade a legacy bare-sha256 credential to scrypt.
+        if (passwordNeedsUpgrade(found.passwordHash)) {
+          const upgraded = await derivePasswordHash(passwordHash);
+          const nextUsers = usersList.map((candidate) =>
+            candidate.id === found.id ? { ...candidate, passwordHash: upgraded } : candidate,
+          );
+          await setAppSetting(STAFF_USERS_KEY, nextUsers).catch(() => {});
+        }
+      }
+    }
+
+    if (!user) {
+      await recordLoginFailure(rateKey);
+      sendJson(res, 401, { error: 'Invalid credentials.' });
+      return true;
+    }
+
+    await clearLoginAttempts(rateKey);
+    await issueSession(req, res, user, { remember });
+    await recordAuditLog({
+      actorName: user.name,
+      actorUsername: user.username,
+      actorRole: user.role,
+      action: 'auth.login',
+      source: 'web',
+      ip: getClientIp(req),
+    }).catch(() => {});
+    sendJson(res, 200, { user });
+    return true;
+  }
+
+  // Destroy the current session and clear the cookie. Idempotent.
+  if (requestUrl.pathname === '/api/auth/logout' && req.method === 'POST') {
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (token) {
+      const tokenHash = hash(token);
+      await deleteSession(tokenHash).catch(() => {});
+      await invalidateCachedSession(tokenHash).catch(() => {});
+    }
+    clearSessionCookie(req, res);
+    sendEmpty(res);
+    return true;
+  }
+
+  // Who am I? Returns the session's user (or null) so the SPA can restore auth
+  // state on load from the cookie rather than trusting client-held state.
+  if (requestUrl.pathname === '/api/auth/session' && req.method === 'GET') {
+    const session = await resolveSession(req);
+    sendJson(
+      res,
+      200,
+      {
+        user: session
+          ? {
+              id: session.user_id,
+              name: session.name,
+              username: session.username,
+              role: session.role,
+            }
+          : null,
+      },
+      'no-store',
+    );
+    return true;
+  }
+
   if (requestUrl.pathname === '/api/auth/verify' && req.method === 'POST') {
     const secret = await getOAuthSigningSecret();
     const { token } = await readJsonBody(req);
@@ -2813,14 +3607,16 @@ async function handleApi(req, res, requestUrl) {
       sendJson(res, 401, { error: 'Invalid or expired sign-in' });
       return true;
     }
-    sendJson(res, 200, {
-      user: {
-        id: `${grant.provider}:${grant.sub}`,
-        name: grant.name,
-        username: grant.email,
-        role: grant.role,
-      },
-    });
+    const user = {
+      id: `${grant.provider}:${grant.sub}`,
+      name: grant.name,
+      username: grant.email,
+      role: grant.role,
+    };
+    // The OAuth/SSO hand-off establishes a real server session too, so the
+    // resulting (typically read-only) browser is gated by the same cookie.
+    await issueSession(req, res, user, { remember: true });
+    sendJson(res, 200, { user });
     return true;
   }
 
@@ -2853,7 +3649,14 @@ async function handleApi(req, res, requestUrl) {
         sendJson(res, 400, { error: 'passwordHash must be a sha256 hex string' });
         return true;
       }
-      await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: passwordHash.toLowerCase() });
+      await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: await derivePasswordHash(passwordHash) });
+      // First-run setup signs the admin in immediately (matches the client flow).
+      await issueSession(
+        req,
+        res,
+        { id: 'admin', name: 'Print Farm Admin', username: 'admin', role: 'admin' },
+        { remember: false },
+      );
       sendEmpty(res, 201);
       return true;
     }
@@ -2870,11 +3673,21 @@ async function handleApi(req, res, requestUrl) {
       }
       // Knowledge of the current password authorizes the change (there is no
       // server session to authorize it otherwise).
-      if (!timingSafeEqualString(storedHash, String(currentPasswordHash || '').toLowerCase())) {
+      if (!(await verifyPassword(storedHash, String(currentPasswordHash || '')))) {
         sendJson(res, 401, { error: 'Current password is incorrect' });
         return true;
       }
-      await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: newPasswordHash.toLowerCase() });
+      await setAppSetting(ADMIN_CREDENTIAL_KEY, { passwordHash: await derivePasswordHash(newPasswordHash) });
+      // Revoke every existing admin session except the caller's, then re-issue a
+      // fresh cookie so the password change instantly invalidates stale sessions.
+      await deleteSessionsForUser('admin').catch(() => {});
+      await revokeCachedUserSessions('admin').catch(() => {});
+      await issueSession(
+        req,
+        res,
+        { id: 'admin', name: 'Print Farm Admin', username: 'admin', role: 'admin' },
+        { remember: false },
+      );
       sendEmpty(res);
       return true;
     }
@@ -2888,10 +3701,7 @@ async function handleApi(req, res, requestUrl) {
     const storedHash =
       stored && typeof stored.passwordHash === 'string' ? stored.passwordHash : '';
     const { passwordHash } = await readJsonBody(req);
-    const valid =
-      storedHash.length > 0 &&
-      isSha256Hex(passwordHash) &&
-      timingSafeEqualString(storedHash, passwordHash.toLowerCase());
+    const valid = storedHash.length > 0 && (await verifyPassword(storedHash, passwordHash));
     sendJson(res, valid ? 200 : 401, { valid });
     return true;
   }
@@ -2945,7 +3755,7 @@ async function handleApi(req, res, requestUrl) {
         name,
         username,
         role,
-        passwordHash: passwordHash.toLowerCase(),
+        passwordHash: await derivePasswordHash(passwordHash),
       };
       await setAppSetting(STAFF_USERS_KEY, [...usersList, newUser]);
       sendJson(res, 201, sanitizeStaffUser(newUser));
@@ -2963,14 +3773,7 @@ async function handleApi(req, res, requestUrl) {
     const passwordHash = body?.passwordHash;
     const usersList = await readStaffUsers();
     const found = isSha256Hex(passwordHash)
-      ? usersList.find(
-          (candidate) =>
-            candidate.username === username &&
-            timingSafeEqualString(
-              String(candidate.passwordHash || ''),
-              passwordHash.toLowerCase(),
-            ),
-        )
+      ? await findUserByCredential(usersList, username, passwordHash)
       : undefined;
     if (!found) {
       sendJson(res, 401, { valid: false });
@@ -3003,6 +3806,9 @@ async function handleApi(req, res, requestUrl) {
         STAFF_USERS_KEY,
         usersList.filter((candidate) => candidate.id !== userId),
       );
+      // Revoke the removed account's live sessions immediately.
+      await deleteSessionsForUser(userId).catch(() => {});
+      await revokeCachedUserSessions(userId).catch(() => {});
       sendEmpty(res);
       return true;
     }
@@ -3020,8 +3826,11 @@ async function handleApi(req, res, requestUrl) {
         return true;
       }
       const nextUsers = [...usersList];
-      nextUsers[index] = { ...nextUsers[index], passwordHash: passwordHash.toLowerCase() };
+      nextUsers[index] = { ...nextUsers[index], passwordHash: await derivePasswordHash(passwordHash) };
       await setAppSetting(STAFF_USERS_KEY, nextUsers);
+      // A password change invalidates the account's existing sessions.
+      await deleteSessionsForUser(userId).catch(() => {});
+      await revokeCachedUserSessions(userId).catch(() => {});
       sendEmpty(res);
       return true;
     }
@@ -3042,6 +3851,10 @@ async function handleApi(req, res, requestUrl) {
       const nextUsers = [...usersList];
       nextUsers[index] = { ...nextUsers[index], role };
       await setAppSetting(STAFF_USERS_KEY, nextUsers);
+      // Revoke existing sessions so the new role takes effect on next sign-in
+      // rather than letting a stale cookie keep the old privileges.
+      await deleteSessionsForUser(userId).catch(() => {});
+      await revokeCachedUserSessions(userId).catch(() => {});
       sendJson(res, 200, sanitizeStaffUser(nextUsers[index]));
       return true;
     }
@@ -3062,11 +3875,14 @@ async function handleApi(req, res, requestUrl) {
         sendJson(res, 400, { error: 'action is required' });
         return true;
       }
-      const actor = body.actor && typeof body.actor === 'object' ? body.actor : {};
+      // The actor is taken from the server session, never from the request body,
+      // so an audit entry can't be attributed to someone else. This route is
+      // classified 'authed', so a session is guaranteed present here.
+      const session = await resolveSession(req);
       await recordAuditLog({
-        actorName: typeof actor.name === 'string' ? actor.name : null,
-        actorUsername: typeof actor.username === 'string' ? actor.username : null,
-        actorRole: typeof actor.role === 'string' ? actor.role : null,
+        actorName: session ? session.name : null,
+        actorUsername: session ? session.username : null,
+        actorRole: session ? session.role : null,
         action: body.action,
         target: typeof body.target === 'string' ? body.target : null,
         details: body.details ?? null,
@@ -3589,15 +4405,117 @@ async function serveStatic(req, res, requestUrl) {
   createReadStream(filePath).pipe(res);
 }
 
+// Readiness probe backing /readyz. Unlike /healthz (a cheap, dependency-free
+// liveness signal), this reports whether the process can actually serve traffic:
+// the database must be reachable. Redis is optional — when configured it is
+// reported, but a Redis outage is "degraded", not "not ready", because the app
+// falls back to Postgres/in-memory. Returns { ok, status, checks }.
+async function checkReadiness() {
+  const checks = {};
+  let ok = true;
+
+  try {
+    await pingDatabase();
+    checks.database = 'ok';
+  } catch (error) {
+    checks.database = 'error';
+    ok = false;
+    logger.warn('readiness: database check failed', error);
+  }
+
+  if (isRedisEnabled()) {
+    checks.redis = (await redisPing()) ? 'ok' : 'degraded';
+  }
+
+  return { ok, status: ok ? 'ready' : 'unavailable', checks };
+}
+
+// Access logging. To stay useful at scale (constant frontend polling + scrapes
+// would drown an info-per-request log), the default samples: every 4xx/5xx is
+// logged, but successful reads are not. LOG_HTTP=all logs every request;
+// LOG_HTTP=off disables access logging entirely. Probe/scrape endpoints are
+// always skipped from the sampled log.
+const LOG_HTTP_MODE = (process.env.LOG_HTTP || 'sample').toLowerCase();
+const QUIET_ROUTES = new Set(['healthz', 'readyz', 'metrics']);
+
+function logHttp(req, res, route, durationMs, requestId) {
+  if (LOG_HTTP_MODE === 'off') {
+    return;
+  }
+  const status = res.statusCode;
+  const fields = {
+    method: req.method,
+    route,
+    status,
+    durationMs: Math.round(durationMs),
+    reqId: requestId,
+  };
+  if (status >= 500) {
+    logger.error('http request', fields);
+    return;
+  }
+  if (status >= 400) {
+    logger.warn('http request', fields);
+    return;
+  }
+  if (LOG_HTTP_MODE === 'all' && !QUIET_ROUTES.has(route)) {
+    logger.info('http request', fields);
+  }
+}
+
 async function handleRequest(req, res) {
-  setSecurityHeaders(res);
+  setSecurityHeaders(req, res);
 
   const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  const route = classifyRoute(requestUrl.pathname);
+
+  // Per-request instrumentation: a short request id (echoed back so it can be
+  // correlated across logs and a client report), and timing/metrics recorded
+  // once the response finishes. recordRequestStart/End bracket the in-flight
+  // gauge; the listener fires for every response path including early returns.
+  const requestId = String(req.headers['x-request-id'] || randomUUID()).slice(0, 64);
+  res.setHeader('X-Request-Id', requestId);
+  const startedAt = process.hrtime.bigint();
+  recordRequestStart();
+  // Settle exactly once, on whichever ends the response first: 'finish' (body
+  // fully flushed) or 'close' (connection torn down — the only one that fires
+  // for some proxied Connection: close responses, and for client aborts). The
+  // guard keeps the in-flight gauge balanced and avoids double-counting.
+  let settled = false;
+  const settle = () => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    recordRequestEnd(req.method, res.statusCode, route, durationMs);
+    logHttp(req, res, route, durationMs, requestId);
+  };
+  res.on('finish', settle);
+  res.on('close', settle);
 
   if (requestUrl.pathname === '/healthz') {
-    // Liveness/readiness probe: keep this cheap and DB-independent so a
-    // brief database blip never cascades into web pods being killed.
+    // Liveness probe: keep this cheap and DB-independent so a brief database
+    // blip never cascades into web containers being killed and restarted.
     sendJson(res, 200, { ok: true }, 'no-store');
+    return;
+  }
+
+  if (requestUrl.pathname === '/readyz') {
+    // Readiness probe: reports dependency health (DB required, Redis optional).
+    // 503 when the database is unreachable so a load balancer can route away.
+    const readiness = await checkReadiness();
+    sendJson(res, readiness.ok ? 200 : 503, readiness, 'no-store');
+    return;
+  }
+
+  if (requestUrl.pathname === '/metrics') {
+    // Prometheus scrape of the web tier's own request metrics. Intentionally
+    // internal — nginx returns 404 for /metrics; Prometheus scrapes web:5173
+    // directly over the compose network. Carries no secrets.
+    res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(renderMetrics());
     return;
   }
 
@@ -3638,7 +4556,7 @@ async function handleRequest(req, res) {
 
     await serveStatic(req, res, requestUrl);
   } catch (error) {
-    console.error(error);
+    logger.error('unhandled request error', { route, reqId: requestId, err: error });
     if (!res.headersSent) {
       sendJson(res, error.message === 'Request body is too large' ? 413 : 500, {
         error: error instanceof Error ? error.message : 'Request failed',
@@ -3666,10 +4584,28 @@ await assertProductionInputs();
 // Ensure the schema proactively, but do not block startup on the database:
 // the SPA must still be served (and the liveness probe stay green) if the
 // database is briefly unavailable. Query paths also call ensureSchema lazily.
-ensureSchema().catch((error) => {
-  console.error('Initial schema setup failed; will retry on first database request', error);
-});
+ensureSchema()
+  .then(() =>
+    // Encrypt any printer secrets still stored in plaintext now that a key is set
+    // (no-op when PRINTER_SECRET_KEY is unset or every row is already encrypted).
+    encryptPlaintextPrinterSecrets().then((count) => {
+      if (count > 0) {
+        logger.info('encrypted plaintext printer secrets at rest', { count });
+      }
+    }),
+  )
+  .catch((error) => {
+    logger.error('initial schema setup failed; will retry on first database request', error);
+  });
+
+// Periodically sweep expired login sessions so the table doesn't accumulate dead
+// rows (getSession already ignores expired rows, so this is pure housekeeping).
+setInterval(() => {
+  deleteExpiredSessions().catch((error) => {
+    logger.error('expired-session sweep failed', error);
+  });
+}, 60 * 60 * 1000).unref();
 
 createServer(handleRequest).listen(port, host, () => {
-  console.log(`Print Farm server listening on ${host}:${port}`);
+  logger.info('Print Farm server listening', { host, port });
 });

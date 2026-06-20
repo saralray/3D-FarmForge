@@ -2,9 +2,10 @@
 
 A versioned, API-key-gated HTTP API over the print farm's data. It is served by
 the `web` service (`handleDataApi` in `server/app.js`) and is **entirely
-separate** from the cookieless frontend `/api/*` endpoints the dashboard uses —
-those stay unauthenticated and unchanged. This `/api/v1` namespace is for
-external integrations, scripts, and dashboards.
+separate** from the session-cookie-authenticated frontend `/api/*` endpoints the
+dashboard uses (see [Frontend session API](#frontend-session-api--apiauth) for
+those). This `/api/v1` namespace is for external integrations, scripts, and
+dashboards.
 
 The goal is **full UI/API parity**: every action available in the dashboard can
 be driven through `/api/v1`, so an external print-farm manager (Portainer-style)
@@ -323,20 +324,27 @@ endpoint is also how you manage them via the API. Notable keys:
 
 Manage staff accounts (operators / extra admins). Mirrors the dashboard's user
 management. The primary `admin` account is **not** in this list — it's the
-separate **admin-credential** resource (below). Password hashes are
-**never** returned.
+separate **admin-credential** resource (below). Unlike the cookieless frontend
+`/api/users`, the list/create/role responses here **include** each account's
+stored `passwordHash` (the API key is the guard, matching `admin-credential`),
+so accounts can be migrated host→host.
 
 Passwords are supplied **pre-hashed** as a sha256 hex string (`passwordHash`),
-matching how the frontend submits them — the server never sees plaintext.
+matching how the frontend submits them — the server never sees plaintext. The
+server then runs that sha256 through a slow, salted **scrypt** KDF before
+storing it, so the persisted (and returned) `passwordHash` is a self-describing
+`scrypt$N$r$p$salt$hash` string, **not** a bare sha256. For migration, create
+and password-set also accept an already-derived `scrypt$…` value verbatim;
+legacy bare-sha256 records keep working and are upgraded to scrypt on next login.
 
 | Method & path | Description |
 |---------------|-------------|
-| `GET /users` | List staff users (sanitized — no hashes). |
-| `POST /users` | Create a user. Body `{ name, username, role, passwordHash }`. `role` ∈ `admin`/`operator`/`viewer`. Returns the sanitized record. |
+| `GET /users` | List staff users (each record includes its stored `passwordHash`). |
+| `POST /users` | Create a user. Body `{ name, username, role, passwordHash }` (`passwordHash` a sha256 hex or a `scrypt$…` string). `role` ∈ `admin`/`operator`/`viewer`. Returns the record with its stored hash. |
 | `DELETE /users/:id` | Remove a user. |
-| `PUT /users/:id/password` | Set a new password. Body `{ passwordHash }`. |
+| `PUT /users/:id/password` | Set a new password. Body `{ passwordHash }` (sha256 hex or `scrypt$…`). |
 | `PUT /users/:id/role` | Change the account role. Body `{ role }`, `role` ∈ `admin`/`operator`/`viewer`. Returns the updated record. |
-| `POST /users/verify` | Validate a login. Body `{ username, passwordHash }` → `200 { valid: true, user }` or `401 { valid: false }`. |
+| `POST /users/verify` | Validate a login. Body `{ username, passwordHash }` (sha256 hex) → `200 { valid: true, user }` (sanitized — no hash) or `401 { valid: false }`. |
 
 `username` `admin` is reserved (`409`); duplicate usernames return `409`.
 
@@ -349,7 +357,9 @@ matching how the frontend submits them — the server never sees plaintext.
 
 ### Admin credential — `/api/v1/admin-credential`
 
-The primary admin password (a sha256 hash in `app_settings`). Because a
+The primary admin password (stored in `app_settings`). The supplied `passwordHash`
+is a sha256 hex (hashed client-side); the server stretches it with a salted
+**scrypt** KDF before storing (`scrypt$N$r$p$salt$hash`). Because a
 `printfarm_manage` key is the guard, it may **set or reset** the password
 outright — unlike the public frontend endpoint, which is first-run-only and
 otherwise requires the current password.
@@ -357,8 +367,8 @@ otherwise requires the current password.
 | Method & path | Description |
 |---------------|-------------|
 | `GET /admin-credential` | `{ "configured": <bool> }` — whether a password is set. Never returns the hash. |
-| `PUT /admin-credential` | Set or reset the password. Body `{ passwordHash }`. `201` on first set, `200` on reset. |
-| `POST /admin-credential/verify` | Validate. Body `{ passwordHash }` → `200 { valid: true }` or `401 { valid: false }`. |
+| `PUT /admin-credential` | Set or reset the password. Body `{ passwordHash }` (sha256 hex, or a `scrypt$…` string for migration). `201` on first set, `200` on reset. |
+| `POST /admin-credential/verify` | Validate. Body `{ passwordHash }` (sha256 hex) → `200 { valid: true }` or `401 { valid: false }`. |
 
 ---
 
@@ -428,6 +438,69 @@ curl -H "X-Api-Key: $KEY" "$BASE/admin-credential"
 curl -H "X-Api-Key: $KEY" "$BASE/manager-requests"
 curl -H "X-Api-Key: $KEY" -X POST "$BASE/manager-requests/<id>/approve"
 ```
+
+---
+
+## Frontend session API (`/api/auth/*`)
+
+The dashboard's own `/api/*` surface is authenticated with a **server-side
+session**, not the `/api/v1` API key. A login issues an opaque token stored in an
+HttpOnly, SameSite=Lax cookie (`pf_session`); only its sha256 hash is persisted
+(in the `sessions` table). The cookie is sent automatically on same-origin
+requests, so the SPA does not handle it directly. Authorization is enforced in
+`server/app.js` (`authorizeFrontendApi`) before any frontend route runs.
+
+> **Cookie `Secure` flag:** set only when the request arrives over HTTPS
+> (`X-Forwarded-Proto: https`) or when `SESSION_COOKIE_SECURE=true`. Set that
+> env var once the site is served over TLS.
+
+### Endpoints
+
+| Method | Path | Auth | Body / result |
+| --- | --- | --- | --- |
+| `POST` | `/api/auth/login` | public | `{ username, passwordHash, remember }` → sets cookie, returns `{ user }`. `passwordHash` is sha256 hex of the password (hashed client-side). Rate-limited per IP (8 failures / 15 min → `429` with `Retry-After`). |
+| `POST` | `/api/auth/logout` | public | Destroys the session and clears the cookie. Idempotent. |
+| `GET` | `/api/auth/session` | public | `{ user }` for the current cookie session, or `{ user: null }`. Used to restore auth state on load. |
+| `POST` | `/api/auth/verify` | public | OAuth/SSO grant exchange. On success **also issues a session cookie**. |
+| `POST` | `/api/slicer-grant/verify` | public | Verifies a slicer "Device" grant and issues an **operator** session cookie. |
+| `POST` | `/api/admin/credential` | public (first-run only) | Sets the initial admin password and issues an admin session. Refuses (`409`) once configured. |
+| `PUT` | `/api/admin/credential` | public + current-password proof | Changes the admin password; **revokes all existing admin sessions** and re-issues the caller's. |
+
+Sessions are also revoked server-side when a staff account is deleted, its
+password is reset, or its role changes, so a stale cookie can't outlive the
+change.
+
+### Authorization matrix (frontend `/api/*`)
+
+Reads are public (the dashboard has an anonymous viewer mode) **except** those
+that expose secrets. Mutations are **default-deny**: anything not explicitly
+classified below requires an admin session.
+
+| Class | Who | Examples |
+| --- | --- | --- |
+| **public read** | anyone | `GET /api/printers`, `GET /api/queue`, `GET /api/analytics/daily`, `GET /api/cameras/health`, branding/layout reads |
+| **admin read** | admin only | `GET /api/users`, `GET /api/slicer-keys`, `GET /api/audit-logs`, `GET /api/notifications/*`, `GET /api/manager/requests`, `GET /api/settings/saml` |
+| **public mutation** | anyone | `POST /api/queue/submit` (student intake), `POST /api/manager/request`, the auth endpoints above |
+| **operator** | operator or admin | `POST /api/printers` (create/edit/reorder), `POST /api/printers/:id/command`, `POST /api/queue/:id/printed` |
+| **authed** | any session | `POST /api/audit-logs` (actor is taken from the session, not the body) |
+| **admin** | admin only | `DELETE /api/printers/:id`, `DELETE /api/queue/:id`, `/api/queue/reset`, `/api/analytics/daily/reset`, all `/api/users/*` writes, all `/api/slicer-keys` writes, `/api/notifications/*` writes, `/api/settings/*` writes, manager request approve/deny/delete |
+
+> **Connection-secret redaction:** `GET /api/printers` and `GET /api/printers/:id`
+> return connection fields (`ipAddress`, `apiKeyHeader`, `serial`, `url`) only to
+> an operator/admin session. Anonymous, viewer, and student sessions always get
+> the redacted record, regardless of `VITE_PUBLIC_VIEWER_MODE`.
+
+Denials return `401` (no/expired session) or `403` (insufficient role).
+
+> **CSRF / same-origin (browser writes):** Cookie-authenticated **mutations**
+> (any non-`GET`/`HEAD` to a non-public frontend `/api/*` route) also require a
+> same-origin request — the `Origin` (or `Referer`) hostname must match the
+> request host, else `403 {"error":"Cross-origin request blocked."}`. This is
+> defense-in-depth on top of the `SameSite=Lax` session cookie. It does **not**
+> apply to the **public mutation** endpoints (so the IdP's cross-origin SAML ACS
+> POST and the CORS manager-request API still work), nor to the key-gated
+> `/api/v1` surface. Requests with no `Origin`/`Referer` (curl, server-to-server)
+> are allowed — use `/api/v1` with an API key for automation.
 
 ---
 
@@ -890,3 +963,54 @@ as reachable). Does **not** save.
   ]
 }
 ```
+
+## Operational endpoints
+
+Unauthenticated infrastructure endpoints served by the `web` process, outside the
+`/api` surface. Intended for orchestrators, load balancers, and monitoring — not
+the application UI. See `monitoring/RUNBOOK.md` for response procedures.
+
+#### `GET /healthz`
+
+Liveness probe. Cheap and **database-independent** so a brief DB outage never
+cascades into the container being killed (this backs the Docker `healthcheck`).
+Always `200`:
+
+```json
+{ "ok": true }
+```
+
+#### `GET /readyz`
+
+Readiness probe. Reports dependency health: the **database** is required (a
+failure returns `503`), while **Redis** is optional — when `REDIS_URL` is set it
+is reported, but a Redis outage is `degraded`, never failing readiness (the app
+falls back to Postgres/in-memory). Use for load-balancer routing.
+
+**Response `200` (ready):**
+
+```json
+{ "ok": true, "status": "ready", "checks": { "database": "ok", "redis": "ok" } }
+```
+
+**Response `503` (database unreachable):**
+
+```json
+{ "ok": false, "status": "unavailable", "checks": { "database": "error" } }
+```
+
+(`checks.redis` is present only when `REDIS_URL` is configured.)
+
+#### `GET /metrics`
+
+Prometheus exposition of the web tier's own request metrics
+(`printfarm_web_http_requests_total`, `printfarm_web_http_request_duration_seconds`,
+`printfarm_web_http_requests_in_flight`, `printfarm_web_resident_memory_bytes`,
+`printfarm_web_start_time_seconds`). **Internal only** — nginx returns `404` for
+`/metrics` on the public site; Prometheus scrapes `web:5173/metrics` directly
+over the compose network. Carries no secrets. Distinct from the `exporter`
+service, which exposes the print-farm *data* metrics (`printfarm_*`) from Postgres.
+
+Every response (on all endpoints) carries an `X-Request-Id` header, echoed in the
+server's access log line (`reqId`) for correlation; a client may supply its own
+via the `X-Request-Id` request header.

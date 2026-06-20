@@ -1,6 +1,19 @@
 import pg from 'pg';
+import { decryptSecret, encryptSecret, isEncryptionEnabled } from './secretCrypto.js';
 
 const { Pool } = pg;
+
+// Printer connection secrets (the api_key_header LAN access code / API key) are
+// encrypted at rest. SQL reads return the stored value; we decrypt it on the JS
+// object before handing it to a caller, and encrypt it on the write path. When
+// PRINTER_SECRET_KEY is unset these are no-ops (plaintext passthrough), so an
+// existing deployment is unaffected until a key is provisioned.
+function decryptPrinterSecrets(printer) {
+  if (printer && typeof printer.apiKeyHeader === 'string' && printer.apiKeyHeader) {
+    printer.apiKeyHeader = decryptSecret(printer.apiKeyHeader);
+  }
+  return printer;
+}
 
 const SCHEMA_SQL = `
 SELECT pg_advisory_lock(90210);
@@ -157,15 +170,140 @@ CREATE TABLE IF NOT EXISTS manager_requests (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Server-side login sessions. The browser holds an opaque random token in an
+-- HttpOnly cookie; only its sha256 hash is stored here, so a database leak can
+-- never be replayed as a live session. Identity (username/name/role) is copied
+-- in at issue time so authorization checks need a single indexed lookup and no
+-- join. Rows are deleted on logout, on credential/role change (revocation), and
+-- swept once expired. This is the server-enforced half of auth — the React role
+-- state is presentation only.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  username TEXT NOT NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_ip TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions (expires_at);
+-- Poller liveness/lag, one row per shard, written each cycle by the poller (which
+-- also defines this table) and read by the exporter. Defined here too so the
+-- baseline owns every table the migrations below tune, regardless of start order.
+CREATE TABLE IF NOT EXISTS poller_health (
+  shard_index INTEGER PRIMARY KEY,
+  shard_count INTEGER NOT NULL DEFAULT 1,
+  last_run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  cycle_duration_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+  printers_polled INTEGER NOT NULL DEFAULT 0,
+  rows_written INTEGER NOT NULL DEFAULT 0,
+  refresh_failures INTEGER NOT NULL DEFAULT 0
+);
+-- Versioned migrations applied after this idempotent baseline (see MIGRATIONS).
+-- This baseline schema is the forward-only "version 0"; ordered migrations record
+-- their version here so each runs exactly once and the DB's schema level is visible.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 SELECT pg_advisory_unlock(90210);
 `;
+
+// Ordered, versioned migrations applied once each, after the idempotent baseline
+// schema above. Use this for changes that benefit from ordering/visibility or
+// that aren't naturally expressible as CREATE/ALTER ... IF NOT EXISTS (data
+// backfills, type changes, storage tuning). Each migration's SQL must be safe to
+// run inside a single transaction. Append new migrations with the next version;
+// never edit or renumber an applied one.
+const MIGRATIONS = [
+  {
+    version: 1,
+    name: 'autovacuum-tuning-high-churn-tables',
+    // printers is updated on telemetry change, queue_jobs churns large bytea
+    // blobs (insert / soft-delete / printed updates), sessions churns on
+    // login/logout/expiry, and poller_health is updated every poll cycle. Make
+    // autovacuum/analyze trigger well before the 20% default so dead tuples and
+    // bloat are reclaimed instead of accumulating under sustained write load.
+    sql: `
+      ALTER TABLE printers SET (
+        autovacuum_vacuum_scale_factor = 0.05,
+        autovacuum_analyze_scale_factor = 0.05
+      );
+      ALTER TABLE queue_jobs SET (
+        autovacuum_vacuum_scale_factor = 0.05,
+        autovacuum_analyze_scale_factor = 0.05,
+        toast.autovacuum_vacuum_scale_factor = 0.05
+      );
+      ALTER TABLE sessions SET (
+        autovacuum_vacuum_scale_factor = 0.05
+      );
+      ALTER TABLE poller_health SET (
+        autovacuum_vacuum_scale_factor = 0,
+        autovacuum_vacuum_threshold = 25
+      );
+    `,
+  },
+];
+
+// Advisory lock id for the migration run (distinct from the baseline's 90210), so
+// concurrent web/slicer-proxy startups serialize on a single dedicated connection
+// rather than racing the same migration.
+const MIGRATION_LOCK_ID = 90211;
+
+async function runMigrations() {
+  const client = await getPool().connect();
+  try {
+    // Session-scoped advisory lock must live on one connection for the whole run,
+    // hence a dedicated client rather than the pooled query() helper.
+    await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
+    const { rows } = await client.query('SELECT version FROM schema_migrations');
+    const applied = new Set(rows.map((row) => Number(row.version)));
+    for (const migration of MIGRATIONS) {
+      if (applied.has(migration.version)) {
+        continue;
+      }
+      await client.query('BEGIN');
+      try {
+        await client.query(migration.sql);
+        await client.query(
+          'INSERT INTO schema_migrations (version, name) VALUES ($1, $2) ON CONFLICT (version) DO NOTHING',
+          [migration.version, migration.name],
+        );
+        await client.query('COMMIT');
+        console.log(`[migrate] applied #${migration.version} ${migration.name}`);
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      }
+    }
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID]).catch(() => {});
+    client.release();
+  }
+}
 
 const QUEUE_FORM_TYPE = 'สั่งพิมพ์งาน 3D Print';
 
 let pool;
 
+// Read a non-negative integer env var, falling back when unset/invalid.
+function intFromEnv(name, fallback) {
+  const value = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
 // The pool is created lazily so importing this module never fails when
 // DATABASE_URL is absent; the connection is only needed once a query runs.
+// Pool size and the safety timeouts are env-tunable so a deployment can size the
+// pool to its web-replica count and Postgres max_connections. The timeouts are
+// real production guards: statement_timeout caps a runaway query rather than
+// letting it pin a pooled connection forever; idle_in_transaction_session_timeout
+// reaps a connection left mid-transaction (e.g. after an error path) so it can't
+// hold locks; keepAlive lets a dead TCP connection (DB restart/failover) be
+// detected and replaced instead of hanging. Set a timeout to 0 to disable it.
 function getPool() {
   if (!pool) {
     const connectionString = process.env.DATABASE_URL;
@@ -175,9 +313,15 @@ function getPool() {
 
     pool = new Pool({
       connectionString,
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      max: intFromEnv('DATABASE_POOL_MAX', 10),
+      idleTimeoutMillis: intFromEnv('DATABASE_POOL_IDLE_MS', 30000),
+      connectionTimeoutMillis: intFromEnv('DATABASE_CONNECT_TIMEOUT_MS', 5000),
+      // Generous default so the schema/migration advisory-lock wait at startup
+      // (web + slicer-proxy contending) is never killed, while still bounding a
+      // genuinely runaway query.
+      statement_timeout: intFromEnv('DATABASE_STATEMENT_TIMEOUT_MS', 30000),
+      idle_in_transaction_session_timeout: intFromEnv('DATABASE_IDLE_TX_TIMEOUT_MS', 60000),
+      keepAlive: true,
     });
 
     // Without a listener, an error on an idle pooled client crashes the
@@ -198,6 +342,13 @@ function query(text, params) {
 
 function isPublicViewerMode() {
   return process.env.VITE_PUBLIC_VIEWER_MODE === 'true';
+}
+
+// Cheap connectivity check for the readiness probe. Runs a trivial query through
+// the pool so it exercises connect + round-trip (bounded by the pool's connect /
+// statement timeouts). Throws on failure so the caller can report "not ready".
+export async function pingDatabase() {
+  await query('SELECT 1;');
 }
 
 function buildPrinterListSelect(includeSensitive = true) {
@@ -239,10 +390,15 @@ let schemaReadyPromise;
 
 export async function ensureSchema() {
   if (!schemaReadyPromise) {
-    schemaReadyPromise = query(SCHEMA_SQL).catch((error) => {
-      schemaReadyPromise = undefined;
-      throw error;
-    });
+    // Baseline (idempotent) first, then the ordered versioned migrations. Reset
+    // the memo on failure so a transient error doesn't permanently wedge schema
+    // setup for the process.
+    schemaReadyPromise = query(SCHEMA_SQL)
+      .then(() => runMigrations())
+      .catch((error) => {
+        schemaReadyPromise = undefined;
+        throw error;
+      });
   }
 
   await schemaReadyPromise;
@@ -263,7 +419,43 @@ export async function listPrinters(forceSensitive = false) {
     FROM printers;
   `);
 
+  const printers = result.rows[0].data;
+  // Redacted lists carry '' for apiKeyHeader, so decrypt is a no-op there.
+  if (includeSensitive && Array.isArray(printers)) {
+    printers.forEach(decryptPrinterSecrets);
+  }
+  return printers;
+}
+
+// Always-redacted printer list for non-privileged (anonymous / viewer / student)
+// callers. Unlike listPrinters(), which only redacts in PUBLIC_VIEWER_MODE, this
+// forces redaction regardless of mode, so connection secrets (IP, API key,
+// serial, url) never reach a session that isn't operator/admin.
+export async function listPrintersRedacted() {
+  await ensureSchema();
+  const result = await query(`
+    SELECT COALESCE(
+      json_agg(
+        ${buildPrinterListSelect(false)}
+        ORDER BY sort_order ASC, created_at DESC
+      ),
+      '[]'::json
+    ) AS data
+    FROM printers;
+  `);
+
   return result.rows[0].data;
+}
+
+// Always-redacted single-printer read, the per-id counterpart to
+// listPrintersRedacted (used for non-privileged GET /api/printers/:id).
+export async function getRedactedPrinterById(id) {
+  await ensureSchema();
+  const result = await query(
+    `SELECT ${buildPrinterListSelect(false)} AS printer FROM printers WHERE id = $1;`,
+    [id],
+  );
+  return result.rows[0]?.printer ?? null;
 }
 
 export async function getPrinterById(id) {
@@ -307,7 +499,7 @@ export async function getPrinterById(id) {
     [id],
   );
 
-  return result.rows[0]?.printer ?? null;
+  return decryptPrinterSecrets(result.rows[0]?.printer ?? null);
 }
 
 // Resolve a printer by its id or, failing that, its (case-insensitive) name —
@@ -343,11 +535,16 @@ export async function getPublicPrinterById(id) {
     [id],
   );
 
-  return result.rows[0]?.printer ?? null;
+  const printer = result.rows[0]?.printer ?? null;
+  return includeSensitive ? decryptPrinterSecrets(printer) : printer;
 }
 
 export async function upsertPrinter(printer) {
   await ensureSchema();
+
+  // Encrypt the connection secret at rest (no-op when PRINTER_SECRET_KEY is
+  // unset). Copy rather than mutate the caller's object.
+  const stored = { ...printer, apiKeyHeader: encryptSecret(printer.apiKeyHeader) };
 
   await query(
     `
@@ -416,13 +613,36 @@ export async function upsertPrinter(printer) {
       serial = EXCLUDED.serial,
       last_maintenance = EXCLUDED.last_maintenance;
   `,
-    [JSON.stringify(printer)],
+    [JSON.stringify(stored)],
   );
 }
 
 export async function deletePrinter(id) {
   await ensureSchema();
   await query('DELETE FROM printers WHERE id = $1;', [id]);
+}
+
+// One-time migration: encrypt any printer api_key_header still stored in
+// plaintext, once a PRINTER_SECRET_KEY is configured. No-op when encryption is
+// disabled or every row is already encrypted, so it is safe to run on every boot.
+// (The poller would also re-encrypt each row on its next write, but this covers a
+// web-only deployment and closes the window immediately.) Returns the row count.
+export async function encryptPlaintextPrinterSecrets() {
+  await ensureSchema();
+  if (!isEncryptionEnabled()) {
+    return 0;
+  }
+  const result = await query(
+    `SELECT id, api_key_header FROM printers
+     WHERE api_key_header <> '' AND api_key_header NOT LIKE 'enc:v1:%';`,
+  );
+  for (const row of result.rows) {
+    await query('UPDATE printers SET api_key_header = $2 WHERE id = $1;', [
+      row.id,
+      encryptSecret(row.api_key_header),
+    ]);
+  }
+  return result.rows.length;
 }
 
 export async function listDailyAnalytics(days = 7) {
@@ -586,6 +806,60 @@ export async function upsertQueueJobs(jobs) {
   );
 
   return result.rows[0].data;
+}
+
+// ── Login sessions ───────────────────────────────────────────────────────────
+
+// Store a freshly issued session. `tokenHash` is sha256(token); the plaintext
+// token only ever lives in the client's HttpOnly cookie.
+export async function createSession({ tokenHash, userId, username, name, role, expiresAt, ip }) {
+  await ensureSchema();
+  await query(
+    `INSERT INTO sessions (token_hash, user_id, username, name, role, expires_at, created_ip)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (token_hash) DO NOTHING;`,
+    [tokenHash, userId, username, name, role, expiresAt, ip || null],
+  );
+}
+
+// Resolve a session by token hash, returning the identity row only when it is
+// still valid. Expired rows are treated as absent (and opportunistically
+// deleted) so a stale cookie can never authorize a request.
+export async function getSession(tokenHash) {
+  await ensureSchema();
+  const result = await query(
+    `SELECT token_hash, user_id, username, name, role, expires_at
+     FROM sessions
+     WHERE token_hash = $1 AND expires_at > NOW();`,
+    [tokenHash],
+  );
+  if (result.rows.length === 0) {
+    // Best-effort cleanup of the matching expired row; never blocks the caller.
+    query('DELETE FROM sessions WHERE token_hash = $1 AND expires_at <= NOW();', [tokenHash]).catch(
+      () => {},
+    );
+    return null;
+  }
+  return result.rows[0];
+}
+
+export async function deleteSession(tokenHash) {
+  await ensureSchema();
+  await query('DELETE FROM sessions WHERE token_hash = $1;', [tokenHash]);
+}
+
+// Revoke every live session for a user — used when an account is deleted, its
+// role changes, or its password is reset, so stale cookies can't outlive the
+// change. The primary admin uses the synthetic user id 'admin'.
+export async function deleteSessionsForUser(userId) {
+  await ensureSchema();
+  await query('DELETE FROM sessions WHERE user_id = $1;', [userId]);
+}
+
+export async function deleteExpiredSessions() {
+  await ensureSchema();
+  const result = await query('DELETE FROM sessions WHERE expires_at <= NOW();');
+  return result.rowCount;
 }
 
 async function listQueueJobsByPrintedStatus(printedStatus) {
