@@ -953,3 +953,54 @@ as reachable). Does **not** save.
   ]
 }
 ```
+
+## Operational endpoints
+
+Unauthenticated infrastructure endpoints served by the `web` process, outside the
+`/api` surface. Intended for orchestrators, load balancers, and monitoring — not
+the application UI. See `monitoring/RUNBOOK.md` for response procedures.
+
+#### `GET /healthz`
+
+Liveness probe. Cheap and **database-independent** so a brief DB outage never
+cascades into the container being killed (this backs the Docker `healthcheck`).
+Always `200`:
+
+```json
+{ "ok": true }
+```
+
+#### `GET /readyz`
+
+Readiness probe. Reports dependency health: the **database** is required (a
+failure returns `503`), while **Redis** is optional — when `REDIS_URL` is set it
+is reported, but a Redis outage is `degraded`, never failing readiness (the app
+falls back to Postgres/in-memory). Use for load-balancer routing.
+
+**Response `200` (ready):**
+
+```json
+{ "ok": true, "status": "ready", "checks": { "database": "ok", "redis": "ok" } }
+```
+
+**Response `503` (database unreachable):**
+
+```json
+{ "ok": false, "status": "unavailable", "checks": { "database": "error" } }
+```
+
+(`checks.redis` is present only when `REDIS_URL` is configured.)
+
+#### `GET /metrics`
+
+Prometheus exposition of the web tier's own request metrics
+(`printfarm_web_http_requests_total`, `printfarm_web_http_request_duration_seconds`,
+`printfarm_web_http_requests_in_flight`, `printfarm_web_resident_memory_bytes`,
+`printfarm_web_start_time_seconds`). **Internal only** — nginx returns `404` for
+`/metrics` on the public site; Prometheus scrapes `web:5173/metrics` directly
+over the compose network. Carries no secrets. Distinct from the `exporter`
+service, which exposes the print-farm *data* metrics (`printfarm_*`) from Postgres.
+
+Every response (on all endpoints) carries an `X-Request-Id` header, echoed in the
+server's access log line (`reqId`) for correlation; a client may supply its own
+via the `X-Request-Id` request header.
