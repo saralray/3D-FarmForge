@@ -11,8 +11,9 @@ import { Logo } from '../components/Logo';
 import { submitPrintRequest } from '../lib/queueApi';
 
 // File types accepted by the print-request upload — kept in sync with
-// QUEUE_ALLOWED_FILE_EXT on the server.
-const ACCEPTED_FILE_TYPES = '.stl,.3mf,.obj,.step,.stp,.gcode,.gco,.g,.zip';
+// QUEUE_ALLOWED_FILE_EXT on the server. Limited to printable mesh formats.
+const ACCEPTED_FILE_TYPES = '.stl,.3mf,.obj';
+const ACCEPTED_EXTENSIONS = ['.stl', '.3mf', '.obj'];
 
 export function PrintRequest() {
   const [firstName, setFirstName] = useState('');
@@ -49,6 +50,11 @@ export function PrintRequest() {
     }
     if (!file) {
       toast.error('Please attach a model file to print.');
+      return;
+    }
+    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+    if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+      toast.error('Unsupported file type. Allowed: STL, 3MF, OBJ.');
       return;
     }
 
@@ -198,7 +204,7 @@ export function PrintRequest() {
                 onChange={(event) => setFile(event.target.files?.[0] ?? null)}
               />
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                Accepted: STL, 3MF, OBJ, STEP, G-code, ZIP. Max 50 MB.
+                Accepted: STL, 3MF, OBJ. Max 50 MB.
               </p>
               {file && (
                 <p className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">

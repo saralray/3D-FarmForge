@@ -129,17 +129,8 @@ const QUEUE_UPLOAD_MAX_BYTES = Number.parseInt(
   process.env.QUEUE_UPLOAD_MAX_BYTES ?? String(50 * 1024 * 1024),
   10,
 );
-const QUEUE_ALLOWED_FILE_EXT = new Set([
-  '.stl',
-  '.3mf',
-  '.obj',
-  '.step',
-  '.stp',
-  '.gcode',
-  '.gco',
-  '.g',
-  '.zip',
-]);
+// Print-request intake only accepts printable mesh formats (STL / 3MF / OBJ).
+const QUEUE_ALLOWED_FILE_EXT = new Set(['.stl', '.3mf', '.obj']);
 
 // Google Form (print-request) URL — retained for the Settings → Integrations
 // override, though the in-app form at /request is now the primary intake path.
@@ -3129,9 +3120,9 @@ async function handleApi(req, res, requestUrl) {
     }
 
     const ext = path.extname(file.filename || '').toLowerCase();
-    if (ext && !QUEUE_ALLOWED_FILE_EXT.has(ext)) {
+    if (!QUEUE_ALLOWED_FILE_EXT.has(ext)) {
       sendJson(res, 415, {
-        error: `Unsupported file type "${ext}". Allowed: STL, 3MF, OBJ, STEP, G-code, ZIP.`,
+        error: `Unsupported file type "${ext || 'unknown'}". Allowed: STL, 3MF, OBJ.`,
       });
       return true;
     }
