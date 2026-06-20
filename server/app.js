@@ -4392,6 +4392,39 @@ function resolveStaticPath(requestPath) {
   return resolvedPath.startsWith(distDir) ? resolvedPath : path.join(distDir, 'index.html');
 }
 
+// The installable PWA's name comes from the web manifest's `name`/`short_name`.
+// Those must follow the admin-configured branding `siteName` — the same name
+// shown in the browser tab and dashboard heading — rather than a baked-in
+// string, so the home-screen icon a user downloads matches what's configured.
+// We serve the manifest dynamically: read the built template from dist (to keep
+// its icons/colors/start_url) and override the names with the configured
+// siteName, falling back to the template's own names when branding is unset.
+// Served no-cache so a rename propagates on the next install/refresh.
+const MANIFEST_PATH = path.join(distDir, 'manifest.webmanifest');
+
+async function serveManifest(req, res) {
+  let manifest = {};
+  try {
+    manifest = JSON.parse(await readFile(MANIFEST_PATH, 'utf8'));
+  } catch (error) {
+    logger.warn('manifest read failed', error);
+  }
+
+  try {
+    const siteName = (await getBranding()).siteName.trim();
+    if (siteName) {
+      manifest.name = siteName;
+      manifest.short_name = siteName;
+    }
+  } catch (error) {
+    logger.warn('manifest branding read failed', error);
+  }
+
+  res.setHeader('Content-Type', 'application/manifest+json');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.end(JSON.stringify(manifest));
+}
+
 async function serveStatic(req, res, requestUrl) {
   let filePath = resolveStaticPath(requestUrl.pathname);
 
@@ -4551,6 +4584,11 @@ async function handleRequest(req, res) {
     }
 
     if (await handleWebcamStream(req, res, requestUrl)) {
+      return;
+    }
+
+    if (requestUrl.pathname === '/manifest.webmanifest') {
+      await serveManifest(req, res);
       return;
     }
 

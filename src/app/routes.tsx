@@ -1,5 +1,5 @@
 import { ReactNode, Suspense, lazy } from 'react';
-import { createBrowserRouter } from 'react-router';
+import { createBrowserRouter, Navigate } from 'react-router';
 import { Root } from './pages/Root';
 import { AdminRoute, ProtectedRoute } from './components/ProtectedRoute';
 
@@ -47,6 +47,13 @@ export const router = createBrowserRouter([
   {
     path: '/login',
     element: withSuspense(<Login />),
+  },
+  // Legacy entry point: the app used to live at /admin, and home-screen apps
+  // installed before the move still launch that path. Redirect it to /login so
+  // an old install opens the login page instead of a dead "page not found".
+  {
+    path: '/admin',
+    element: <Navigate to="/login" replace />,
   },
   {
     path: '/request',
