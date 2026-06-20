@@ -1113,6 +1113,37 @@ function classifyApiRequest(method, pathname) {
   return 'admin';
 }
 
+// True when a state-changing request demonstrably comes from our own site (or
+// carries no browser origin context at all). Compares the Origin (then Referer)
+// hostname against the request host. Behind nginx the proxied Host header has no
+// port (proxy_set_header Host $host) while a browser Origin includes it, so we
+// compare hostnames only — sufficient for CSRF (a different port on the same host
+// is not the threat). When neither Origin nor Referer is present (a non-browser
+// client such as curl or a server-to-server call) we allow it: CSRF is a
+// browser-only attack, and the key-gated /api/v1 API is the path for automation.
+function isSameOriginWrite(req) {
+  const source = req.headers.origin || req.headers.referer;
+  if (!source) {
+    return true;
+  }
+  let sourceHost;
+  try {
+    sourceHost = new URL(source).hostname.toLowerCase();
+  } catch {
+    return false; // malformed Origin/Referer → treat as cross-origin
+  }
+  const stripPort = (host) => host.split(':')[0].trim().toLowerCase();
+  const allowed = new Set();
+  if (typeof req.headers.host === 'string') {
+    allowed.add(stripPort(req.headers.host));
+  }
+  const forwardedHost = req.headers['x-forwarded-host'];
+  if (typeof forwardedHost === 'string') {
+    forwardedHost.split(',').forEach((host) => allowed.add(stripPort(host)));
+  }
+  return allowed.has(sourceHost);
+}
+
 // Authorization gate run at the top of handleApi. Resolves the session and
 // enforces the class from classifyApiRequest. On denial it writes the response
 // and returns false; on success it returns true and the route ladder proceeds.
@@ -1127,6 +1158,20 @@ async function authorizeFrontendApi(req, res, requestUrl) {
   const klass = classifyApiRequest(req.method || 'GET', pathname);
   if (klass === 'public') {
     return true;
+  }
+
+  // CSRF defense-in-depth for cookie-authenticated mutations. SameSite=Lax
+  // already keeps the session cookie off cross-site writes; this is a second,
+  // independent control — a state-changing request must originate from our own
+  // site. Only non-public mutations reach here (the public intake endpoints —
+  // login, SAML ACS, manager request, queue submit — returned 'public' above,
+  // so the IdP's cross-origin ACS POST and the CORS manager API are unaffected).
+  // GET/HEAD are exempt (not state-changing). The key-gated /api/v1 surface is
+  // separate and never reaches this gate.
+  const method = (req.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD' && !isSameOriginWrite(req)) {
+    sendJson(res, 403, { error: 'Cross-origin request blocked.' });
+    return false;
   }
 
   const session = await resolveSession(req);
@@ -1146,12 +1191,62 @@ async function authorizeFrontendApi(req, res, requestUrl) {
   return true;
 }
 
-function setSecurityHeaders(res) {
+// Content-Security-Policy. The built SPA loads only same-origin external module
+// scripts (no inline <script>), so script-src 'self' is safe; styles need
+// 'unsafe-inline' (React/Radix inject style attributes) and images need data:
+// (branding background + inline SVG fallback) and blob: (object URLs). No
+// external CDN/font hosts are used. Tunable at runtime: CONTENT_SECURITY_POLICY
+// overrides the whole string ("off" disables it), and CSP_REPORT_ONLY=true emits
+// it as report-only so an operator can validate a policy before enforcing.
+const DEFAULT_CSP = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self'",
+  "connect-src 'self'",
+  "frame-src 'self'",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+].join('; ');
+
+function resolveCsp() {
+  const raw = process.env.CONTENT_SECURITY_POLICY;
+  if (raw === undefined || raw === '') {
+    return DEFAULT_CSP;
+  }
+  return raw.toLowerCase() === 'off' ? null : raw;
+}
+
+const CSP_VALUE = resolveCsp();
+const CSP_HEADER = process.env.CSP_REPORT_ONLY === 'true'
+  ? 'Content-Security-Policy-Report-Only'
+  : 'Content-Security-Policy';
+
+// HSTS is only meaningful over HTTPS (browsers ignore it on plain http), so it is
+// emitted only when the request actually arrived over TLS (nginx sets
+// X-Forwarded-Proto). HSTS_MAX_AGE=0 disables it; default is 180 days.
+const HSTS_MAX_AGE = (() => {
+  const value = Number.parseInt(process.env.HSTS_MAX_AGE ?? '', 10);
+  return Number.isFinite(value) && value >= 0 ? value : 15552000;
+})();
+
+function setSecurityHeaders(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  if (CSP_VALUE) {
+    res.setHeader(CSP_HEADER, CSP_VALUE);
+  }
+  if (HSTS_MAX_AGE > 0 && req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', `max-age=${HSTS_MAX_AGE}; includeSubDomains`);
+  }
 }
 
 function sendJson(res, statusCode, payload, cacheControl = 'no-store') {
@@ -4369,7 +4464,7 @@ function logHttp(req, res, route, durationMs, requestId) {
 }
 
 async function handleRequest(req, res) {
-  setSecurityHeaders(res);
+  setSecurityHeaders(req, res);
 
   const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const route = classifyRoute(requestUrl.pathname);
