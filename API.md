@@ -492,6 +492,16 @@ classified below requires an admin session.
 
 Denials return `401` (no/expired session) or `403` (insufficient role).
 
+> **CSRF / same-origin (browser writes):** Cookie-authenticated **mutations**
+> (any non-`GET`/`HEAD` to a non-public frontend `/api/*` route) also require a
+> same-origin request — the `Origin` (or `Referer`) hostname must match the
+> request host, else `403 {"error":"Cross-origin request blocked."}`. This is
+> defense-in-depth on top of the `SameSite=Lax` session cookie. It does **not**
+> apply to the **public mutation** endpoints (so the IdP's cross-origin SAML ACS
+> POST and the CORS manager-request API still work), nor to the key-gated
+> `/api/v1` surface. Requests with no `Origin`/`Referer` (curl, server-to-server)
+> are allowed — use `/api/v1` with an API key for automation.
+
 ---
 
 ## Manager Access Request API (`/api/manager`)

@@ -89,6 +89,16 @@ disjoint `crc32(id) % count` subset — no double-polling.
 `DATABASE_IDLE_TX_TIMEOUT_MS`). Schema changes go through the versioned migration
 framework in `server/postgres.js` (`schema_migrations` table).
 
+**Security headers.** The web server sends a CSP tuned for the built SPA plus
+HSTS over HTTPS. If a frontend change ever trips the CSP (a blank page / blocked
+resource in the browser console), set `CSP_REPORT_ONLY=true` to observe
+violations without enforcing, adjust via `CONTENT_SECURITY_POLICY` (or `off` to
+disable), and re-enforce. HSTS is sent only over HTTPS; `HSTS_MAX_AGE=0` disables.
+Cookie-authenticated writes also require a same-origin `Origin`/`Referer` (CSRF
+defense-in-depth) — a `403 Cross-origin request blocked` on a legitimate write
+means a misconfigured proxy `Host`/`X-Forwarded-Host`; automation should use
+`/api/v1` with an API key instead.
+
 **Redis is optional.** With `REDIS_URL` unset the stack runs on Postgres/in-memory.
 A Redis outage degrades gracefully (one `falling back` warning, then auto-reconnect);
 it never fails `/readyz`.
