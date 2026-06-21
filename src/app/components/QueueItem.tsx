@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { PrintJob } from '../types';
 import { FileText, Check, Download, User, Mail, Trash2 } from 'lucide-react';
 import { Button } from './ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 
 interface QueueItemProps {
   job: PrintJob;
@@ -23,6 +25,8 @@ export function QueueItem({
   canDelete = false,
   canDownload = true,
 }: QueueItemProps) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
   const formatDate = (dateString?: string) => {
     if (!dateString) return '';
     const date = new Date(dateString);
@@ -78,17 +82,49 @@ export function QueueItem({
                 </Button>
               )}
               {canDelete && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete?.(job.id);
-                  }}
-                  title="Delete job"
-                >
-                  <Trash2 className="size-4 text-red-600" />
-                </Button>
+                <Popover open={confirmingDelete} onOpenChange={setConfirmingDelete}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label="Delete job"
+                      title="Delete job"
+                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-accent dark:hover:bg-accent/50"
+                    >
+                      <Trash2 className="size-4 text-red-600" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="end"
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-auto p-3"
+                  >
+                    <p className="text-sm font-medium dark:text-white">Delete this queue job?</p>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmingDelete(false);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmingDelete(false);
+                          onDelete?.(job.id);
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               )}
             </div>
           </div>

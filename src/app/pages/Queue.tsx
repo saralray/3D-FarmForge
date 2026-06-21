@@ -83,11 +83,6 @@ export function Queue() {
       return;
     }
 
-    const shouldDelete = window.confirm('Delete this queue job?');
-    if (!shouldDelete) {
-      return;
-    }
-
     try {
       await deleteQueueJob(jobId);
       const refreshed = await fetchQueueJobs();
