@@ -82,6 +82,15 @@ BAMBU_RTSP_PROFILES = frozenset({"bambulab_h2s", "bambulab_h2d", "bambulab_h2c"}
 # H2C's right toolhead is the Vortek hotend-change system, but it reports the same
 # two-nozzle structure as the H2D.
 BAMBU_DUAL_NOZZLE_PROFILES = frozenset({"bambulab_h2d", "bambulab_h2c"})
+# Printers with a chamber door / top-cover sensor. Bambu reports the open state as
+# a live bit in the report (not an HMS fault, which only fires during a print), so
+# we can surface "door open" even while idle — but only for models that have the
+# sensor. The A1 Mini has no cover sensor, so it's excluded to avoid false opens.
+BAMBU_DOOR_PROFILES = frozenset({"bambulab_h2s", "bambulab_h2d", "bambulab_h2c"})
+# Opt-in: log the raw door-related report fields each Bambu poll so the exact field
+# carrying the cover state can be confirmed on real hardware (it's firmware/model
+# specific). Off by default; set BAMBU_DOOR_DEBUG=true to enable.
+BAMBU_DOOR_DEBUG = os.getenv("BAMBU_DOOR_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 # H2-series firmware blocks FTP file access (the slicer-proxy notes the same), so
 # the direct-from-printer 3MF filament fetch can't run there; those printers fall
 # back to the AMS remain%-delta. The A1/P1 class serves the .3mf over FTPS fine.
@@ -133,6 +142,7 @@ ALTER TABLE printers ADD COLUMN IF NOT EXISTS fan_speeds JSONB;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS temperature_chamber DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS chamber_target DOUBLE PRECISION;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS air_filter_on BOOLEAN;
+ALTER TABLE printers ADD COLUMN IF NOT EXISTS error_message TEXT;
 CREATE TABLE IF NOT EXISTS analytics_daily (
   analytics_date DATE PRIMARY KEY,
   completed_jobs INTEGER NOT NULL DEFAULT 0,
@@ -381,6 +391,7 @@ def list_printers(conn: psycopg.Connection) -> list[dict[str, Any]]:
               fan_speeds AS "fanSpeeds",
               light_on AS "lightOn",
               air_filter_on AS "airFilterOn",
+              error_message AS "errorMessage",
               offline_since AS "offlineSince"
             FROM printers
             ORDER BY sort_order ASC, created_at DESC
@@ -425,6 +436,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               fan_speeds,
               light_on,
               air_filter_on,
+              error_message,
               offline_since
             ) VALUES (
               %(id)s,
@@ -453,6 +465,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               %(fanSpeeds)s::jsonb,
               %(lightOn)s,
               %(airFilterOn)s,
+              %(errorMessage)s,
               %(offlineSince)s
             )
             ON CONFLICT (id) DO UPDATE SET
@@ -481,6 +494,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
               fan_speeds = EXCLUDED.fan_speeds,
               light_on = EXCLUDED.light_on,
               air_filter_on = EXCLUDED.air_filter_on,
+              error_message = EXCLUDED.error_message,
               offline_since = EXCLUDED.offline_since
             """,
             {
@@ -510,6 +524,7 @@ def upsert_printer(conn: psycopg.Connection, printer: dict[str, Any]) -> None:
                 "fanSpeeds": json.dumps(printer.get("fanSpeeds")),
                 "lightOn": printer.get("lightOn"),
                 "airFilterOn": printer.get("airFilterOn"),
+                "errorMessage": printer.get("errorMessage"),
                 "offlineSince": printer.get("offlineSince"),
             },
         )
@@ -696,7 +711,14 @@ def fetch_generic_status(printer: dict[str, Any]) -> dict[str, Any]:
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
-    return {"status": get_reachable_generic_status(printer)}
+    status = get_reachable_generic_status(printer)
+    # A generic printer exposes no fault detail over a plain reachability ping, so
+    # the only error we can state is a generic one when its status reads "error";
+    # otherwise clear any stale message from a previous cycle.
+    return {
+        "status": status,
+        "errorMessage": "Printer reported an error" if status == "error" else None,
+    }
 
 
 def fetch_snapmaker_status(printer: dict[str, Any]) -> dict[str, Any]:
@@ -755,6 +777,15 @@ def fetch_snapmaker_status(printer: dict[str, Any]) -> dict[str, Any]:
         bed_target = printer.get("bedTarget") or 0
 
     raw_print_state = print_stats.get("state")
+    # Moonraker stores the reason a print errored/aborted in print_stats.message
+    # (e.g. a thermal-runaway shutdown). Surface it only while the state is error
+    # so a stale message from a prior job doesn't linger once the printer recovers.
+    raw_message = print_stats.get("message")
+    error_message = (
+        str(raw_message).strip()[:500]
+        if raw_print_state == "error" and isinstance(raw_message, str) and raw_message.strip()
+        else ("Printer reported an error" if raw_print_state == "error" else None)
+    )
     raw_progress = virtual_sdcard.get("progress")
     progress = 0
     if isinstance(raw_progress, (int, float)):
@@ -792,6 +823,8 @@ def fetch_snapmaker_status(printer: dict[str, Any]) -> dict[str, Any]:
         "nozzleTargets": nozzle_targets,
         "bedTarget": round(bed_target),
         "fanSpeeds": fan_speeds,
+        # Reason for an errored print (Moonraker print_stats.message), or None.
+        "errorMessage": error_message,
         # Lane currently feeding the nozzle; transient, not persisted by upsert.
         "activeSpoolId": active_spool_id,
     }
@@ -1124,10 +1157,13 @@ def _is_bambu_runout_code(short_code: str) -> bool:
     return short_code.endswith("_8011") or short_code in _BAMBU_RUNOUT_SHORT_CODES
 
 
-def bambu_filament_runout(print_data: dict[str, Any]) -> bool:
-    """True when the Bambu report carries an active filament-run-out fault."""
-    short_codes: set[str] = set()
-
+def _bambu_hms_codes(print_data: dict[str, Any]) -> list[str]:
+    """Active HMS fault codes ("MMMM_EEEE") from the report's `hms` list, in report
+    order. The `hms` list reflects *currently active* faults (entries clear once the
+    condition resolves), so it's the right "is something wrong right now" signal —
+    unlike the lingering `print_error`. Status/phase codes (<0x4000) are skipped."""
+    codes: list[str] = []
+    seen: set[str] = set()
     hms_list = print_data.get("hms")
     if isinstance(hms_list, list):
         for hms in hms_list:
@@ -1138,7 +1174,16 @@ def bambu_filament_runout(print_data: dict[str, Any]) -> bool:
             # Codes below 0x4000 are status/phase indicators, not real faults.
             if code < 0x4000:
                 continue
-            short_codes.add(f"{(attr >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}")
+            short = f"{(attr >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
+            if short not in seen:
+                seen.add(short)
+                codes.append(short)
+    return codes
+
+
+def bambu_filament_runout(print_data: dict[str, Any]) -> bool:
+    """True when the Bambu report carries an active filament-run-out fault."""
+    short_codes: set[str] = set(_bambu_hms_codes(print_data))
 
     print_error = print_data.get("print_error")
     if isinstance(print_error, (int, float)) and print_error:
@@ -1148,6 +1193,200 @@ def bambu_filament_runout(print_data: dict[str, Any]) -> bool:
             short_codes.add(f"{(pe >> 16) & 0xFFFF:04X}_{error:04X}")
 
     return any(_is_bambu_runout_code(code) for code in short_codes)
+
+
+# ── HMS fault descriptions (Bambu wiki / ha-bambulab parity) ─────────────────
+# A Bambu HMS code is the printer's own 64-bit fault id, split into the four
+# 16-bit segments the wiki uses: attr→(MODULE_SUBMODULE), code→(SEVERITY_ERROR).
+# The full four-segment string (e.g. 0300_9700_0001_0001) is exactly what
+# wiki.bambulab.com/en/<series>/troubleshooting/hmscode/<code> documents, so we
+# emit it verbatim — making any fault, mapped or not, directly searchable. The
+# severity segment is 1 fatal / 2 serious / 3 common / 4 info (info is dropped as
+# noise). The two-segment run-out logic above is the separate print_error/HMS
+# pathway and is intentionally left untouched.
+_BAMBU_HMS_SEVERITY = {1: "fatal", 2: "serious", 3: "common", 4: "info"}
+
+# Top-level module, from the high byte of attr (ha-bambulab HMS_MODULES).
+_BAMBU_HMS_MODULES = {
+    0x03: "Printer",
+    0x05: "Mainboard",
+    0x07: "AMS",
+    0x08: "Toolhead",
+    0x0C: "Camera",
+}
+
+# Exact four-segment codes worth a hand-written line (the faults an operator most
+# wants spelled out, including the chamber lid / front door open the dashboard
+# should call out). Verbatim from Bambu's published HMS table.
+_BAMBU_HMS_TEXT = {
+    "0300_9600_0001_0001": "The front door is open; the print was paused",
+    "0300_9600_0003_0001": "The front door is open",
+    "0300_9700_0001_0001": "The top cover is open; the print was paused",
+    "0300_9700_0003_0001": "The top cover is open",
+    "0300_A100_0001_0001": "Chamber temperature is too high; open the cover/door to cool down",
+    "0300_1A00_0002_0002": "The nozzle is clogged with filament",
+    "0300_1A00_0002_0001": "The nozzle is covered with filament, or the build plate is crooked",
+    "0300_1200_0002_0001": "The toolhead front cover fell off",
+}
+
+# Family fallbacks keyed by attr (module + submodule), used when the exact code
+# isn't in the table above — covers the temperature/extrusion code ranges whose
+# many sub-codes all mean the same thing operationally.
+_BAMBU_HMS_ATTR_TEXT = {
+    "0300_0100": "Heatbed temperature is abnormal; heating was stopped",
+    "0300_0200": "Nozzle temperature is abnormal; heating was stopped",
+    "0300_1E00": "Left nozzle temperature is abnormal; heating was stopped",
+    "0300_9300": "Chamber temperature sensor is abnormal",
+    "0300_0900": "Extrusion is abnormal; the nozzle may be clogged or the filament tangled",
+}
+
+# AMS faults (module 0x07) are identified by the *attr* low word's high byte — the
+# issue "family" — NOT by the code's low word (verified against the Bambu wiki:
+# 0x20=filament presence, 0x25=drying-power notice, 0x40=buffer signal, 0x50=comms,
+# 0x55=PTFE order, 0x60=overload, 0x70=pull-fail, 0x98=adapter voltage). The slot
+# number is also encoded in attr, but the family alone gives the operator the fault.
+def _bambu_ams_family(attr: int) -> int:
+    return (attr >> 8) & 0xFF
+
+
+_BAMBU_AMS_FAMILY_TEXT = {
+    0x40: "AMS filament-buffer position signal lost; the cable or sensor may be faulty",
+    0x50: "AMS communication is abnormal; check the connection cable",
+    0x55: "AMS PTFE-tube connection order is incorrect; check the buffer-to-extruder tubing",
+    0x60: "AMS slot is overloaded; the filament may be tangled or the spool stuck",
+    0x70: "Failed to pull filament from the extruder; it may be clogged or the filament broken",
+    0x98: "AMS power-adapter voltage is too low; replace the adapter",
+}
+# The 0x20 family (filament presence) is further split by the code's low word.
+_BAMBU_AMS_FILAMENT_TEXT = {
+    0x0001: "AMS: filament has run out",
+    0x0002: "AMS: the slot is empty",
+    0x0004: "AMS: the filament may be broken in the toolhead",
+}
+# AMS families that are operational notices, not faults, so they're not surfaced as
+# errors. 0x25 = "AMS is drawing printer power for drying; connect a power adapter"
+# — normal power-sharing behaviour, not something the operator needs to fix.
+_BAMBU_AMS_SUPPRESSED_FAMILIES = frozenset({0x25})
+
+
+def _bambu_hms_text(attr: int, code: int) -> str:
+    """Plain-language summary for one HMS fault, best match first: exact
+    four-segment code, then the temperature/extrusion family, then the AMS
+    issue-family, then a bare "<module> fault"."""
+    full = (
+        f"{(attr >> 16) & 0xFFFF:04X}_{attr & 0xFFFF:04X}_"
+        f"{(code >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
+    )
+    exact = _BAMBU_HMS_TEXT.get(full)
+    if exact:
+        return exact
+    family = _BAMBU_HMS_ATTR_TEXT.get(f"{(attr >> 16) & 0xFFFF:04X}_{attr & 0xFFFF:04X}")
+    if family:
+        return family
+    module = _BAMBU_HMS_MODULES.get((attr >> 24) & 0xFF, "Printer")
+    if module == "AMS":
+        ams_family = _bambu_ams_family(attr)
+        if ams_family == 0x20:
+            return _BAMBU_AMS_FILAMENT_TEXT.get(code & 0xFFFF, "AMS filament error")
+        fam_text = _BAMBU_AMS_FAMILY_TEXT.get(ams_family)
+        if fam_text:
+            return fam_text
+    return f"{module} fault"
+
+
+def bambu_error_message(print_data: dict[str, Any]) -> str | None:
+    """A human-readable summary of the printer's currently-active HMS faults, or
+    None when the printer reports no fault. Each entry is "<description>
+    (HMS_<four-segment code>)" so the operator gets a plain line plus the exact
+    code to look up on Bambu's wiki. Info-level (severity 4) notifications are
+    skipped so the dashboard surfaces faults, not chatter."""
+    hms_list = print_data.get("hms")
+    if not isinstance(hms_list, list):
+        return None
+
+    parts: list[str] = []
+    seen: set[str] = set()
+    for hms in hms_list:
+        if not isinstance(hms, dict):
+            continue
+        attr = _coerce_hms_int(hms.get("attr"))
+        code = _coerce_hms_int(hms.get("code"))
+        # Codes below 0x4000 are status/phase indicators, not real faults.
+        if code < 0x4000:
+            continue
+        severity = (code >> 16) & 0xFFFF
+        # 1 fatal / 2 serious / 3 common are faults; 4 (info) is non-actionable.
+        if severity not in (1, 2, 3):
+            continue
+        # Skip AMS operational notices (e.g. drying-power sharing) that aren't faults.
+        if (attr >> 24) & 0xFF == 0x07 and _bambu_ams_family(attr) in _BAMBU_AMS_SUPPRESSED_FAMILIES:
+            continue
+        full = (
+            f"{(attr >> 16) & 0xFFFF:04X}_{attr & 0xFFFF:04X}_"
+            f"{(code >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
+        )
+        if full in seen:
+            continue
+        seen.add(full)
+        parts.append(f"{_bambu_hms_text(attr, code)} (HMS_{full})")
+
+    if not parts:
+        return None
+    return "; ".join(parts)[:500]
+
+
+# The chamber door / top cover open state is a single bit in the report's status
+# bitfield, the same value (0x00800000) in either field Bambu uses to carry it:
+# X1-class printers report it in `home_flag` (an int); the H2 series reports it in
+# `stat` (a hex string). Unlike the HMS cover code (which only fires during a
+# print), this bit is live even while idle, so it's the reliable "is the lid open
+# right now" signal. Mirrors ha-bambulab's Home_Flag_Values/Stat_Flag_Values.
+_BAMBU_DOOR_OPEN_BIT = 0x00800000
+
+
+def bambu_door_open(print_data: dict[str, Any]) -> bool:
+    """True when the report's status bitfield marks the chamber door / top cover as
+    open. The H2 series carries it in `stat` (a hex string); X1-class printers use
+    `home_flag` (an int). We check `stat` first because an H2 report can *also*
+    carry a `home_flag` whose 0x00800000 bit isn't the door — reading it first would
+    mask the real signal (this is what ha-bambulab avoids by gating on model)."""
+    stat = print_data.get("stat")
+    if isinstance(stat, str) and stat.strip():
+        try:
+            return (int(stat, 16) & _BAMBU_DOOR_OPEN_BIT) != 0
+        except ValueError:
+            pass
+    home_flag = print_data.get("home_flag")
+    if isinstance(home_flag, (int, float)):
+        return (int(home_flag) & _BAMBU_DOOR_OPEN_BIT) != 0
+    return False
+
+
+def build_bambu_error_message(
+    print_data: dict[str, Any], profile: str | None, printer_id: str | None = None
+) -> str | None:
+    """Full fault summary for a Bambu printer: active HMS faults plus, for models
+    with a cover sensor, a live door/cover-open notice. None when all clear."""
+    if BAMBU_DOOR_DEBUG and profile in BAMBU_DOOR_PROFILES:
+        # Surface the candidate door fields so the real one can be confirmed on
+        # hardware: `stat` (H2), `home_flag` (X1-class), and the decoded result.
+        print(
+            f"[door-debug] {printer_id or '?'} profile={profile} "
+            f"stat={print_data.get('stat')!r} home_flag={print_data.get('home_flag')!r} "
+            f"hw_switch_state={print_data.get('hw_switch_state')!r} "
+            f"open={bambu_door_open(print_data)}",
+            flush=True,
+        )
+    messages: list[str] = []
+    hms_message = bambu_error_message(print_data)
+    if hms_message:
+        messages.append(hms_message)
+    # Add the live door bit only when it isn't already covered by an HMS entry
+    # (during a print the cover code and the bit both report the same open state).
+    door_in_hms = hms_message is not None and "open" in hms_message.lower()
+    if profile in BAMBU_DOOR_PROFILES and not door_in_hms and bambu_door_open(print_data):
+        messages.append("The chamber door / top cover is open")
+    return "; ".join(messages) or None
 
 
 # Bambu's MQTT report has no live "grams used" field, so per-job filament usage is
@@ -1701,6 +1940,12 @@ def fetch_bambu_status(printer: dict[str, Any]) -> dict[str, Any]:
         or printer.get("fanSpeeds"),
         "lightOn": light_on,
         "airFilterOn": air_filter_on,
+        # Human-readable summary of any active fault — HMS faults plus, on models
+        # with a cover sensor, a live door/cover-open notice. None when healthy.
+        # Surfaced on the dashboard/detail page. Persisted.
+        "errorMessage": build_bambu_error_message(
+            print_data, printer.get("profile"), printer.get("id")
+        ),
         # HMS/print_error run-out signal, edge-detected in check_filament_runout.
         # Transient (notification-only); not persisted by upsert_printer.
         "filamentRunout": bambu_filament_runout(print_data),
@@ -2365,7 +2610,7 @@ _PERSIST_SCALAR_FIELDS = (
     "name", "model", "sortOrder", "profile", "url", "ipAddress",
     "apiKeyHeader", "serial", "status", "progress", "lastMaintenance",
     "totalPrintTime", "successRate", "bedTarget", "chamberTarget",
-    "lightOn", "airFilterOn", "offlineSince",
+    "lightOn", "airFilterOn", "errorMessage", "offlineSince",
 )
 _PERSIST_OBJECT_FIELDS = (
     "temperature", "currentJob", "nozzleTemperatures", "nozzleTargets",
@@ -2380,8 +2625,9 @@ _PERSIST_OBJECT_FIELDS = (
 # excluded — only volatile state belongs in the cache.
 _TELEMETRY_FIELDS = (
     "status", "progress", "totalPrintTime", "successRate", "bedTarget",
-    "chamberTarget", "lightOn", "airFilterOn", "offlineSince", "temperature",
-    "currentJob", "nozzleTemperatures", "nozzleTargets", "spools", "fanSpeeds",
+    "chamberTarget", "lightOn", "airFilterOn", "errorMessage", "offlineSince",
+    "temperature", "currentJob", "nozzleTemperatures", "nozzleTargets",
+    "spools", "fanSpeeds",
 )
 # Outlive a few missed cycles (poller hiccup) but let a dead poller's state expire
 # so reads fall back to Postgres rather than serving frozen data forever.
@@ -2429,8 +2675,14 @@ def compute_next_printer(printer: dict[str, Any]) -> tuple[dict[str, Any], bool]
     """
     try:
         return refresh_status(printer), False
-    except Exception:
-        return apply_offline_grace_period(printer), True
+    except Exception as error:
+        fallback = apply_offline_grace_period(printer)
+        # Once the grace period elapses and the printer is shown offline, surface
+        # the reason it's unreachable; during the grace window keep the last-known
+        # state untouched so a single transient blip doesn't flash an error.
+        if fallback.get("status") == "offline":
+            fallback["errorMessage"] = (str(error).strip() or "Printer unreachable")[:500]
+        return fallback, True
 
 
 # Refresh printers concurrently. Snapmaker/generic polling is blocking HTTP (each

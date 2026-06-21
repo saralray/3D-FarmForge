@@ -108,6 +108,12 @@ Lists the available resources.
 | `GET /printers/:id/camera/stream` | Live MJPEG stream where supported, else a single JPEG. |
 | `GET /printers/:id/camera/health` | Live-view supervisor status (frame freshness, viewers, restarts). |
 
+Printer records include an `errorMessage` field: a human-readable description of
+the printer's current fault (Bambu HMS faults, a Moonraker print error, or an
+unreachable-connection reason), set per profile by the poller. It is absent/`null`
+when the printer is healthy, and — not being a connection secret — is present even
+in redacted/public-viewer responses.
+
 **Upsert body (example):**
 ```json
 {

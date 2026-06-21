@@ -5,6 +5,7 @@ import { Activity, AlertCircle, CheckCircle, Pause, WifiOff } from 'lucide-react
 import { Card } from './ui/card';
 import { Progress } from './ui/progress';
 import { Badge } from './ui/badge';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { buildPrinterWebcamSnapshotUrl } from '../lib/printerProfiles';
 import { formatMaxTwoDecimals } from '../lib/numberFormat';
 import { useIsMobile } from './ui/use-mobile';
@@ -164,7 +165,39 @@ export function PrinterCard({
 
       <div className="flex flex-col sm:flex-row items-start justify-between gap-2 mb-3">
         <div className="min-w-0 w-full">
-          <h3 className="font-semibold mb-0.5 sm:mb-1 dark:text-white text-sm sm:text-base truncate">{printer.name}</h3>
+          <div className="flex items-center gap-1.5">
+            <h3 className="font-semibold mb-0.5 sm:mb-1 dark:text-white text-sm sm:text-base truncate">{printer.name}</h3>
+            {printer.errorMessage && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={(event) => event.stopPropagation()}
+                    aria-label="View printer error"
+                    title="View printer error"
+                    className="shrink-0 mb-0.5 sm:mb-1 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                  >
+                    <AlertCircle className="size-4" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  onClick={(event) => event.stopPropagation()}
+                  className="w-72 border-red-200 dark:border-red-900/60"
+                >
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="size-4 shrink-0 mt-0.5 text-red-600 dark:text-red-400" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-red-700 dark:text-red-300">Printer error</p>
+                      <p className="mt-1 text-xs text-gray-600 dark:text-gray-300 break-words">
+                        {printer.errorMessage}
+                      </p>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            )}
+          </div>
           <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">{printer.model}</p>
         </div>
         <div className="flex w-full sm:w-auto sm:flex-1 items-start justify-start sm:justify-end gap-2">

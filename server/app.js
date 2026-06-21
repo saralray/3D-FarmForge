@@ -882,8 +882,9 @@ async function revokeCachedUserSessions(userId) {
 // can never reintroduce a connection secret into a redacted/public response.
 const LIVE_TELEMETRY_FIELDS = [
   'status', 'progress', 'totalPrintTime', 'successRate', 'bedTarget',
-  'chamberTarget', 'lightOn', 'airFilterOn', 'offlineSince', 'temperature',
-  'currentJob', 'nozzleTemperatures', 'nozzleTargets', 'spools', 'fanSpeeds',
+  'chamberTarget', 'lightOn', 'airFilterOn', 'errorMessage', 'offlineSince',
+  'temperature', 'currentJob', 'nozzleTemperatures', 'nozzleTargets',
+  'spools', 'fanSpeeds',
 ];
 
 async function overlayLiveTelemetry(printer) {

@@ -337,6 +337,7 @@ export function normalizePrinter(printer: Partial<Printer>, index: number): Prin
     spools,
     lightOn: printer.lightOn,
     airFilterOn: printer.airFilterOn,
+    errorMessage: printer.errorMessage,
   };
 }
 

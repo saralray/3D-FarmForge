@@ -55,6 +55,10 @@ export interface Printer {
   spools?: Spool[]; // Optional multi-spool support
   lightOn?: boolean; // Last-known chamber/cavity light state (Bambu reports it over MQTT)
   airFilterOn?: boolean; // Last-known H2 air-filter state (from the airduct filtration submode)
+  // Human-readable description of the printer's current fault, set by the poller
+  // per profile (Bambu HMS faults, Moonraker print error, or an unreachable
+  // connection). Absent/empty when the printer is healthy.
+  errorMessage?: string;
 }
 
 export interface PrintJob {

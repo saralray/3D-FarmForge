@@ -53,6 +53,7 @@ ALTER TABLE printers ADD COLUMN IF NOT EXISTS fan_speeds JSONB;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS temperature_chamber DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS chamber_target DOUBLE PRECISION;
 ALTER TABLE printers ADD COLUMN IF NOT EXISTS air_filter_on BOOLEAN;
+ALTER TABLE printers ADD COLUMN IF NOT EXISTS error_message TEXT;
 CREATE TABLE IF NOT EXISTS analytics_daily (
   analytics_date DATE PRIMARY KEY,
   completed_jobs INTEGER NOT NULL DEFAULT 0,
@@ -384,7 +385,8 @@ function buildPrinterListSelect(includeSensitive = true) {
       'spools', spools,
       'fanSpeeds', fan_speeds,
       'lightOn', light_on,
-      'airFilterOn', air_filter_on
+      'airFilterOn', air_filter_on,
+      'errorMessage', error_message
     )
   `;
 }
@@ -494,7 +496,8 @@ export async function getPrinterById(id) {
       'spools', spools,
       'fanSpeeds', fan_speeds,
       'lightOn', light_on,
-      'airFilterOn', air_filter_on
+      'airFilterOn', air_filter_on,
+      'errorMessage', error_message
     ) AS printer
     FROM printers
     WHERE id = $1;

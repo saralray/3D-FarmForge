@@ -32,6 +32,7 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   Pencil,
+  AlertCircle,
 } from 'lucide-react';
 import {
   MOTION_STEP_OPTIONS,
@@ -1167,6 +1168,19 @@ export function PrinterDetail() {
           </Badge>
         </div>
       </div>
+
+      {printer.errorMessage && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200"
+        >
+          <AlertCircle className="size-5 shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <div className="font-semibold">Printer error</div>
+            <div className="break-words">{printer.errorMessage}</div>
+          </div>
+        </div>
+      )}
 
       {isLayoutEditing && (
         <p className="text-sm text-gray-500 dark:text-gray-400">
