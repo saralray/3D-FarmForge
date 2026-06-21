@@ -108,7 +108,7 @@ export function PrinterCard({
 
   return (
     <Card
-      className={`printer-card p-3 sm:p-4 hover:shadow-lg transition-shadow dark:bg-gray-800 dark:border-gray-700 ${canManage && onDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+      className={`printer-card p-2 sm:p-3 hover:shadow-lg transition-shadow dark:bg-gray-800 dark:border-gray-700 ${canManage && onDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
       draggable={canManage && Boolean(onDragStart)}
       onClick={() => {
         if (draggedRef.current) {
@@ -147,7 +147,7 @@ export function PrinterCard({
       }}
     >
       {!isMobile && (
-        <div className="printer-card-webcam mb-4 aspect-video overflow-hidden rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-900">
+        <div className="printer-card-webcam mb-1.5 aspect-video overflow-hidden rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-900">
           {isOnline ? (
             <img
               src={webcamSnapshotUrl}
@@ -163,10 +163,10 @@ export function PrinterCard({
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row items-start justify-between gap-2 mb-3">
+      <div className="flex flex-col sm:flex-row items-start justify-between gap-2 mb-1.5">
         <div className="min-w-0 w-full">
           <div className="flex items-center gap-1.5">
-            <h3 className="font-semibold mb-0.5 sm:mb-1 dark:text-white text-sm sm:text-base truncate">{printer.name}</h3>
+            <h3 className="font-semibold mb-0 dark:text-white text-sm sm:text-base truncate">{printer.name}</h3>
             {printer.errorMessage && (
               <Popover>
                 <PopoverTrigger asChild>
@@ -201,7 +201,7 @@ export function PrinterCard({
           <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">{printer.model}</p>
         </div>
         <div className="flex w-full sm:w-auto sm:flex-1 items-start justify-start sm:justify-end gap-2">
-          <div className="flex flex-col items-start sm:items-end gap-2 sm:ml-auto">
+          <div className="flex flex-col items-start sm:items-end gap-1.5 sm:ml-auto">
             <div className="flex items-center gap-2">
               <Badge variant={getStatusBadgeVariant()} className="flex items-center gap-1 capitalize">
                 {getActivityIcon()}
@@ -214,7 +214,7 @@ export function PrinterCard({
               />
             </div>
             {printer.spools && printer.spools.length > 0 && (
-              <div className="mt-1.5 flex items-center gap-2" aria-label="filament colors">
+              <div className="mt-1 flex items-center gap-2" aria-label="filament colors">
                 {printer.spools.map((spool, index) => (
                   <span
                     key={`${printer.id}-status-spool-${spool.id}-${index}`}
@@ -229,29 +229,26 @@ export function PrinterCard({
         </div>
       </div>
 
-      {printer.status === 'printing' || printer.status === 'paused' ? (
-        <div className="space-y-3">
-          <div>
-            <div className="flex justify-between text-sm mb-1">
-              <span className="text-gray-600 dark:text-gray-400 truncate min-w-0 flex-1 mr-2">
+      <div>
+        <div className="flex items-center gap-2 text-xs sm:text-sm mb-0.5 leading-tight min-h-[1rem]">
+          {(printer.status === 'printing' || printer.status === 'paused') && (
+            <>
+              <span className="text-gray-600 dark:text-gray-400 truncate min-w-0 flex-1">
                 {printer.currentJob?.filename}
               </span>
-              <div className="flex shrink-0 items-center gap-3">
-                <span className="text-gray-500 dark:text-gray-400">
-                  ETA <span className="font-medium dark:text-white">{printer.currentJob?.timeRemaining}m</span>
-                </span>
-                <span className="font-medium dark:text-white">{formatMaxTwoDecimals(printer.progress)}%</span>
-              </div>
-            </div>
-            <Progress value={printer.progress} className="h-2" />
-          </div>
+              <span className="shrink-0 text-gray-500 dark:text-gray-400">
+                ETA <span className="font-medium dark:text-white">{printer.currentJob?.timeRemaining}m</span>
+              </span>
+              <span className="shrink-0 font-medium dark:text-white">{formatMaxTwoDecimals(printer.progress)}%</span>
+            </>
+          )}
         </div>
-      ) : (
-        <div className="py-2">
-          <div className={`w-full h-2 rounded-full ${getStatusColor()} opacity-20 mb-3`} />
-          <div className="grid grid-cols-1 gap-2 text-sm" />
-        </div>
-      )}
+        {printer.status === 'printing' || printer.status === 'paused' ? (
+          <Progress value={printer.progress} className="h-2" />
+        ) : (
+          <div className={`w-full h-2 rounded-full ${getStatusColor()} opacity-20`} />
+        )}
+      </div>
     </Card>
   );
 }

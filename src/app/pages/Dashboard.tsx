@@ -65,7 +65,11 @@ export function Dashboard() {
     total: printers.length,
     online: printers.filter((p) => p.status !== 'offline').length,
     printing: printers.filter((p) => p.status === 'printing').length,
-    error: printers.filter((p) => p.status === 'error').length,
+    // Count every printer currently surfacing a fault — either a hard error
+    // status or an active errorMessage (HMS faults like chamber-temp/door-open/
+    // spool-empty appear via errorMessage while status may still be printing/idle),
+    // so this card stays in sync with the per-printer error shown on each card.
+    error: printers.filter((p) => p.status === 'error' || (p.errorMessage?.trim() ?? '') !== '').length,
     paused: printers.filter((p) => p.status === 'paused').length,
     offline: printers.filter((p) => p.status === 'offline').length,
   };

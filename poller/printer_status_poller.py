@@ -1,6 +1,7 @@
 import base64
 import calendar
 import ftplib
+import gzip
 import hashlib
 import json
 import os
@@ -1224,6 +1225,8 @@ _BAMBU_HMS_TEXT = {
     "0300_9700_0001_0001": "The top cover is open; the print was paused",
     "0300_9700_0003_0001": "The top cover is open",
     "0300_A100_0001_0001": "Chamber temperature is too high; open the cover/door to cool down",
+    "0300_A700_0003_0001": "Chamber temperature is high or air filtration is on; the exhaust fan sped up. Open the front door/top cover or lower the ambient temperature",
+    "12FF_2000_0002_0002": "The external spool holder is empty; insert new filament",
     "0300_1A00_0002_0002": "The nozzle is clogged with filament",
     "0300_1A00_0002_0001": "The nozzle is covered with filament, or the build plate is crooked",
     "0300_1200_0002_0001": "The toolhead front cover fell off",
@@ -1269,10 +1272,41 @@ _BAMBU_AMS_FILAMENT_TEXT = {
 _BAMBU_AMS_SUPPRESSED_FAMILIES = frozenset({0x25})
 
 
+# Complete Bambu HMS code → description table, vendored from ha-bambulab
+# (custom_components/bambu_lab/pybambu/hms_error_text/hms_en.json.gz). Keyed by the
+# 16-hex-digit code — the four segments concatenated without separators, e.g.
+# "0300A70000030001" — which is exactly attr<<32 | code. It enumerates every
+# documented fault, including each AMS unit/slot variant, so a code we haven't
+# hand-curated still renders the real Bambu description instead of "<module> fault".
+# Our curated _BAMBU_HMS_TEXT (shorter phrasings) still overrides this; this is the
+# comprehensive fallback consulted before the family/module fallbacks. Missing or
+# unreadable file degrades gracefully to an empty table (curated tables still work).
+_BAMBU_HMS_FULL_TABLE: dict[str, str] = {}
+
+
+def _load_bambu_hms_table() -> None:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bambu_hms_en.json.gz")
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError) as error:  # missing/corrupt file must not break polling
+        print(f"bambu hms table load failed ({path}): {error}", flush=True)
+        return
+    for key, value in (data.get("device_hms") or {}).items():
+        if isinstance(value, dict) and value:
+            text = next(iter(value))
+            if isinstance(text, str) and text.strip():
+                _BAMBU_HMS_FULL_TABLE[str(key).upper()] = text.strip()
+
+
+_load_bambu_hms_table()
+
+
 def _bambu_hms_text(attr: int, code: int) -> str:
-    """Plain-language summary for one HMS fault, best match first: exact
-    four-segment code, then the temperature/extrusion family, then the AMS
-    issue-family, then a bare "<module> fault"."""
+    """Plain-language summary for one HMS fault, best match first: curated exact
+    four-segment code, the full vendored HMS table (every documented code), then the
+    curated temperature/extrusion family, the AMS issue-family, and finally a bare
+    "<module> fault"."""
     full = (
         f"{(attr >> 16) & 0xFFFF:04X}_{attr & 0xFFFF:04X}_"
         f"{(code >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
@@ -1280,6 +1314,9 @@ def _bambu_hms_text(attr: int, code: int) -> str:
     exact = _BAMBU_HMS_TEXT.get(full)
     if exact:
         return exact
+    vendored = _BAMBU_HMS_FULL_TABLE.get(full.replace("_", ""))
+    if vendored:
+        return vendored
     family = _BAMBU_HMS_ATTR_TEXT.get(f"{(attr >> 16) & 0xFFFF:04X}_{attr & 0xFFFF:04X}")
     if family:
         return family
