@@ -72,6 +72,44 @@ export function readZipEntry(buf, name) {
   }
 }
 
+// Extract the sliced plate G-code out of an Orca/Bambu .gcode.3mf bundle. Klipper/
+// Moonraker printers need plain G-code, but the slicer uploads the .3mf container
+// (Metadata/plate_<n>.gcode inside). Returns { name, data } of the first plate, or
+// null when the buffer is not a bundle / has no plate G-code.
+export function extractPlateGcodeFrom3mf(buf) {
+  try {
+    const minEocd = 22;
+    if (buf.length < minEocd) return null;
+    let eocd = -1;
+    const scanStart = Math.max(0, buf.length - (minEocd + 0xffff));
+    for (let i = buf.length - minEocd; i >= scanStart; i -= 1) {
+      if (buf.readUInt32LE(i) === EOCD_SIG) { eocd = i; break; }
+    }
+    if (eocd < 0) return null;
+
+    const cdCount = buf.readUInt16LE(eocd + 10);
+    const cdOffset = buf.readUInt32LE(eocd + 16);
+    const gcodeRe = /^Metadata\/plate_\d+\.gcode$/;
+
+    let p = cdOffset;
+    for (let n = 0; n < cdCount; n += 1) {
+      if (p + 46 > buf.length || buf.readUInt32LE(p) !== CDIR_SIG) return null;
+      const nameLen = buf.readUInt16LE(p + 28);
+      const extraLen = buf.readUInt16LE(p + 30);
+      const commentLen = buf.readUInt16LE(p + 32);
+      const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+      if (gcodeRe.test(name)) {
+        const data = readZipEntry(buf, name);
+        if (data) return { name, data };
+      }
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // Sum the plate-level filament weight (grams) from a Bambu / Orca 3MF's
 // Metadata/slice_info.config. Each <plate> carries
 // <metadata key="weight" value="<grams>"/>; summing across plates yields the

@@ -36,7 +36,7 @@ import {
   touchSlicerApiKey,
 } from '../server/postgres.js';
 import { mintSlicerGrant } from '../server/slicerGrant.js';
-import { extractFilamentGramsFrom3mf } from './parse3mf.js';
+import { extractFilamentGramsFrom3mf, extractPlateGcodeFrom3mf } from './parse3mf.js';
 import {
   buildFilamentManagerSelections,
   buildFilamentManagerSpools,
@@ -202,8 +202,21 @@ function parseUpload(req) {
 // Snapmaker U1 speaks Moonraker: a multipart POST to /server/files/upload with a
 // "print" form field auto-starts the job once the upload finishes.
 async function uploadToMoonraker(printer, file) {
+  // Klipper/Moonraker prints plain G-code. Slicers upload an Orca/Bambu .gcode.3mf
+  // bundle, so unwrap the plate G-code (Metadata/plate_<n>.gcode) and send that.
+  let uploadBuffer = file.buffer;
+  let uploadName = file.filename;
+  if (/\.3mf$/i.test(file.filename)) {
+    const plate = extractPlateGcodeFrom3mf(file.buffer);
+    if (!plate) {
+      throw new Error('Could not find plate G-code inside the uploaded .3mf bundle');
+    }
+    uploadBuffer = plate.data;
+    uploadName = file.filename.replace(/\.gcode\.3mf$/i, '.gcode').replace(/\.3mf$/i, '.gcode');
+  }
+
   const form = new FormData();
-  form.append('file', new Blob([file.buffer]), file.filename);
+  form.append('file', new Blob([uploadBuffer]), uploadName);
   form.append('print', 'true');
 
   const headers = {};
