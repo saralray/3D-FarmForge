@@ -877,6 +877,19 @@ export async function unloadPrinterFilament(printer: Printer, slot: number, tray
 export const FILAMENT_MATERIALS = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PC', 'PA', 'PVA'] as const;
 export type FilamentMaterial = (typeof FILAMENT_MATERIALS)[number];
 
+// Common filament vendors offered as suggestions by the "Edit filament" dialog.
+// The field is free-text (any brand is allowed); these just populate a datalist.
+export const FILAMENT_VENDORS = [
+  'Bambu Lab',
+  'Polymaker',
+  'eSUN',
+  'Hatchbox',
+  'Prusament',
+  'Overture',
+  'SUNLU',
+  'Generic',
+] as const;
+
 export function printerSupportsFilamentEdit(printer: Printer) {
   // Editable on every profile that exposes filament slots: Bambu (MQTT
   // ams_filament_setting) and the Snapmaker U1 (Klipper/AFC SET_MATERIAL +
@@ -894,11 +907,13 @@ export async function setPrinterFilament(
   printer: Printer,
   slot: number,
   trayId: number | undefined,
-  settings: { type: string; color: string },
+  settings: { type: string; color: string; vendor?: string },
 ) {
   if (!printerSupportsFilamentEdit(printer)) {
     throw new Error('Editing filament is not available for this printer.');
   }
+
+  const vendor = (settings.vendor ?? '').trim();
 
   let response: Response;
   if (isBambuProfile(printer.profile)) {
@@ -910,6 +925,7 @@ export async function setPrinterFilament(
         trayId,
         type: settings.type,
         color: settings.color,
+        vendor,
       }),
     });
   } else if (printer.profile === 'snapmaker_u1') {

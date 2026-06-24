@@ -1792,6 +1792,13 @@ function buildBambuCommandPayload(command, params = {}, profile) {
     const preset = BAMBU_FILAMENT_PRESETS[type] || BAMBU_FILAMENT_PRESETS.PLA;
     const color = String(params.color || '#808080').replace('#', '').slice(0, 6).toUpperCase();
     const trayColor = `${color.padEnd(6, '0')}FF`;
+    // Optional brand/vendor label. Bambu stores it as the tray's filament setting
+    // name (`tray_id_name`) and reports it back, so the card's vendor round-trips.
+    // Kept short and free of control chars; empty string leaves it unset.
+    const vendor = String(params.vendor || '')
+      .replace(/[^\x20-\x7e]/g, '')
+      .trim()
+      .slice(0, 32);
     return {
       print: {
         command: 'ams_filament_setting',
@@ -1802,6 +1809,7 @@ function buildBambuCommandPayload(command, params = {}, profile) {
         nozzle_temp_min: preset.min,
         nozzle_temp_max: preset.max,
         tray_type: preset.type,
+        tray_id_name: vendor,
         setting_id: '',
         sequence_id: sequenceId,
       },

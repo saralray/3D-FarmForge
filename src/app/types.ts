@@ -14,6 +14,7 @@ export interface Spool {
   id: string;
   color: string;
   material: string;
+  vendor?: string; // Brand/vendor label (Bambu tray_id_name); absent when unknown
   remaining: number; // percentage
   weight: number; // grams
 }

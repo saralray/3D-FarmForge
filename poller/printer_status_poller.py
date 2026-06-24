@@ -1111,6 +1111,9 @@ def build_bambu_spools(print_data: dict[str, Any]) -> list[dict[str, Any]] | Non
         if not material:
             return
         color = str(tray.get("tray_color") or "808080FF")[:6]
+        # Brand/vendor label set via the "Edit filament" dialog (ams_filament_setting
+        # tray_id_name); blank for spools the user hasn't labelled.
+        vendor = str(tray.get("tray_id_name") or "").strip()
         remain = tray.get("remain")
         remain_valid = isinstance(remain, (int, float)) and remain >= 0
         remaining = max(0, min(100, round(remain))) if remain_valid else 0
@@ -1133,6 +1136,7 @@ def build_bambu_spools(print_data: dict[str, Any]) -> list[dict[str, Any]] | Non
                 "id": slot_id,
                 "color": f"#{color}",
                 "material": material,
+                "vendor": vendor,
                 "remaining": remaining,
                 "weight": weight,
             }

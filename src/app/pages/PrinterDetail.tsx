@@ -58,6 +58,7 @@ import {
   printerSupportsFilamentEdit,
   setPrinterFilament,
   FILAMENT_MATERIALS,
+  FILAMENT_VENDORS,
   printerSupportsLight,
   printerSupportsLiveMjpeg,
   printerSupportsMotionControl,
@@ -359,9 +360,14 @@ export function PrinterDetail() {
   // The filament slot the user has selected (its 1-based `slot`). Load/Unload/Edit
   // act on this slot, so the controls stay disabled until a spool is picked.
   const [selectedFilamentSlot, setSelectedFilamentSlot] = useState<number | null>(null);
-  // "Edit filament" dialog: the slot being edited plus its draft material/color.
+  // "Edit filament" dialog: the slot being edited plus its draft vendor/material/color.
   const [filamentEditSlot, setFilamentEditSlot] = useState<FilamentSlot | null>(null);
-  const [filamentEditDraft, setFilamentEditDraft] = useState<{ type: string; color: string }>({
+  const [filamentEditDraft, setFilamentEditDraft] = useState<{
+    vendor: string;
+    type: string;
+    color: string;
+  }>({
+    vendor: '',
     type: 'PLA',
     color: '#808080',
   });
@@ -773,7 +779,7 @@ export function PrinterDetail() {
       // slot number matches the AMS, not just the order spools were reported.
       // The external spool (254) and non-Bambu profiles fall back to index+1.
       slot: trayId !== undefined && trayId !== 254 ? trayId + 1 : index + 1,
-      vendor: '',
+      vendor: spool.vendor || '',
       type: spool.material || 'Unknown',
       subType: '',
       color: spool.color || '#808080',
@@ -1004,6 +1010,7 @@ export function PrinterDetail() {
   const openFilamentEdit = (slot: FilamentSlot) => {
     setFilamentEditSlot(slot);
     setFilamentEditDraft({
+      vendor: slot.vendor && slot.vendor !== 'Unknown' ? slot.vendor : '',
       type: (slot.type || 'PLA').toUpperCase(),
       color: slot.color || '#808080',
     });
@@ -1018,6 +1025,7 @@ export function PrinterDetail() {
       await setPrinterFilament(printer, filamentEditSlot.slot, filamentEditSlot.trayId, {
         type: filamentEditDraft.type,
         color: filamentEditDraft.color,
+        vendor: filamentEditDraft.vendor,
       });
       toast.success('Filament updated');
       setFilamentEditSlot(null);
@@ -2148,7 +2156,7 @@ export function PrinterDetail() {
               <DialogTitle>Edit Filament</DialogTitle>
               <DialogDescription>
                 {filamentEditSlot
-                  ? `Set the material and color for ${
+                  ? `Set the vendor, material and color for ${
                       filamentEditSlot.label ??
                       `${isBambuProfile(printer.profile) ? 'Slot' : 'Tool'} ${filamentEditSlot.slot}`
                     }.`
@@ -2156,6 +2164,23 @@ export function PrinterDetail() {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="filament-vendor">Vendor</Label>
+                <Input
+                  id="filament-vendor"
+                  list="filament-vendor-options"
+                  placeholder="e.g. Bambu Lab"
+                  value={filamentEditDraft.vendor}
+                  onChange={(event) =>
+                    setFilamentEditDraft((draft) => ({ ...draft, vendor: event.target.value }))
+                  }
+                />
+                <datalist id="filament-vendor-options">
+                  {FILAMENT_VENDORS.map((vendor) => (
+                    <option key={vendor} value={vendor} />
+                  ))}
+                </datalist>
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="filament-type">Material</Label>
                 <Select
