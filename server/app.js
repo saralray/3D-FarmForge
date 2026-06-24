@@ -1687,17 +1687,18 @@ const QUEUE_FILE_STREAM_CHUNK_BYTES = 256 * 1024;
 // server RAM. Returns false (without touching the response) when no file
 // exists, so the caller can send a 404. Honours backpressure by waiting for the
 // socket to drain between chunks.
-async function streamQueueJobFile(res, id) {
+async function streamQueueJobFile(res, id, { inline = false } = {}) {
   const meta = await getQueueJobFileMeta(id);
   if (!meta) {
     return false;
   }
 
   const safeName = (meta.filename || 'model').replace(/[^\w.\- ]+/g, '_');
+  const disposition = inline ? 'inline' : 'attachment';
   res.statusCode = 200;
   res.setHeader('Content-Type', meta.mime);
   res.setHeader('Content-Length', meta.size);
-  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  res.setHeader('Content-Disposition', `${disposition}; filename="${safeName}"`);
   res.setHeader('Cache-Control', 'no-store');
 
   for (let offset = 0; offset < meta.size; offset += QUEUE_FILE_STREAM_CHUNK_BYTES) {
@@ -3653,7 +3654,8 @@ async function handleApi(req, res, requestUrl) {
     const jobId = decodeURIComponent(
       requestUrl.pathname.slice('/api/queue/'.length, -'/file'.length),
     );
-    const streamed = await streamQueueJobFile(res, jobId);
+    const inline = requestUrl.searchParams.get('open') === '1';
+    const streamed = await streamQueueJobFile(res, jobId, { inline });
     if (!streamed) {
       sendJson(res, 404, { error: 'File not found' });
     }
