@@ -3,7 +3,7 @@ import { PrintJob } from '../types';
 import { QueueItem } from '../components/QueueItem';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { List, ClipboardList } from 'lucide-react';
+import { List, ClipboardList, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { deleteQueueJob, fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
@@ -16,7 +16,10 @@ export function Queue() {
   const { printers } = usePrinters();
   const [queue, setQueue] = useState<PrintJob[]>([]);
   const [history, setHistory] = useState<PrintJob[]>([]);
+  const [historyPage, setHistoryPage] = useState(0);
   const [resetInFlight, setResetInFlight] = useState(false);
+
+  const HISTORY_PAGE_SIZE = 5;
 
   useEffect(() => {
     let active = true;
@@ -29,6 +32,7 @@ export function Queue() {
         if (active) {
           setQueue(jobs.queue);
           setHistory(jobs.history);
+          setHistoryPage(0);
         }
       } catch (error) {
         console.error('Failed to load queue', error);
@@ -139,6 +143,12 @@ export function Queue() {
     toast.success('Started file download');
   };
 
+  const historyTotalPages = Math.ceil(history.length / HISTORY_PAGE_SIZE);
+  const historyPageItems = history.slice(
+    historyPage * HISTORY_PAGE_SIZE,
+    (historyPage + 1) * HISTORY_PAGE_SIZE,
+  );
+
   const availablePrinters = printers.filter((printer) => printer.status === 'idle').length;
   const totalFiles = queue.reduce((acc, job) => acc + (job.fileCount ?? 1), 0);
   const canManageQueue = user?.role === 'admin' || user?.role === 'operator';
@@ -230,26 +240,51 @@ export function Queue() {
         </div>
 
         {history.length > 0 ? (
-          <div className="space-y-3">
-            {history.map((job, index) => (
-              <div key={job.id} className="flex items-start gap-3">
-                <div className="text-sm font-medium text-gray-400 w-6 text-center mt-4">
-                  {index + 1}
+          <>
+            <div className="space-y-3">
+              {historyPageItems.map((job, index) => (
+                <div key={job.id} className="flex items-start gap-3">
+                  <div className="text-sm font-medium text-gray-400 w-6 text-center mt-4">
+                    {historyPage * HISTORY_PAGE_SIZE + index + 1}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <QueueItem
+                      job={job}
+                      mode="history"
+                      onDelete={canDeleteQueueJobs ? handleDeleteQueueJob : undefined}
+                      onDownload={canDownloadQueueFiles ? handleDownload : undefined}
+                      canManage={false}
+                      canDelete={canDeleteQueueJobs}
+                      canDownload={canDownloadQueueFiles}
+                    />
+                  </div>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <QueueItem
-                    job={job}
-                    mode="history"
-                    onDelete={canDeleteQueueJobs ? handleDeleteQueueJob : undefined}
-                    onDownload={canDownloadQueueFiles ? handleDownload : undefined}
-                    canManage={false}
-                    canDelete={canDeleteQueueJobs}
-                    canDownload={canDownloadQueueFiles}
-                  />
-                </div>
+              ))}
+            </div>
+            {historyTotalPages > 1 && (
+              <div className="flex items-center justify-center gap-3 mt-4 pt-4 border-t dark:border-gray-700">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setHistoryPage((p) => p - 1)}
+                  disabled={historyPage === 0}
+                >
+                  <ChevronLeft className="size-4" />
+                </Button>
+                <span className="text-sm text-gray-600 dark:text-gray-400">
+                  {historyPage + 1} / {historyTotalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setHistoryPage((p) => p + 1)}
+                  disabled={historyPage >= historyTotalPages - 1}
+                >
+                  <ChevronRight className="size-4" />
+                </Button>
               </div>
-            ))}
-          </div>
+            )}
+          </>
         ) : (
           <div className="text-center py-12 text-gray-500 dark:text-gray-400">
             <List className="size-12 mx-auto mb-3 opacity-50" />
