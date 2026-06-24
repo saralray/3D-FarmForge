@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Bell, Check, Copy, Image as ImageIcon, KeyRound, MonitorCheck, Settings as SettingsIcon, Shield, Trash2, Users, Wrench, X } from 'lucide-react';
+import { Bell, Check, Copy, House, Image as ImageIcon, KeyRound, MonitorCheck, Settings as SettingsIcon, Shield, Trash2, Users, Wrench, X } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -64,6 +64,7 @@ import {
   DEFAULT_SITE_NAME,
 } from '../lib/settingsApi';
 import { OAuthProviderSettings } from '../components/OAuthProviderSettings';
+import { HomeAssistantSettings } from '../components/HomeAssistantSettings';
 import { SamlSsoSettings } from '../components/SamlSsoSettings';
 import { fetchEnabledOAuthProviders } from '../lib/oauthApi';
 import {
@@ -84,6 +85,7 @@ const SETTINGS_TABS = [
   { value: 'slicer-upload', label: 'API Keys', icon: KeyRound },
   { value: 'managers', label: 'Managers', icon: MonitorCheck },
   { value: 'maintenance', label: 'Maintenance', icon: Wrench },
+  { value: 'home-assistant', label: 'Home Assistant', icon: House },
   { value: 'sign-in', label: 'Sign-in', icon: Shield },
 ] as const;
 
@@ -1872,6 +1874,10 @@ export function Settings() {
 
         <TabsContent value="maintenance">
           <MaintenanceIntervalsSettings />
+        </TabsContent>
+
+        <TabsContent value="home-assistant">
+          <HomeAssistantSettings disabled={user?.role !== 'admin'} />
         </TabsContent>
 
         <TabsContent value="sign-in">

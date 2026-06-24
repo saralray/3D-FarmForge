@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import mqtt from 'mqtt';
 import busboy from 'busboy';
+import { decryptSecret, encryptSecret } from './secretCrypto.js';
 import {
   approveManagerRequest,
   clearManagerRequestKeySecret,
@@ -159,6 +160,299 @@ async function getIntegrationUrls() {
     googleSheetQueueUrl: stored.googleSheetQueueUrl || '',
     googleFormUrl: stored.googleFormUrl || '',
   };
+}
+
+// Home Assistant integration: base URL + a long-lived access token (the token is
+// the secret, stored encrypted at rest with the same AES-256-GCM scheme as
+// printer secrets). The server holds the token and proxies every HA REST call so
+// the token never reaches the browser. Admin-only (see isSensitiveRead /
+// isAdminMutation gating on /api/settings/home-assistant*).
+const HOME_ASSISTANT_KEY = 'home_assistant';
+
+// Normalize a configured base URL: strip a trailing slash and a trailing /api so
+// haFetch can append '/api/...' uniformly regardless of how the admin typed it.
+function normalizeHaBaseUrl(raw) {
+  let base = String(raw || '').trim();
+  if (!base) return '';
+  base = base.replace(/\/+$/, '');
+  base = base.replace(/\/api$/, '');
+  return base;
+}
+
+async function getHomeAssistantConfig() {
+  const stored = (await getAppSetting(HOME_ASSISTANT_KEY)) || {};
+  return {
+    baseUrl: normalizeHaBaseUrl(stored.baseUrl),
+    token: typeof stored.token === 'string' ? decryptSecret(stored.token) : '',
+    enabled: stored.enabled === true,
+  };
+}
+
+// Perform an authenticated request against the configured Home Assistant REST
+// API. Returns a small { ok, status, data, error } envelope rather than throwing
+// so route handlers can map failures to clean JSON responses. A 10s timeout
+// keeps a slow/unreachable HA from hanging the web request.
+async function haFetch(config, apiPath, { method = 'GET', body } = {}) {
+  if (!config.baseUrl || !config.token) {
+    return { ok: false, status: 0, error: 'Home Assistant is not configured.' };
+  }
+  const url = `${config.baseUrl}/api/${apiPath.replace(/^\/+/, '')}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+    if (!response.ok) {
+      const detail =
+        data && typeof data === 'object' && data.message ? data.message : `HTTP ${response.status}`;
+      return { ok: false, status: response.status, error: detail, data };
+    }
+    return { ok: true, status: response.status, data };
+  } catch (err) {
+    const message =
+      err && err.name === 'AbortError'
+        ? 'Home Assistant did not respond in time.'
+        : `Could not reach Home Assistant: ${err && err.message ? err.message : err}`;
+    return { ok: false, status: 0, error: message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Call a Home Assistant service (e.g. switch.turn_off) on an optional target
+// entity, with optional extra data. Used by the printer→HA automation rules.
+async function callHaService(config, service, entity, data) {
+  const dot = String(service || '').indexOf('.');
+  if (dot <= 0) {
+    return { ok: false, status: 0, error: `Invalid service "${service}"` };
+  }
+  const domain = service.slice(0, dot);
+  const name = service.slice(dot + 1);
+  const body = { ...(data && typeof data === 'object' ? data : {}) };
+  if (entity) body.entity_id = entity;
+  return haFetch(config, `/services/${domain}/${name}`, { method: 'POST', body });
+}
+
+// --- Print-farm ⇄ Home Assistant automation rules -------------------------
+// Stored as an array in app_settings under HA_RULES_KEY and evaluated by the
+// background engine below. Two directions, each a flat object with `direction`,
+// `enabled`, a `name`, and the fields that direction needs.
+const HA_RULES_KEY = 'ha_automation_rules';
+const HA_RULE_DIRECTIONS = new Set(['ha_to_printer', 'printer_to_ha']);
+const HA_PRINTER_COMMANDS = new Set(['pause', 'resume', 'cancel']);
+const HA_PRINTER_STATUSES = new Set(['printing', 'idle', 'paused', 'error', 'offline']);
+
+async function getHaRules() {
+  const stored = await getAppSetting(HA_RULES_KEY);
+  return Array.isArray(stored) ? stored : [];
+}
+
+// Validate + normalize a rule create/update body. Throws Error (message → 400) on
+// invalid input; returns the clean rule fields (without id/createdAt).
+function normalizeHaRuleInput(body) {
+  if (!body || typeof body !== 'object') {
+    throw new Error('a rule body is required');
+  }
+  const direction = String(body.direction || '');
+  if (!HA_RULE_DIRECTIONS.has(direction)) {
+    throw new Error('direction must be ha_to_printer or printer_to_ha');
+  }
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name) {
+    throw new Error('name is required');
+  }
+  const enabled = body.enabled !== false; // default on
+  const printerId = typeof body.printerId === 'string' ? body.printerId.trim() : '';
+  if (!printerId) {
+    throw new Error('printerId is required');
+  }
+
+  if (direction === 'ha_to_printer') {
+    const triggerEntity = typeof body.triggerEntity === 'string' ? body.triggerEntity.trim() : '';
+    const triggerState = typeof body.triggerState === 'string' ? body.triggerState.trim() : '';
+    const printerCommand = typeof body.printerCommand === 'string' ? body.printerCommand.trim() : '';
+    if (!triggerEntity || !triggerState) {
+      throw new Error('triggerEntity and triggerState are required');
+    }
+    if (!HA_PRINTER_COMMANDS.has(printerCommand)) {
+      throw new Error('printerCommand must be pause, resume, or cancel');
+    }
+    return { direction, name, enabled, printerId, triggerEntity, triggerState, printerCommand };
+  }
+
+  // printer_to_ha
+  const printerStatus = typeof body.printerStatus === 'string' ? body.printerStatus.trim() : '';
+  const actionService = typeof body.actionService === 'string' ? body.actionService.trim() : '';
+  const actionEntity = typeof body.actionEntity === 'string' ? body.actionEntity.trim() : '';
+  if (!HA_PRINTER_STATUSES.has(printerStatus)) {
+    throw new Error('printerStatus must be printing, idle, paused, error, or offline');
+  }
+  if (!/^[a-z_]+\.[a-z0-9_]+$/i.test(actionService)) {
+    throw new Error('actionService must look like domain.service, e.g. switch.turn_off');
+  }
+  let actionData = {};
+  if (body.actionData !== undefined && body.actionData !== null && body.actionData !== '') {
+    try {
+      actionData = typeof body.actionData === 'string' ? JSON.parse(body.actionData) : body.actionData;
+    } catch {
+      throw new Error('actionData must be valid JSON');
+    }
+    if (typeof actionData !== 'object' || Array.isArray(actionData)) {
+      throw new Error('actionData must be a JSON object');
+    }
+  }
+  return { direction, name, enabled, printerId, printerStatus, actionService, actionEntity, actionData };
+}
+
+// Send a pause/resume/cancel to a printer regardless of profile: Bambu over MQTT,
+// everything else (Snapmaker U1 / Moonraker) over its HTTP API at printer.url.
+async function dispatchPrintControl(printer, command) {
+  if (!HA_PRINTER_COMMANDS.has(command)) {
+    throw new Error(`Unsupported print command: ${command}`);
+  }
+  if (BAMBU_PROFILES.has(printer.profile)) {
+    await sendBambuCommand(printer, command, {});
+    return;
+  }
+  const base = (printer.url || '').replace(/\/+$/, '');
+  if (!base) {
+    throw new Error(`Printer ${printer.id} has no URL for HTTP control`);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(`${base}/printer/print/${command}`, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`printer responded HTTP ${response.status}`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Background engine: detects state transitions and fires the matching rules. It
+// remembers the last-seen value per key and only acts on a transition *into* the
+// target (prev !== current && current === target); a key seen for the first time
+// is recorded as a baseline without firing, so adding a rule (or restarting)
+// doesn't replay against the current state.
+const HA_ENGINE_INTERVAL_MS = Math.max(
+  5000,
+  Number.parseInt(process.env.HA_AUTOMATION_INTERVAL_MS || '15000', 10) || 15000,
+);
+const haEngineLastPrinterStatus = new Map();
+const haEngineLastEntityState = new Map();
+let haEngineRunning = false;
+
+async function evaluateHaRules() {
+  if (haEngineRunning) return; // never overlap cycles
+  haEngineRunning = true;
+  try {
+    const config = await getHomeAssistantConfig();
+    if (!config.enabled || !config.baseUrl || !config.token) return;
+    const rules = (await getHaRules()).filter((rule) => rule.enabled);
+    if (rules.length === 0) return;
+
+    const printerToHa = rules.filter((rule) => rule.direction === 'printer_to_ha');
+    const haToPrinter = rules.filter((rule) => rule.direction === 'ha_to_printer');
+
+    // printer → HA: read each referenced printer's current status, detect the
+    // transition into the rule's target status, then call the HA service.
+    if (printerToHa.length > 0) {
+      const printerIds = [...new Set(printerToHa.map((rule) => rule.printerId))];
+      const statusById = new Map();
+      for (const printerId of printerIds) {
+        const printer = await getPrinterById(printerId).catch(() => null);
+        if (printer) statusById.set(printerId, printer.status || 'offline');
+      }
+      for (const rule of printerToHa) {
+        const current = statusById.get(rule.printerId);
+        if (current === undefined) continue; // printer gone
+        const key = `p:${rule.printerId}`;
+        const prev = haEngineLastPrinterStatus.get(key);
+        haEngineLastPrinterStatus.set(key, current);
+        if (prev === undefined || prev === current || current !== rule.printerStatus) continue;
+        const result = await callHaService(config, rule.actionService, rule.actionEntity, rule.actionData);
+        if (result.ok) {
+          logger.info('ha rule fired (printer→ha)', { rule: rule.id, printer: rule.printerId, status: current });
+        } else {
+          logger.warn('ha rule action failed (printer→ha)', { rule: rule.id, error: result.error });
+        }
+      }
+    }
+
+    // HA → printer: one /states read, detect the transition into the rule's target
+    // entity state, then send the printer command.
+    if (haToPrinter.length > 0) {
+      const result = await haFetch(config, '/states');
+      if (!result.ok) {
+        logger.warn('ha rule engine could not read states', { error: result.error });
+        return;
+      }
+      const stateByEntity = new Map();
+      for (const entity of Array.isArray(result.data) ? result.data : []) {
+        if (entity && typeof entity.entity_id === 'string') {
+          stateByEntity.set(entity.entity_id, typeof entity.state === 'string' ? entity.state : '');
+        }
+      }
+      for (const rule of haToPrinter) {
+        const current = stateByEntity.get(rule.triggerEntity);
+        if (current === undefined) continue; // entity not present
+        const key = `e:${rule.triggerEntity}`;
+        const prev = haEngineLastEntityState.get(key);
+        haEngineLastEntityState.set(key, current);
+        if (prev === undefined || prev === current || current !== rule.triggerState) continue;
+        const printer = await getPrinterById(rule.printerId).catch(() => null);
+        if (!printer) {
+          logger.warn('ha rule target printer missing (ha→printer)', { rule: rule.id, printer: rule.printerId });
+          continue;
+        }
+        try {
+          await dispatchPrintControl(printer, rule.printerCommand);
+          logger.info('ha rule fired (ha→printer)', {
+            rule: rule.id,
+            entity: rule.triggerEntity,
+            command: rule.printerCommand,
+          });
+        } catch (err) {
+          logger.warn('ha rule command failed (ha→printer)', {
+            rule: rule.id,
+            error: err && err.message ? err.message : String(err),
+          });
+        }
+      }
+    }
+  } catch (err) {
+    logger.error('ha rule engine cycle failed', { error: err && err.message ? err.message : String(err) });
+  } finally {
+    haEngineRunning = false;
+  }
+}
+
+let haEngineTimer = null;
+function startHaAutomationEngine() {
+  if (haEngineTimer) return;
+  haEngineTimer = setInterval(() => {
+    evaluateHaRules().catch(() => {});
+  }, HA_ENGINE_INTERVAL_MS);
+  if (typeof haEngineTimer.unref === 'function') haEngineTimer.unref();
+  logger.info('home assistant automation engine started', { intervalMs: HA_ENGINE_INTERVAL_MS });
 }
 
 // Website access mode: whether an unauthenticated visitor may view the dashboard
@@ -1066,6 +1360,9 @@ function isSensitiveRead(pathname) {
   }
   if (pathname === '/api/settings/saml') {
     return true; // may carry IdP signing config
+  }
+  if (pathname.startsWith('/api/settings/home-assistant')) {
+    return true; // internal HA URL + device/entity lists are not viewer-readable
   }
   return false;
 }
@@ -4231,6 +4528,168 @@ async function handleApi(req, res, requestUrl) {
     }
   }
 
+  // Home Assistant connection config. Admin-only (isSensitiveRead gates the GET,
+  // the /api/settings/ non-GET rule gates the PUT). GET never returns the token —
+  // only whether one is stored; PUT with a blank/omitted token keeps the existing
+  // one (so the form can round-trip without re-entering it), mirroring the OAuth
+  // clientSecret handling above.
+  if (requestUrl.pathname === '/api/settings/home-assistant') {
+    if (req.method === 'GET') {
+      const config = await getHomeAssistantConfig();
+      sendJson(res, 200, {
+        baseUrl: config.baseUrl,
+        enabled: config.enabled,
+        hasToken: config.token.length > 0,
+      });
+      return true;
+    }
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      const baseUrl = normalizeHaBaseUrl(body?.baseUrl);
+      const enabled = body?.enabled === true;
+      if (typeof body?.baseUrl !== 'string') {
+        sendJson(res, 400, { error: 'baseUrl must be a string' });
+        return true;
+      }
+      if (baseUrl && !/^https?:\/\//i.test(baseUrl)) {
+        sendJson(res, 400, { error: 'baseUrl must start with http:// or https://' });
+        return true;
+      }
+      const existing = await getHomeAssistantConfig();
+      const token =
+        typeof body?.token === 'string' && body.token.trim()
+          ? body.token.trim()
+          : existing.token;
+      await setAppSetting(HOME_ASSISTANT_KEY, {
+        baseUrl,
+        token: token ? encryptSecret(token) : '',
+        enabled,
+      });
+      const saved = await getHomeAssistantConfig();
+      sendJson(res, 200, {
+        baseUrl: saved.baseUrl,
+        enabled: saved.enabled,
+        hasToken: saved.token.length > 0,
+      });
+      return true;
+    }
+  }
+
+  // Test the Home Assistant connection (admin-only). Hits HA's GET /api/ probe
+  // which returns { message: "API running." } for a valid base URL + token.
+  if (requestUrl.pathname === '/api/settings/home-assistant/test' && req.method === 'POST') {
+    const config = await getHomeAssistantConfig();
+    if (!config.baseUrl || !config.token) {
+      sendJson(res, 400, { ok: false, error: 'Set the Home Assistant URL and token first.' });
+      return true;
+    }
+    const result = await haFetch(config, '/');
+    if (result.ok) {
+      sendJson(res, 200, { ok: true, message: 'Connected to Home Assistant.' });
+    } else {
+      sendJson(res, 200, { ok: false, error: result.error });
+    }
+    return true;
+  }
+
+  // Device list: HA's REST API exposes entities/states (the full device registry
+  // needs the WebSocket API). We fetch GET /api/states and return entities with a
+  // friendly name, current state, and domain, plus a domain→entities grouping the
+  // UI uses to render a device picker. Admin-only.
+  if (requestUrl.pathname === '/api/settings/home-assistant/devices' && req.method === 'GET') {
+    const config = await getHomeAssistantConfig();
+    const result = await haFetch(config, '/states');
+    if (!result.ok) {
+      sendJson(res, 502, { error: result.error });
+      return true;
+    }
+    const states = Array.isArray(result.data) ? result.data : [];
+    const entities = states
+      .map((entity) => {
+        const entityId = typeof entity?.entity_id === 'string' ? entity.entity_id : '';
+        const domain = entityId.includes('.') ? entityId.split('.')[0] : '';
+        const attributes = entity && typeof entity.attributes === 'object' ? entity.attributes : {};
+        return {
+          entityId,
+          domain,
+          friendlyName: typeof attributes.friendly_name === 'string' ? attributes.friendly_name : entityId,
+          state: typeof entity?.state === 'string' ? entity.state : '',
+        };
+      })
+      .filter((entity) => entity.entityId)
+      .sort((a, b) => a.entityId.localeCompare(b.entityId));
+    const groups = {};
+    for (const entity of entities) {
+      (groups[entity.domain || 'other'] ||= []).push(entity);
+    }
+    sendJson(res, 200, { entities, groups });
+    return true;
+  }
+
+  // Automation rules bridge the print farm and Home Assistant in both directions.
+  // They are NOT native HA automations (those can't see our printers) — they are
+  // print-farm-side rules stored in app_settings and evaluated by the background
+  // engine (evaluateHaRules): a `printer_to_ha` rule calls an HA service when a
+  // printer reaches a status; a `ha_to_printer` rule sends a printer command when
+  // an HA entity reaches a state. All admin-only (sensitive read + settings write).
+  if (requestUrl.pathname === '/api/settings/home-assistant/rules') {
+    if (req.method === 'GET') {
+      sendJson(res, 200, { rules: await getHaRules() });
+      return true;
+    }
+    if (req.method === 'POST') {
+      let rule;
+      try {
+        rule = normalizeHaRuleInput(await readJsonBody(req));
+      } catch (err) {
+        sendJson(res, 400, { error: err.message });
+        return true;
+      }
+      const created = { id: randomUUID(), createdAt: new Date().toISOString(), ...rule };
+      await setAppSetting(HA_RULES_KEY, [...(await getHaRules()), created]);
+      sendJson(res, 201, created);
+      return true;
+    }
+  }
+
+  const haRuleMatch = requestUrl.pathname.match(
+    /^\/api\/settings\/home-assistant\/rules\/([^/]+)$/,
+  );
+  if (haRuleMatch) {
+    const ruleId = haRuleMatch[1];
+    const rules = await getHaRules();
+    const index = rules.findIndex((rule) => rule.id === ruleId);
+    if (index === -1) {
+      sendJson(res, 404, { error: 'rule not found' });
+      return true;
+    }
+    if (req.method === 'DELETE') {
+      await setAppSetting(HA_RULES_KEY, rules.filter((rule) => rule.id !== ruleId));
+      sendEmpty(res);
+      return true;
+    }
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      // A bare { enabled } toggle is the common case; a full body re-validates.
+      let next;
+      if (body && typeof body === 'object' && Object.keys(body).length === 1 && 'enabled' in body) {
+        next = { ...rules[index], enabled: body.enabled === true };
+      } else {
+        try {
+          next = { ...rules[index], ...normalizeHaRuleInput(body) };
+        } catch (err) {
+          sendJson(res, 400, { error: err.message });
+          return true;
+        }
+      }
+      const updated = [...rules];
+      updated[index] = next;
+      await setAppSetting(HA_RULES_KEY, updated);
+      sendJson(res, 200, next);
+      return true;
+    }
+  }
+
   // Website access mode — does an unauthenticated visitor get a read-only viewer
   // session, or is the dashboard login-gated? GET is public (the unauthenticated
   // bootstrap reads it to decide); PUT is admin-gated by isAdminMutation's
@@ -5057,4 +5516,6 @@ scheduleMaintenanceWorker();
 
 createServer(handleRequest).listen(port, host, () => {
   logger.info('Print Farm server listening', { host, port });
+  // Evaluate Home Assistant ⇄ printer automation rules on a background interval.
+  startHaAutomationEngine();
 });

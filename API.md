@@ -512,7 +512,7 @@ classified below requires an admin session.
 | Class | Who | Examples |
 | --- | --- | --- |
 | **public read** | anyone | `GET /api/printers`, `GET /api/queue`, `GET /api/analytics/daily`, `GET /api/cameras/health`, `GET /api/maintenance`, `GET /api/maintenance/summary`, `GET /api/maintenance/notifications`, `GET /api/printers/:id/maintenance`, `GET /api/settings/maintenance-intervals`, branding/layout reads |
-| **admin read** | admin only | `GET /api/users`, `GET /api/slicer-keys`, `GET /api/audit-logs`, `GET /api/notifications/*`, `GET /api/manager/requests`, `GET /api/settings/saml` |
+| **admin read** | admin only | `GET /api/users`, `GET /api/slicer-keys`, `GET /api/audit-logs`, `GET /api/notifications/*`, `GET /api/manager/requests`, `GET /api/settings/saml`, `GET /api/settings/home-assistant*` |
 | **public mutation** | anyone | `POST /api/queue/submit` (student intake), `POST /api/manager/request`, the auth endpoints above |
 | **operator** | operator or admin | `POST /api/printers` (create/edit/reorder), `POST /api/printers/:id/command`, `POST /api/queue/:id/printed`, `POST /api/maintenance/:id/complete`, `POST /api/maintenance/notifications/read` |
 | **authed** | any session | `POST /api/audit-logs` (actor is taken from the session, not the body) |
@@ -914,6 +914,123 @@ Admin-only (covered by the `/api/settings/*` write rule).
 **Request body:** `{ "enabled": false }` — `enabled` must be a boolean (else `400`).
 
 **Response `200`:** the saved setting, e.g. `{ "enabled": false }`.
+
+## Home Assistant (`/api/settings/home-assistant`)
+
+Connects the dashboard to a Home Assistant instance via its base URL and a
+**long-lived access token**. Config is stored in `app_settings` under the
+`home_assistant` key; the token is encrypted at rest (same AES-256-GCM scheme as
+printer secrets) and **never returned** by any read path. The server holds the
+token and proxies every HA REST call, so it never reaches the browser. All
+endpoints are **admin-only** — the reads are classified sensitive
+(`/api/settings/home-assistant*`), the writes covered by the `/api/settings/*`
+write rule.
+
+> Device discovery uses HA's REST API (`GET /api/states`), which exposes
+> **entities/states** — the full device registry requires HA's WebSocket API.
+>
+> **Automation rules** (`/rules`) bridge the print farm and Home Assistant in both
+> directions. They are **not** native HA automations (those can't see our
+> printers) — they are print-farm-side rules stored in `app_settings`
+> (`ha_automation_rules`) and evaluated by a background engine in the `web` server
+> (default every 15 s, `HA_AUTOMATION_INTERVAL_MS`). The engine only fires on a
+> *transition into* the target value (a value seen for the first time, or after a
+> restart, is recorded as a baseline without firing). A `printer_to_ha` rule calls
+> an HA service when a printer reaches a status; a `ha_to_printer` rule sends a
+> printer command (pause/resume/cancel — Bambu over MQTT, others over Moonraker
+> HTTP) when an HA entity reaches a state.
+
+#### `GET /api/settings/home-assistant`
+
+**Response `200`:** `{ "baseUrl": "http://homeassistant.local:8123", "enabled": true, "hasToken": true }` — the token itself is never returned.
+
+#### `PUT /api/settings/home-assistant`
+
+**Request body:** `{ "baseUrl": string, "token"?: string, "enabled": boolean }`.
+`baseUrl` must be a string and (if non-empty) start with `http://`/`https://`; a
+trailing `/` or `/api` is normalized off. A blank/omitted `token` keeps the stored
+one (so the form can round-trip without re-entering it).
+
+**Response `200`:** the saved config in the `GET` shape (`baseUrl`, `enabled`, `hasToken`).
+
+#### `POST /api/settings/home-assistant/test`
+
+Probes `GET <baseUrl>/api/` with the stored token.
+
+**Response `200`:** `{ "ok": true, "message": "Connected to Home Assistant." }` or `{ "ok": false, "error": "…" }`. Returns `400` if the URL/token aren't set yet.
+
+#### `GET /api/settings/home-assistant/devices`
+
+Fetches `GET <baseUrl>/api/states` and shapes it.
+
+**Response `200`:**
+
+```json
+{
+  "entities": [
+    { "entityId": "switch.lab_lights", "domain": "switch", "friendlyName": "Lab Lights", "state": "on" }
+  ],
+  "groups": { "switch": [ /* …entities… */ ] }
+}
+```
+
+Returns `502 { "error": … }` if Home Assistant is unreachable or returns an error.
+
+#### `GET /api/settings/home-assistant/rules`
+
+Lists the stored automation rules.
+
+**Response `200`:** `{ "rules": [ <rule>, … ] }`. Each rule is a flat object: common fields `id`, `name`, `direction` (`"ha_to_printer"` | `"printer_to_ha"`), `enabled`, `printerId`, `createdAt`; plus, per direction:
+- `ha_to_printer`: `triggerEntity`, `triggerState`, `printerCommand` (`pause`|`resume`|`cancel`).
+- `printer_to_ha`: `printerStatus` (`printing`|`idle`|`paused`|`error`|`offline`), `actionService` (`domain.service`), `actionEntity` (optional), `actionData` (object).
+
+#### `POST /api/settings/home-assistant/rules`
+
+Creates a rule. **Request body** = a rule without `id`/`createdAt`; `name`,
+`direction`, and `printerId` are always required, plus the per-direction fields
+above. `printerCommand`/`printerStatus` are validated against the allowed sets;
+`actionService` must look like `domain.service`; `actionData` may be a JSON object
+or a JSON string (parsed) and must resolve to an object. `enabled` defaults to
+`true`. Invalid input → `400` with an `error` message.
+
+**Example (printer → HA):**
+
+```json
+{
+  "name": "Lights off when print done",
+  "direction": "printer_to_ha",
+  "printerId": "printer-1",
+  "printerStatus": "idle",
+  "actionService": "switch.turn_off",
+  "actionEntity": "switch.lab_lights",
+  "actionData": "{ }"
+}
+```
+
+**Example (HA → printer):**
+
+```json
+{
+  "name": "Pause when door opens",
+  "direction": "ha_to_printer",
+  "printerId": "printer-1",
+  "triggerEntity": "binary_sensor.lab_door",
+  "triggerState": "on",
+  "printerCommand": "pause"
+}
+```
+
+**Response `201`:** the created rule (with `id` and `createdAt`).
+
+#### `PUT /api/settings/home-assistant/rules/:id`
+
+Updates a rule. A bare `{ "enabled": boolean }` body toggles enablement; any other
+body is re-validated as a full rule (same rules as `POST`). **Response `200`:** the
+updated rule. `404` if the id is unknown.
+
+#### `DELETE /api/settings/home-assistant/rules/:id`
+
+Deletes a rule. **Response `204`**; `404` if the id is unknown.
 
 ## Sign-in settings (`/api/settings/oauth/:provider`)
 
