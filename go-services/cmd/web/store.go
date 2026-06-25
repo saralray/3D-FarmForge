@@ -254,6 +254,147 @@ func isJSONNull(b json.RawMessage) bool {
 	return len(b) == 0 || string(b) == "null"
 }
 
+// ── Write paths (mirrors of the postgres.js mutators) ────────────────────────
+
+// upsertPrinter mirrors upsertPrinter: encrypt the connection secret at rest,
+// upsert configuration fields only (live telemetry is the poller's), then seed
+// the printer's maintenance schedules (best-effort).
+func upsertPrinter(ctx context.Context, body json.RawMessage) error {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return err
+	}
+	if ak, ok := m["apiKeyHeader"].(string); ok {
+		m["apiKeyHeader"] = secretCipher.Encrypt(ak)
+	}
+	stored, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	_, err = dbPool.Exec(ctx, `
+    WITH input AS (SELECT $1::jsonb AS data)
+    INSERT INTO printers (
+      id, name, model, sort_order, profile, url, ip_address, api_key_header,
+      serial, status, temperature_nozzle, temperature_bed, progress,
+      last_maintenance, total_print_time, success_rate, current_job,
+      nozzle_temperatures, spools, offline_since
+    )
+    SELECT
+      data->>'id', data->>'name', data->>'model',
+      COALESCE((data->>'sortOrder')::integer, 0),
+      data->>'profile', data->>'url', data->>'ipAddress', data->>'apiKeyHeader',
+      data->>'serial', data->>'status',
+      COALESCE((data->'temperature'->>'nozzle')::double precision, 0),
+      COALESCE((data->'temperature'->>'bed')::double precision, 0),
+      COALESCE((data->>'progress')::integer, 0),
+      data->>'lastMaintenance',
+      COALESCE((data->>'totalPrintTime')::double precision, 0),
+      COALESCE((data->>'successRate')::double precision, 0),
+      data->'currentJob', data->'nozzleTemperatures', data->'spools',
+      (data->>'offlineSince')::double precision
+    FROM input
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      model = EXCLUDED.model,
+      sort_order = EXCLUDED.sort_order,
+      profile = EXCLUDED.profile,
+      url = EXCLUDED.url,
+      ip_address = EXCLUDED.ip_address,
+      api_key_header = EXCLUDED.api_key_header,
+      serial = EXCLUDED.serial,
+      last_maintenance = EXCLUDED.last_maintenance;`, string(stored))
+	if err != nil {
+		return err
+	}
+	if id, ok := m["id"].(string); ok && id != "" {
+		_ = seedMaintenanceSchedules(ctx, id) // best-effort
+	}
+	return nil
+}
+
+// seedMaintenanceSchedules mirrors seedMaintenanceSchedules: idempotent insert of
+// the global default intervals for one printer.
+func seedMaintenanceSchedules(ctx context.Context, printerID string) error {
+	intervals, err := getMaintenanceDefaultIntervals(ctx)
+	if err != nil {
+		return err
+	}
+	rows := make([]map[string]any, len(intervals))
+	for i, iv := range intervals {
+		rows[i] = map[string]any{"type": iv.Type, "interval_hours": iv.IntervalHours, "description": iv.Description}
+	}
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		return err
+	}
+	_, err = dbPool.Exec(ctx,
+		`INSERT INTO maintenance_schedules (printer_id, maintenance_type, interval_hours, description)
+     SELECT $1, d.type, d.interval_hours, d.description
+     FROM jsonb_to_recordset($2::jsonb)
+       AS d(type text, interval_hours double precision, description text)
+     ON CONFLICT (printer_id, maintenance_type, interval_hours) DO NOTHING;`,
+		printerID, string(payload))
+	return err
+}
+
+func deletePrinter(ctx context.Context, id string) error {
+	_, err := dbPool.Exec(ctx, `DELETE FROM printers WHERE id = $1;`, id)
+	return err
+}
+
+func markQueueJobPrinted(ctx context.Context, id string) error {
+	_, err := dbPool.Exec(ctx,
+		`UPDATE queue_jobs SET printed_status = 1, updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL;`, id)
+	return err
+}
+
+func resetQueueJobs(ctx context.Context) error {
+	_, err := dbPool.Exec(ctx,
+		`UPDATE queue_jobs SET printed_status = 0, updated_at = NOW() WHERE form_type = $1 AND deleted_at IS NULL;`,
+		queueFormType)
+	return err
+}
+
+func deleteQueueJob(ctx context.Context, id string) error {
+	_, err := dbPool.Exec(ctx,
+		`UPDATE queue_jobs SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1;`, id)
+	return err
+}
+
+func resetDailyAnalytics(ctx context.Context) error {
+	_, err := dbPool.Exec(ctx, `TRUNCATE TABLE analytics_daily;`)
+	return err
+}
+
+// listAuditLogsJSON mirrors listAuditLogs: json_agg of audit entries (createdAt
+// via to_char so it matches Node's to_char path), limit clamped 1..1000.
+func listAuditLogsJSON(ctx context.Context, limit int) (json.RawMessage, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	limit = clampInt(limit, 1, 1000)
+	return scanJSON(ctx, `
+    SELECT COALESCE(json_agg(entry ORDER BY created_at DESC, id DESC), '[]'::json) AS data
+    FROM (
+      SELECT id, created_at,
+        json_build_object(
+          'id', id,
+          'createdAt', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+          'actorName', actor_name,
+          'actorUsername', actor_username,
+          'actorRole', actor_role,
+          'action', action,
+          'target', target,
+          'details', details,
+          'source', source,
+          'ip', ip
+        ) AS entry
+      FROM audit_logs
+      ORDER BY created_at DESC, id DESC
+      LIMIT $1
+    ) recent;`, limit)
+}
+
 // decryptPrintersJSON / decryptPrinterJSON reproduce decryptPrinterSecrets for
 // the full (sensitive) read path. When encryption is disabled (the common case,
 // and always so in Phase 2 since the privileged path isn't reachable until

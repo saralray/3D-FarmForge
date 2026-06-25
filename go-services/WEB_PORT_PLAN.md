@@ -84,6 +84,21 @@ go-services/
   session caching + login throttle are omitted (disabled deployment; Node falls back
   to the same Postgres path). Remaining: SSO grant `/api/auth/verify`, slicer-token,
   and the SAML endpoints (Phase 8).
+- **Phase 4 — done & verified.** Operator/admin mutations: printers upsert (encrypt +
+  config-only upsert + maintenance seeding) / delete, queue printed/reset/delete,
+  analytics reset, maintenance complete (txn + nozzle reset) / notifications-read /
+  intervals PUT, settings PUTs (integrations / public-viewer / analytics-layout /
+  printer-card-layout), users CRUD (create / delete / password / role + list), and
+  audit-logs GET+POST. Verified by running **Node and Go against two identical
+  throwaway DBs** and diffing both HTTP responses and resulting state across ~24 cases
+  (validation 400/404/409, success 200/204/201, privileged read-back, seeded
+  schedules, and the complete-event transaction incl. the nozzle-reset side effect).
+  Bug found & fixed: Go's json.Unmarshal allocates a non-nil zero pointer on a type
+  mismatch, so `*bool`/`*string` nil-checks passed where Node's `typeof` rejected —
+  the settings PUTs now decode into a generic map and assert the JSON type. Deferred:
+  branding PUT (SVG theme analysis), slicer-keys, Discord notifications, home-assistant,
+  saml/oauth settings writes, manager (their own phases). queue submit = Phase 5,
+  printer command = Phase 6.
 
 ## Phased plan (each phase build + parity-verify + commit)
 

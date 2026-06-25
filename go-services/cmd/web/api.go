@@ -42,6 +42,10 @@ func handleAPI(w http.ResponseWriter, req *http.Request) bool {
 		return true
 	}
 
+	if handleMutations(w, req, sessFn) {
+		return true
+	}
+
 	switch {
 	// GET /api/printers — connection secrets only reach an operator/admin session;
 	// anonymous/viewer/student callers always get the redacted list. (The

@@ -42,6 +42,34 @@ func round2(x float64) float64 {
 	return math.Round(x*100) / 100
 }
 
+// jsParseInt mirrors Number.parseInt(s, 10): an optional sign followed by leading
+// decimal digits; returns ok=false when no digits lead (NaN).
+func jsParseInt(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	i := 0
+	neg := false
+	if s[0] == '+' || s[0] == '-' {
+		neg = s[0] == '-'
+		i = 1
+	}
+	start := i
+	n := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		n = n*10 + int(s[i]-'0')
+		i++
+	}
+	if i == start {
+		return 0, false
+	}
+	if neg {
+		n = -n
+	}
+	return n, true
+}
+
 // matchLubric mirrors /lubric/i.test(s).
 func matchLubric(s string) bool {
 	return strings.Contains(strings.ToLower(s), "lubric")

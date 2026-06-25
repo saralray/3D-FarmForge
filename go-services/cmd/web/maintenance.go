@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -388,6 +389,81 @@ var defaultMaintenanceIntervals = []maintenanceInterval{
 	{"Deep Clean", 500, "Deep clean toolhead; inspect wiring"},
 	{"Nozzle Service", 1000, "Nozzle inspection / replacement"},
 	{"Full Service", 2000, "Full maintenance service"},
+}
+
+// completeMaintenanceEvent mirrors the export: mark a pending event completed,
+// advance the printer's last_maintenance_at (zeroing nozzle hours for a nozzle
+// service), in one transaction. Returns nil when the id was unknown or not pending.
+func completeMaintenanceEvent(ctx context.Context, id string, notes *string) (*maintEvent, error) {
+	tx, err := dbPool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		e           maintEvent
+		createdAt   time.Time
+		completedAt *time.Time
+	)
+	err = tx.QueryRow(ctx,
+		`UPDATE maintenance_events e
+        SET status = 'completed',
+            completed_at = NOW(),
+            completed_at_hours = p.total_print_hours,
+            notes = $2
+       FROM printers p
+      WHERE e.id = $1 AND e.status = 'pending' AND p.id = e.printer_id
+      RETURNING e.id, e.printer_id, e.maintenance_type, e.interval_hours,
+                e.triggered_at_hours, e.completed_at_hours, e.status, e.notes,
+                e.created_at, e.completed_at;`, id, notes).
+		Scan(&e.ID, &e.PrinterID, &e.MaintenanceType, &e.IntervalHours, &e.TriggeredAtHours,
+			&e.CompletedAtHours, &e.Status, &e.Notes, &createdAt, &completedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	e.CreatedAt = jsISO(&createdAt)
+	e.CompletedAt = jsISO(completedAt)
+
+	resetClause := ""
+	if isNozzleResetType(e.MaintenanceType, derefFloat(e.IntervalHours)) {
+		resetClause = ", current_nozzle_hours = 0"
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE printers SET last_maintenance_at = NOW()`+resetClause+` WHERE id = $1;`, e.PrinterID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// isNozzleResetType mirrors isNozzleResetType: a 1000h task or any nozzle task.
+func isNozzleResetType(typ string, intervalHours float64) bool {
+	return intervalHours == 1000 || strings.Contains(strings.ToLower(typ), "nozzle")
+}
+
+func markMaintenanceNotificationsRead(ctx context.Context, ids []string) error {
+	if len(ids) > 0 {
+		_, err := dbPool.Exec(ctx, `UPDATE maintenance_notifications SET read = TRUE WHERE id = ANY($1);`, ids)
+		return err
+	}
+	_, err := dbPool.Exec(ctx, `UPDATE maintenance_notifications SET read = TRUE WHERE read = FALSE;`)
+	return err
+}
+
+// setMaintenanceDefaultIntervals mirrors the export: normalize and persist,
+// returning the normalized list.
+func setMaintenanceDefaultIntervals(ctx context.Context, raw json.RawMessage) ([]maintenanceInterval, error) {
+	normalized := normalizeIntervals(raw)
+	if err := setAppSetting(ctx, "maintenance_default_intervals", normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
 }
 
 // getMaintenanceDefaultIntervals mirrors the export: normalize the stored value,
