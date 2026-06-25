@@ -5029,6 +5029,27 @@ async function handleApi(req, res, requestUrl) {
     }
   }
 
+  // Serves the custom favicon as a raw image so the PWA manifest can reference
+  // it as a URL. Returns 404 when no custom favicon is configured.
+  if (requestUrl.pathname === '/api/settings/favicon' && req.method === 'GET') {
+    const { faviconDataUrl } = await getBranding();
+    if (!faviconDataUrl) {
+      sendJson(res, 404, { error: 'No custom favicon configured' });
+      return true;
+    }
+    const match = /^data:(image\/[^;]+);base64,(.*)$/.exec(faviconDataUrl);
+    if (!match) {
+      sendJson(res, 500, { error: 'Stored favicon is malformed' });
+      return true;
+    }
+    const mimeType = match[1];
+    const imageBytes = Buffer.from(match[2], 'base64');
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.end(imageBytes);
+    return true;
+  }
+
   return false;
 }
 
@@ -5176,10 +5197,17 @@ async function serveManifest(req, res) {
   }
 
   try {
-    const siteName = (await getBranding()).siteName.trim();
-    if (siteName) {
-      manifest.name = siteName;
-      manifest.short_name = siteName;
+    const branding = await getBranding();
+    if (branding.siteName.trim()) {
+      manifest.name = branding.siteName.trim();
+      manifest.short_name = branding.siteName.trim();
+    }
+    if (branding.faviconDataUrl) {
+      const mimeMatch = /^data:(image\/[^;]+);base64,/.exec(branding.faviconDataUrl);
+      const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+      manifest.icons = [
+        { src: '/api/settings/favicon', sizes: 'any', type: mimeType, purpose: 'any maskable' },
+      ];
     }
   } catch (error) {
     logger.warn('manifest branding read failed', error);

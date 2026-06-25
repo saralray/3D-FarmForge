@@ -12,24 +12,25 @@ export function BrandingApplier() {
   }, [siteName]);
 
   useEffect(() => {
-    const links = document.querySelectorAll<HTMLLinkElement>('link[rel~="icon"]');
+    const iconLinks = document.querySelectorAll<HTMLLinkElement>('link[rel="icon"]');
+    const touchLinks = document.querySelectorAll<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+
     if (faviconDataUrl) {
-      if (links.length > 0) {
-        links.forEach((link) => {
+      const applyHref = (links: NodeListOf<HTMLLinkElement>, rel: string) => {
+        if (links.length > 0) {
+          links.forEach((link) => { link.href = faviconDataUrl; link.type = ''; });
+        } else {
+          const link = document.createElement('link');
+          link.rel = rel;
           link.href = faviconDataUrl;
-          link.type = '';
-        });
-      } else {
-        const link = document.createElement('link');
-        link.rel = 'icon';
-        link.href = faviconDataUrl;
-        document.head.appendChild(link);
-      }
+          document.head.appendChild(link);
+        }
+      };
+      applyHref(iconLinks, 'icon');
+      applyHref(touchLinks, 'apple-touch-icon');
     } else {
-      links.forEach((link) => {
-        link.href = '/icon.svg';
-        link.type = 'image/svg+xml';
-      });
+      iconLinks.forEach((link) => { link.href = '/icon.svg'; link.type = 'image/svg+xml'; });
+      touchLinks.forEach((link) => { link.href = '/icon.svg'; link.type = 'image/svg+xml'; });
     }
   }, [faviconDataUrl]);
 
