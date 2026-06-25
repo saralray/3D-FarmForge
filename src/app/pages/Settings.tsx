@@ -125,9 +125,11 @@ export function Settings() {
   const [logoAdaptive, setLogoAdaptive] = useState(false);
   const [logoScale, setLogoScale] = useState(1);
   const [backgroundDataUrl, setBackgroundDataUrl] = useState('');
+  const [faviconDataUrl, setFaviconDataUrl] = useState('');
   const [savingBranding, setSavingBranding] = useState(false);
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [savingBackground, setSavingBackground] = useState(false);
+  const [savingFavicon, setSavingFavicon] = useState(false);
   const [slicerKeys, setSlicerKeys] = useState<SlicerApiKey[]>([]);
   const [slicerKeyName, setSlicerKeyName] = useState('');
   const [slicerKeyPermissions, setSlicerKeyPermissions] = useState<SlicerKeyPermission[]>(['slicer_upload']);
@@ -167,6 +169,7 @@ export function Settings() {
         setLogoSvg(settings.logoSvg);
         setLogoAdaptive(settings.logoAdaptive);
         setLogoScale(settings.logoScale);
+        setFaviconDataUrl(settings.faviconDataUrl);
         setBackgroundDataUrl(settings.backgroundDataUrl);
       })
       .catch(() => {
@@ -731,6 +734,7 @@ export function Settings() {
     setLogoAdaptive(saved.logoAdaptive);
     setLogoScale(saved.logoScale);
     setBackgroundDataUrl(saved.backgroundDataUrl);
+    setFaviconDataUrl(saved.faviconDataUrl);
   };
 
   const handleSaveBranding = async () => {
@@ -742,7 +746,7 @@ export function Settings() {
     try {
       // Send the full branding payload so saving the logo never wipes the
       // name/color/background (and vice versa).
-      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl });
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl, faviconDataUrl });
       applyBranding(saved);
       toast.success('Logo saved', {
         description: 'Reloading to apply it everywhere…',
@@ -764,7 +768,7 @@ export function Settings() {
     }
     setSavingBranding(true);
     try {
-      const saved = await saveBrandingSettings({ siteName, logoDataUrl: '', logoScale: 1, backgroundDataUrl });
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl: '', logoScale: 1, backgroundDataUrl, faviconDataUrl });
       applyBranding(saved);
       toast.success('Logo reset to the default.', {
         description: 'Reloading to apply it everywhere…',
@@ -815,7 +819,7 @@ export function Settings() {
     }
     setSavingBackground(true);
     try {
-      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl });
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl, faviconDataUrl });
       applyBranding(saved);
       toast.success('Background saved', {
         description: 'Reloading to apply it everywhere…',
@@ -837,7 +841,7 @@ export function Settings() {
     }
     setSavingBackground(true);
     try {
-      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl: '' });
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl: '', faviconDataUrl });
       applyBranding(saved);
       toast.success('Background reset to the default theme.', {
         description: 'Reloading to apply it everywhere…',
@@ -852,6 +856,65 @@ export function Settings() {
     }
   };
 
+  const MAX_FAVICON_BYTES = 256 * 1024;
+
+  const handleFaviconFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml', 'image/x-icon', 'image/vnd.microsoft.icon'];
+    if (!allowed.includes(file.type)) {
+      toast.error('Please choose a PNG, SVG, ICO, JPEG, WebP, or GIF file.');
+      return;
+    }
+    if (file.size > MAX_FAVICON_BYTES) {
+      toast.error('Favicon is too large (max 256 KB).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') setFaviconDataUrl(reader.result);
+    };
+    reader.onerror = () => toast.error('Could not read the selected file.');
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveFavicon = async () => {
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can change the site icon.');
+      return;
+    }
+    setSavingFavicon(true);
+    try {
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl, faviconDataUrl });
+      applyBranding(saved);
+      toast.success('Icon saved', { description: 'Reloading to apply it everywhere…' });
+      reloadAfterSave();
+    } catch (error) {
+      toast.error('Unable to save icon', { description: error instanceof Error ? error.message : undefined });
+    } finally {
+      setSavingFavicon(false);
+    }
+  };
+
+  const handleResetFavicon = async () => {
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can change the site icon.');
+      return;
+    }
+    setSavingFavicon(true);
+    try {
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl, faviconDataUrl: '' });
+      applyBranding(saved);
+      toast.success('Icon reset to the default.', { description: 'Reloading to apply it everywhere…' });
+      reloadAfterSave();
+    } catch (error) {
+      toast.error('Unable to reset icon', { description: error instanceof Error ? error.message : undefined });
+    } finally {
+      setSavingFavicon(false);
+    }
+  };
+
   const handleSaveIdentity = async () => {
     if (user?.role !== 'admin') {
       toast.error('Only admins can change the site name.');
@@ -859,7 +922,7 @@ export function Settings() {
     }
     setSavingIdentity(true);
     try {
-      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl });
+      const saved = await saveBrandingSettings({ siteName, logoDataUrl, logoScale, backgroundDataUrl, faviconDataUrl });
       applyBranding(saved);
       toast.success('Site name saved.', {
         description: 'Reloading to apply it everywhere…',
@@ -881,7 +944,7 @@ export function Settings() {
     }
     setSavingIdentity(true);
     try {
-      const saved = await saveBrandingSettings({ siteName: '', logoDataUrl, logoScale, backgroundDataUrl });
+      const saved = await saveBrandingSettings({ siteName: '', logoDataUrl, logoScale, backgroundDataUrl, faviconDataUrl });
       applyBranding(saved);
       toast.success('Site name reset to the default.', {
         description: 'Reloading to apply it everywhere…',
@@ -1621,6 +1684,62 @@ export function Settings() {
                       variant="outline"
                       onClick={handleResetBackground}
                       disabled={savingBackground || !backgroundDataUrl}
+                    >
+                      Use Default
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-gray-200 pt-6 dark:border-gray-800">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold dark:text-white">Browser / App Icon</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                    Upload a custom icon shown in the browser tab, bookmarks, and when the app is installed as a PWA.
+                    PNG, SVG, or ICO up to 256&nbsp;KB. A square image (e.g. 64×64 or 32×32) works best.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Preview</Label>
+                    <div className="flex items-center gap-4">
+                      <div className="flex size-16 items-center justify-center overflow-hidden rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-950">
+                        {faviconDataUrl ? (
+                          <img src={faviconDataUrl} alt="Favicon preview" className="size-10 object-contain" />
+                        ) : (
+                          <img src="/icon.svg" alt="Default favicon" className="size-10 object-contain opacity-50" />
+                        )}
+                      </div>
+                      <span className="text-sm text-gray-500 dark:text-gray-400">
+                        {faviconDataUrl ? 'Custom icon' : 'Default icon'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="favicon-file">Choose icon</Label>
+                    <Input
+                      id="favicon-file"
+                      type="file"
+                      accept="image/png,image/svg+xml,image/x-icon,image/vnd.microsoft.icon,image/jpeg,image/webp,image/gif"
+                      onChange={handleFaviconFileChange}
+                      disabled={user?.role !== 'admin'}
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Stored in the database — survives container rebuilds.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" onClick={handleSaveFavicon} disabled={savingFavicon}>
+                      {savingFavicon ? 'Saving...' : 'Save Icon'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleResetFavicon}
+                      disabled={savingFavicon || !faviconDataUrl}
                     >
                       Use Default
                     </Button>

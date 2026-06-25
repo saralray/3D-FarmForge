@@ -695,10 +695,13 @@ const MAX_LOGO_DATA_URL_BYTES = 700 * 1024;
 // logo. ~4 MB of data URL ~= a 3 MB image after base64.
 const MAX_BACKGROUND_DATA_URL_BYTES = 4 * 1024 * 1024;
 
-// The branding PUT can carry both a logo and a background data URL at once, so
-// its body limit must fit both plus the surrounding JSON envelope.
+// Favicons are small; ~350 KB data URL ~= a 256 KB image after base64.
+const MAX_FAVICON_DATA_URL_BYTES = 350 * 1024;
+
+// The branding PUT can carry logo, background, and favicon data URLs at once, so
+// its body limit must fit all three plus the surrounding JSON envelope.
 const MAX_BRANDING_BODY_BYTES =
-  MAX_LOGO_DATA_URL_BYTES + MAX_BACKGROUND_DATA_URL_BYTES + 16 * 1024;
+  MAX_LOGO_DATA_URL_BYTES + MAX_BACKGROUND_DATA_URL_BYTES + MAX_FAVICON_DATA_URL_BYTES + 16 * 1024;
 
 // Allowed logo size multiplier range (1 = the built-in default size).
 const MIN_LOGO_SCALE = 0.5;
@@ -723,6 +726,7 @@ async function getBranding() {
     logoAdaptive: stored.logoAdaptive === true,
     logoScale: clampLogoScale(stored.logoScale ?? 1),
     backgroundDataUrl: typeof stored.backgroundDataUrl === 'string' ? stored.backgroundDataUrl : '',
+    faviconDataUrl: typeof stored.faviconDataUrl === 'string' ? stored.faviconDataUrl : '',
   };
 }
 
@@ -5001,7 +5005,25 @@ async function handleApi(req, res, requestUrl) {
         }
       }
 
-      await setAppSetting(BRANDING_KEY, { siteName, logoDataUrl: trimmed, logoSvg, logoAdaptive, logoScale, backgroundDataUrl });
+      // Optional favicon. An empty string falls back to the bundled default icon.
+      const faviconRaw = body?.faviconDataUrl;
+      if (faviconRaw !== undefined && typeof faviconRaw !== 'string') {
+        sendJson(res, 400, { error: 'faviconDataUrl must be a string' });
+        return true;
+      }
+      const faviconDataUrl = typeof faviconRaw === 'string' ? faviconRaw.trim() : '';
+      if (faviconDataUrl && !/^data:image\/(png|jpeg|webp|gif|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,/.test(faviconDataUrl)) {
+        sendJson(res, 400, {
+          error: 'faviconDataUrl must be an empty string or a base64 image data URL',
+        });
+        return true;
+      }
+      if (Buffer.byteLength(faviconDataUrl, 'utf8') > MAX_FAVICON_DATA_URL_BYTES) {
+        sendJson(res, 413, { error: 'Favicon image is too large (max ~256 KB).' });
+        return true;
+      }
+
+      await setAppSetting(BRANDING_KEY, { siteName, logoDataUrl: trimmed, logoSvg, logoAdaptive, logoScale, backgroundDataUrl, faviconDataUrl });
       sendJson(res, 200, await getBranding());
       return true;
     }

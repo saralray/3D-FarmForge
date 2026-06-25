@@ -40,6 +40,8 @@ export interface BrandingSettings {
   logoScale: number;
   // Empty string means "use the built-in theme background".
   backgroundDataUrl: string;
+  // Empty string means "use the bundled default favicon".
+  faviconDataUrl: string;
 }
 
 const DEFAULT_BRANDING_SETTINGS: BrandingSettings = {
@@ -49,6 +51,7 @@ const DEFAULT_BRANDING_SETTINGS: BrandingSettings = {
   logoAdaptive: false,
   logoScale: 1,
   backgroundDataUrl: '',
+  faviconDataUrl: '',
 };
 
 // The fields the client sends on save; the server derives logoSvg/logoAdaptive.
@@ -57,6 +60,7 @@ export interface BrandingInput {
   logoDataUrl: string;
   logoScale: number;
   backgroundDataUrl: string;
+  faviconDataUrl: string;
 }
 
 export async function fetchBrandingSettings(): Promise<BrandingSettings> {
