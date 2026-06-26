@@ -64,17 +64,17 @@ func handleAPI(w http.ResponseWriter, req *http.Request) bool {
 		respondStoreJSON(w, data, err, "")
 		return true
 
-	// Live-view camera health (all cameras). In-memory in Node; until the camera
-	// hub is ported (Phase 7) there are no live streams, so this is an empty list.
+	// Live-view camera health (all cameras), from the in-memory camera hub.
 	case pathname == "/api/cameras/health" && req.Method == http.MethodGet:
-		sendRawJSON(w, http.StatusOK, json.RawMessage("[]"), "no-store")
+		sendJSON(w, http.StatusOK, getAllCameraHealth(), "no-store")
 		return true
 
-	// Per-printer camera health — idle default until the hub is ported.
+	// Per-printer camera health — the running health() shape (with name) when a
+	// stream exists, else the idle default (no name).
 	case strings.HasPrefix(pathname, "/api/printers/") &&
 		strings.HasSuffix(pathname, "/camera/health") && req.Method == http.MethodGet:
 		id := decodePathSegment(pathname, "/api/printers/", "/camera/health")
-		sendJSON(w, http.StatusOK, idleCameraHealth(id), "no-store")
+		sendJSON(w, http.StatusOK, getCameraHealth(id), "no-store")
 		return true
 
 	// Per-printer maintenance summary. Must precede the generic /api/printers/:id

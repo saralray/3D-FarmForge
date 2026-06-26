@@ -286,14 +286,40 @@ func parseHeaderString(headerValue string) map[string]string {
 	return map[string]string{name: value}
 }
 
-// handleBambuWebcam is the Phase-7 entry point for Bambu cameras (port-6000 JPEG
-// snapshot and H2 RTSP hub). Until the hub is ported it reports the camera as
-// unavailable, matching how the UI treats a failed capture (it just shows
-// "Webcam offline").
+// handleBambuWebcam serves Bambu cameras (mirrors handleBambuWebcam in app.js):
+// H2/X1-class (RTSP) printers can stream live MJPEG from the shared hub feed; the
+// A1/P1 port-6000 camera is snapshot-only (captureBambuSnapshot).
 func handleBambuWebcam(ctx context.Context, w http.ResponseWriter, req *http.Request, printer *printerConn, parts []string) {
-	_ = ctx
-	_ = req
-	_ = printer
-	_ = parts
-	sendJSON(w, http.StatusBadGateway, map[string]any{"error": "Bambu camera not yet available"}, "")
+	first := ""
+	if len(parts) > 0 {
+		first = parts[0]
+	}
+	if first == "stream.mjpg" && bambuRtspProfiles[printer.Profile] {
+		addCameraViewer(w, req, printer)
+		return
+	}
+	if first != "snapshot.jpg" {
+		sendJSON(w, http.StatusNotFound, map[string]any{"error": "Unsupported Bambu camera path"}, "")
+		return
+	}
+
+	var jpeg []byte
+	var err error
+	if bambuRtspProfiles[printer.Profile] {
+		jpeg, err = getCameraSnapshotHub(ctx, printer)
+	} else {
+		jpeg, err = captureBambuSnapshot(printer.IPAddress, strings.TrimSpace(printer.APIKeyHeader), 0)
+	}
+	if err != nil {
+		logError("bambu camera capture failed", map[string]any{
+			"profile": printer.Profile, "printer": printer.Name, "ip": printer.IPAddress, "err": err.Error(),
+		})
+		sendJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()}, "")
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(jpeg)
 }

@@ -347,6 +347,7 @@ func deletePrinter(ctx context.Context, id string) error {
 // getPrinterById that handlePrinterProxy and sendBambuCommand read.
 type printerConn struct {
 	ID           string
+	Name         string
 	Profile      string
 	URL          string
 	IPAddress    string
@@ -358,16 +359,17 @@ type printerConn struct {
 // the same way decryptPrinterSecrets does. Returns nil when the id is unknown.
 func getPrinterConn(ctx context.Context, id string) (*printerConn, error) {
 	var pc printerConn
-	var profile, url, ip, apiKey, serial *string
+	var name, profile, url, ip, apiKey, serial *string
 	err := dbPool.QueryRow(ctx, `
-    SELECT id, profile, url, ip_address, api_key_header, serial
-    FROM printers WHERE id = $1;`, id).Scan(&pc.ID, &profile, &url, &ip, &apiKey, &serial)
+    SELECT id, name, profile, url, ip_address, api_key_header, serial
+    FROM printers WHERE id = $1;`, id).Scan(&pc.ID, &name, &profile, &url, &ip, &apiKey, &serial)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	pc.Name = derefStr(name)
 	pc.Profile = derefStr(profile)
 	pc.URL = derefStr(url)
 	pc.IPAddress = derefStr(ip)

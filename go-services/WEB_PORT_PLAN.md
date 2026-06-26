@@ -147,6 +147,28 @@ go-services/
   empty asserted string). Note: MQTT connection-failure messages differ by library (Node
   "connack timeout" vs Go "i/o timeout") — both 500; not parity-comparable. No `API.md`
   change (pure port).
+- **Phase 7 — done & verified.** The camera hub (`cmd/web/camera.go`, port of
+  `server/bambuCamera.js` + `captureBambuSnapshot`): one persistent ffmpeg per printer
+  (RTSP→MJPEG), fanned out to every live viewer over per-viewer channels and reused for
+  snapshots, with the health-check supervisor (frame-stall restart, exponential backoff,
+  idle shutdown). The Phase-6 Bambu-webcam stub is replaced with the real `handleBambuWebcam`
+  (RTSP profiles → hub stream/snapshot; A1/P1 → `captureBambuSnapshot` port-6000 TLS JPEG),
+  and the camera-health routes now read the live hub. Go differs from Node's single-threaded
+  event loop by guarding all stream state with a per-stream mutex and dropping frames to a
+  backed-up viewer via a non-blocking size-1 channel send; the mpjpeg parser state is local
+  to the stdout-reader goroutine (never shared). Verified Node vs Go with a **deterministic
+  fake `ffmpeg`** (emits known JPEGs as mpjpeg so both hubs ingest identical bytes) and a
+  **fake port-6000 TLS server**: snapshot byte-identical (frame + headers); MJPEG fan-out
+  byte-identical multipart framing with valid source JPEGs in correct cyclic order; health
+  JSON identical for the running shape (with `name`), the idle default (no `name`), and the
+  array form; Bambu path validation (404 "Unsupported Bambu camera path", A1 stream→404, A1
+  snapshot→502); and `captureBambuSnapshot` byte-identical for a valid frame plus both error
+  cases ("non-image frame (N bytes)…", "frame was not a JPEG"). The `-race` build ran clean
+  (0 data races) under concurrent snapshot/stream/health/A1-capture load. Not live-tested:
+  real ffmpeg against a real RTSP camera (none available) — but `ffmpegArgs`/`buildRtspURL`
+  are byte-identical to Node's production strings and the full hub machinery (spawn, stdout
+  parse, lifecycle, fan-out, snapshot, supervisor) was exercised via the fake ffmpeg. No
+  `API.md` change (pure port).
 
 ## Phased plan (each phase build + parity-verify + commit)
 
