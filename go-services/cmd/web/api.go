@@ -42,6 +42,10 @@ func handleAPI(w http.ResponseWriter, req *http.Request) bool {
 		return true
 	}
 
+	if handleSSORoutes(w, req) {
+		return true
+	}
+
 	if handleMutations(w, req, sessFn) {
 		return true
 	}

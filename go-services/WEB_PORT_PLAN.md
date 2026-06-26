@@ -169,6 +169,30 @@ go-services/
   are byte-identical to Node's production strings and the full hub machinery (spawn, stdout
   parse, lifecycle, fan-out, snapshot, supervisor) was exercised via the fake ffmpeg. No
   `API.md` change (pure port).
+- **Phase 8 — done & verified.** SAML 2.0 SSO (the dashboard is the SP) + the shared HMAC
+  grant/state hand-off. New `internal/saml` (port of samlSp.js: validation helpers,
+  `BuildAuthnRequest` deflate+base64, `ParseAndVerify`, `BuildSpMetadata`) and `cmd/web/sso.go`
+  (port of oauthGrant.js sign/verify state+grant, getOAuthSigningSecret, the SAML config
+  getters, and the routes: `GET /api/auth/saml/metadata`, `GET /api/auth/saml/start`,
+  `POST /api/auth/saml/acs`, `GET /launch`, `POST /api/auth/verify`, `GET|PUT /api/settings/saml`,
+  `POST /api/settings/saml/test`). XML-signature verification uses **goxmldsig v1.4.0** (+
+  beevik/etree v1.1.0 — pinned to keep go.mod at 1.22; v1.6.0 needs go 1.23). Verified Node vs
+  Go against throwaway DBs, with **assertions signed by the image's own xml-crypto** (the same
+  lib Node verifies with) fed to both ACS endpoints: providers/metadata(host-normalized)/
+  settings GET+PUT+test/AuthnRequest(deflate round-trip) byte-identical; the full
+  signed-assertion → ACS → grant → `/api/auth/verify` flow yields an **identical user object**;
+  and every failure/condition variant (tampered sig, wrong configured cert, audience/window/
+  recipient/status/scd-expired, auto-provision off → not_provisioned, known-staff-user keeps
+  its role) produces a matching ACS outcome. Bug found & fixed: goxmldsig validates a detached
+  element, so namespaces declared on an ancestor (Response) are "undeclared" on the Assertion —
+  `selfContainedAssertion` injects inherited xmlns declarations before validating, reproducing
+  xml-crypto's exclusive-c14n; and the `saml/test` response needed an ordered struct for the
+  `{ok, checks}` key order. **Known stricter-than-Node edges** (goxmldsig vs xml-crypto, both
+  secure): goxmldsig also checks the signing cert's NotBefore/NotAfter (Node doesn't), and
+  prefers the KeyInfo cert (falling back to the single configured root). Standard IdP responses
+  (cert in KeyInfo, currently valid) verify identically. Deferred: the OAuth provider login
+  dance (Google/Microsoft `/start`+`/callback`) — separate from SAML; `/api/auth/providers`
+  already reports their configured status (Phase 3). No `API.md` change (pure port).
 
 ## Phased plan (each phase build + parity-verify + commit)
 

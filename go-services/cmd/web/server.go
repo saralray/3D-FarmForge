@@ -114,6 +114,13 @@ func handleRequest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Friendly SSO deep-link: 302 to the canonical SAML start (outside /api, so the
+	// frontend gate doesn't apply — mirrors Node's handleApi /launch case).
+	if pathname == "/launch" && req.Method == http.MethodGet {
+		sendRedirect(rec, "/api/auth/saml/start")
+		return
+	}
+
 	// API surface (ported incrementally; returns false until a route matches).
 	if handleAPI(rec, req) {
 		return
