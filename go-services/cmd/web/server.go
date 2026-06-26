@@ -119,6 +119,18 @@ func handleRequest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Printer hardware passthrough: control API, camera HTTP endpoint, and the
+	// friendly /webcam/<id-or-name> stream URL.
+	if handlePrinterProxy(rec, req, proxyPrefix, proxyTarget) {
+		return
+	}
+	if handlePrinterProxy(rec, req, webcamPrefix, webcamTarget) {
+		return
+	}
+	if handleWebcamStream(rec, req) {
+		return
+	}
+
 	// Static SPA (and SPA fallback to index.html).
 	serveStatic(rec, req)
 }

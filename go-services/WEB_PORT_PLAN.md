@@ -121,6 +121,32 @@ go-services/
   `>=` not `>`. The `id` (sha1 of `submittedAt.toISOString()|studentId||name|filename`) is
   non-deterministic across runs by design, so it's structure-normalized (`queue-<HEX16>`)
   rather than byte-compared.
+- **Phase 6 — done & verified.** Printer hardware: the raw HTTP passthrough
+  (`handlePrinterProxy` in `cmd/web/proxy.go`, backing `/__printer_proxy/` and
+  `/__printer_webcam/`, plus the friendly `/webcam/<id-or-name>` URL), and the Bambu MQTT
+  command surface (`POST /api/printers/:id/command` in `cmd/web/command.go` — all payload
+  builders + validators + a short-lived publish-only TLS publish via paho). Wired into
+  `handleRequest` after `handleAPI`; the command route is added to `handleMutations` (gated
+  operator, as before). The proxy uses a no-timeout `http.Client` (webcam can be an endless
+  MJPEG stream) and aborts the upstream via the request context on client disconnect; webcam
+  responses get the relaxed headers (WEBCAM_CSP, X-Frame-Options SAMEORIGIN, CORP
+  cross-origin, no-store) and the HTML style-injection. The `api_key_header` is parsed
+  exactly like `parseHeaderString` (`Name: value` → that header; bare value → X-API-Key).
+  **Bambu cameras (A1/P1 port-6000 JPEG snapshot, H2 RTSP hub) are deferred to Phase 7** —
+  a Bambu webcam request hits a Phase-7 stub. Verified Node vs Go against throwaway DBs with
+  a fake upstream HTTP printer + a real TLS mosquitto broker: proxy passthrough byte-identical
+  (method/path/query/forwarded headers/api-key injection/request body/upstream status);
+  webcam passthrough byte-identical (HTML `<style>` injection before `</head>`, all relaxed
+  headers, JPEG piped unchanged, `/webcam/<name>` case-insensitive resolution); command
+  gate (401)/404/15 validation-error messages byte-identical; and **22 success command
+  payloads captured off the broker byte-identical incl. JSON key order** (print actions with
+  the stop `param`, gcode_line for temp/gcode/fan, set_airduct with default submode -1, AMS
+  load/unload/setting with the ams_id/tray_id split, and the H2 dual-LED light). Bug found &
+  fixed: an unsupported-command error interpolates the raw value JS-style, so a missing/
+  non-string command must render `undefined`/`null` (Go now uses `commandDisplay`, not the
+  empty asserted string). Note: MQTT connection-failure messages differ by library (Node
+  "connack timeout" vs Go "i/o timeout") — both 500; not parity-comparable. No `API.md`
+  change (pure port).
 
 ## Phased plan (each phase build + parity-verify + commit)
 

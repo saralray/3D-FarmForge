@@ -33,6 +33,10 @@ func handleMutations(w http.ResponseWriter, req *http.Request, sessFn func() *se
 		sendEmpty(w, http.StatusNoContent)
 		return true
 
+	case strings.HasPrefix(p, "/api/printers/") && strings.HasSuffix(p, "/command") && m == http.MethodPost:
+		handlePrinterCommand(ctx, w, req)
+		return true
+
 	case strings.HasPrefix(p, "/api/printers/") && m == http.MethodDelete:
 		id := decodePathSegment(p, "/api/printers/", "")
 		if err := deletePrinter(ctx, id); err != nil {

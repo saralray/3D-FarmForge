@@ -342,6 +342,69 @@ func deletePrinter(ctx context.Context, id string) error {
 	return err
 }
 
+// printerConn holds the connection fields the proxy / command / webcam paths
+// need from a full (decrypted) printer record. Mirrors the subset of
+// getPrinterById that handlePrinterProxy and sendBambuCommand read.
+type printerConn struct {
+	ID           string
+	Profile      string
+	URL          string
+	IPAddress    string
+	APIKeyHeader string
+	Serial       string
+}
+
+// getPrinterConn loads a printer's connection fields, decrypting api_key_header
+// the same way decryptPrinterSecrets does. Returns nil when the id is unknown.
+func getPrinterConn(ctx context.Context, id string) (*printerConn, error) {
+	var pc printerConn
+	var profile, url, ip, apiKey, serial *string
+	err := dbPool.QueryRow(ctx, `
+    SELECT id, profile, url, ip_address, api_key_header, serial
+    FROM printers WHERE id = $1;`, id).Scan(&pc.ID, &profile, &url, &ip, &apiKey, &serial)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	pc.Profile = derefStr(profile)
+	pc.URL = derefStr(url)
+	pc.IPAddress = derefStr(ip)
+	pc.Serial = derefStr(serial)
+	pc.APIKeyHeader = derefStr(apiKey)
+	if secretCipher.Enabled() && pc.APIKeyHeader != "" {
+		pc.APIKeyHeader = secretCipher.Decrypt(pc.APIKeyHeader)
+	}
+	return &pc, nil
+}
+
+// getPrinterConnByIdOrName mirrors getPrinterByIdOrName: an exact id match wins
+// over a case-insensitive name match. Used by the friendly /webcam/<id-or-name>
+// stream URL.
+func getPrinterConnByIdOrName(ctx context.Context, identifier string) (*printerConn, error) {
+	var id string
+	err := dbPool.QueryRow(ctx, `
+    SELECT id FROM printers
+    WHERE id = $1 OR lower(name) = lower($1)
+    ORDER BY (id = $1) DESC
+    LIMIT 1;`, identifier).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return getPrinterConn(ctx, id)
+}
+
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 func markQueueJobPrinted(ctx context.Context, id string) error {
 	_, err := dbPool.Exec(ctx,
 		`UPDATE queue_jobs SET printed_status = 1, updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL;`, id)
