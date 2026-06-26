@@ -46,6 +46,11 @@ func handleAPI(w http.ResponseWriter, req *http.Request) bool {
 		return true
 	}
 
+	// Public queue intake (multipart submit) and stored-model download.
+	if handleQueueIntake(w, req) {
+		return true
+	}
+
 	switch {
 	// GET /api/printers — connection secrets only reach an operator/admin session;
 	// anonymous/viewer/student callers always get the redacted list. (The

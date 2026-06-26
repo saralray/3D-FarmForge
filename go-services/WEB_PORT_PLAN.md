@@ -99,6 +99,28 @@ go-services/
   branding PUT (SVG theme analysis), slicer-keys, Discord notifications, home-assistant,
   saml/oauth settings writes, manager (their own phases). queue submit = Phase 5,
   printer command = Phase 6.
+- **Phase 5 — done & verified.** Queue intake & files: `POST /api/queue/submit` (public
+  multipart intake, busboy replaced by a streaming `mime/multipart` reader that buffers
+  the single uploaded file bounded by `QUEUE_UPLOAD_MAX_BYTES`, stores it as
+  `queue_jobs.file_content` bytea + `file_mime`/`file_size_bytes`, and fires the Discord
+  `queue_added` webhook in a detached goroutine) and `GET /api/queue/:id/file` (streams the
+  bytea out in 256 KB chunks read straight from Postgres via `substring`, with the
+  `Content-Disposition` attachment/inline + sanitized filename). Both routes are public
+  (submit is in `publicAPIMutations`; the file GET is a plain read), wired via
+  `handleQueueIntake` between `handleMutations` and the GET read switch. Verified by running
+  **Node and Go against two identical throwaway DBs** (Node-dumped schema loaded into the Go
+  DB, since the Go server doesn't run `ensureSchema` yet) and diffing responses + DB state:
+  the four validation paths (no-name/no-file/bad-ext/empty-file 400/415), the 201 `{ok,id}`
+  success shape, download headers (Content-Type/Length/Disposition/Cache-Control), body
+  byte-equality (upload↔download↔cross-runtime), full DB row parity (filename, counts,
+  notes assembly, priority/estimated_time defaults, form_type, mime, sizes), inline `?open=1`
+  disposition, filename sanitization (`my odd@name#2.stl` → `my odd_name_2.stl`), explicit
+  mime passthrough, and 404 for a missing file. Bug found & fixed: busboy's `fileSize` limit
+  is **inclusive** (a file that reaches `limit` bytes is rejected; max accepted is
+  `limit-1`) — confirmed against Node at the 998/999/1000/1001 boundary — so the Go check is
+  `>=` not `>`. The `id` (sha1 of `submittedAt.toISOString()|studentId||name|filename`) is
+  non-deterministic across runs by design, so it's structure-normalized (`queue-<HEX16>`)
+  rather than byte-compared.
 
 ## Phased plan (each phase build + parity-verify + commit)
 
