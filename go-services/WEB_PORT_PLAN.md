@@ -232,6 +232,35 @@ go-services/
   maintenance `setInterval` (app.js:5444) drifts `health_score`→100 over time and is not
   request-path code — excluded from the state diff.
 
+- **Phase 10 — done & verified.** The manager access-request workflow (`cmd/web/manager.go`,
+  port of the `/api/manager/*` block in app.js) plus the low-risk admin CRUD edges that reuse
+  the Phase-9 stores and the `/api/version` build-id probe. Routes: `POST /api/manager/request`
+  (public create + CORS, `OPTIONS` preflight 204), `GET /api/manager/requests` (admin list),
+  `GET /api/manager/requests/:id/status` (public poll + CORS; reveals the minted key once then
+  `clearManagerRequestKeySecret`), `POST …/:id/approve` (admin; mints a `printfarm_manage`
+  key, returns `{ok:true}` — the key is revealed via the later status poll, unlike the data
+  API's inline-key approve), `POST …/:id/deny`, `DELETE …/:id` (admin; revokes the key); the
+  admin Discord-webhook CRUD (`GET|POST /api/notifications/discord-webhooks`, `DELETE …/:id`)
+  and slicer-key CRUD (`GET|POST /api/slicer-keys`, `DELETE …/:id`); and `GET /api/version`
+  (`{buildId}` = `sha256(dist/index.html)[:16]`, computed once like Node's startup hook,
+  served public before the gate). Wired into `handleAPI` after `handleMutations`; the CORS
+  blocks set headers then fall through for non-matching methods, mirroring Node. Verified Node
+  vs Go against two identical throwaway DBs (with a seeded admin session cookie for the gated
+  routes and a shared `index.html` so the build-id hashes match) across **35 cases**: build-id
+  byte-identical; the full manager lifecycle (create→list→status-pending→approve→status-reveal
+  →status-cleared→deny→delete-with-key-revocation) byte-identical (incl. CORS preflight + CORS
+  response headers); slicer-key/webhook create+delete; every 400/404/401 path; and **full
+  DB-state parity** across manager_requests, slicer_api_keys, and discord_webhooks (key minting,
+  key-secret clearing, key revocation on delete, scope normalization). The manager-request store
+  (`createManagerRequest`/`getManagerRequest`/`listManagerRequestsJSON`/approve/deny/delete) was
+  already ported in Phase 9; this phase added `clearManagerRequestKeySecret`. No `API.md` change
+  (pure port). **Still deferred to a pre-cutover pass** (each its own subsystem): the slicer-grant
+  session dance (`POST /api/slicer-grant/verify`, `POST|DELETE /api/auth/slicer-token`), the OAuth
+  provider login flow (Google/Microsoft `/start`+`/callback` — `/api/auth/providers` already
+  reports status), `PUT /api/settings/branding` (SVG theme analysis), `/api/settings/favicon`, and
+  the Home-Assistant integration (`/api/settings/home-assistant/{,devices,rules,test}` + its engine
+  timer). These must land before the Phase-11 compose cutover.
+
 ## Phased plan (each phase build + parity-verify + commit)
 
 1. **Foundation** — server, pgxpool, logger, X-Request-Id, setSecurityHeaders

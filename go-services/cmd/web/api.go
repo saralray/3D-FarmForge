@@ -25,6 +25,12 @@ func handleAPI(w http.ResponseWriter, req *http.Request) bool {
 		return true
 	}
 
+	// Build-id probe: public and before the gate, mirroring app.js handleApi.
+	if pathname == "/api/version" && req.Method == http.MethodGet {
+		sendJSON(w, http.StatusOK, map[string]any{"buildId": buildID()}, "no-store")
+		return true
+	}
+
 	// Lazily resolve (and memoize) the session, mirroring Node's req._session
 	// cache — public reads that never need it skip the DB lookup entirely.
 	var (
@@ -54,6 +60,17 @@ func handleAPI(w http.ResponseWriter, req *http.Request) bool {
 	}
 
 	if handleMutations(w, req, sessFn) {
+		return true
+	}
+
+	// Manager access-request workflow + admin Discord-webhook / slicer-key CRUD.
+	if handleManagerRoutes(ctx, w, req) {
+		return true
+	}
+	if handleNotificationsRoutes(ctx, w, req) {
+		return true
+	}
+	if handleSlicerKeysRoutes(ctx, w, req) {
 		return true
 	}
 

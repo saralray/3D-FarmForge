@@ -452,6 +452,14 @@ func approveManagerRequest(ctx context.Context, id, apiKeyID, keySecret string) 
 	return err
 }
 
+// clearManagerRequestKeySecret blanks the one-time key after the status poll has
+// revealed it (mirrors postgres.js clearManagerRequestKeySecret).
+func clearManagerRequestKeySecret(ctx context.Context, id string) error {
+	_, err := dbPool.Exec(ctx,
+		`UPDATE manager_requests SET key_secret = NULL, updated_at = NOW() WHERE id = $1`, id)
+	return err
+}
+
 func denyManagerRequest(ctx context.Context, id string) error {
 	_, err := dbPool.Exec(ctx,
 		`UPDATE manager_requests SET status = 'denied', updated_at = NOW() WHERE id = $1`, id)
