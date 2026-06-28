@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { NotificationBell } from './NotificationBell';
+import { PrintRequestDialog } from './PrintRequestDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from './ui/sheet';
@@ -137,14 +138,16 @@ export function BottomTabBar() {
                   <span className="ml-3 whitespace-nowrap">{item.label}</span>
                 </Link>
               ))}
-              <Link
-                to="/request"
-                onClick={() => setMoreOpen(false)}
-                className="flex w-full items-center rounded-lg px-4 py-3 text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
-              >
-                <ClipboardList className="size-5" />
-                <span className="ml-3 whitespace-nowrap">ฟอร์มขอพิมพ์งาน</span>
-              </Link>
+              <PrintRequestDialog>
+                <button
+                  type="button"
+                  onClick={() => setMoreOpen(false)}
+                  className="flex w-full items-center rounded-lg px-4 py-3 text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  <ClipboardList className="size-5" />
+                  <span className="ml-3 whitespace-nowrap">ฟอร์มขอพิมพ์งาน</span>
+                </button>
+              </PrintRequestDialog>
             </div>
 
             <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">

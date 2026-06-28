@@ -4,8 +4,8 @@ import { QueueItem } from '../components/QueueItem';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { List, ClipboardList, ChevronLeft, ChevronRight, FileSpreadsheet } from 'lucide-react';
-import { Link } from 'react-router';
 import { toast } from 'sonner';
+import { PrintRequestDialog } from '../components/PrintRequestDialog';
 import { deleteQueueJob, fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
 import { useAuth } from '../contexts/AuthContext';
 import { usePrinters } from '../contexts/PrintersContext';
@@ -201,12 +201,12 @@ export function Queue() {
               Export Excel
             </Button>
           )}
-          <Button asChild variant="outline">
-            <Link to="/request">
+          <PrintRequestDialog>
+            <Button variant="outline">
               <ClipboardList className="size-4 mr-2" />
               New Print Request
-            </Link>
-          </Button>
+            </Button>
+          </PrintRequestDialog>
         </div>
       </div>
 

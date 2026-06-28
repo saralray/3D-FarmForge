@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { LayoutDashboard, List, BarChart3, LogOut, Settings, ClipboardList, ScrollText, Music, Wrench } from 'lucide-react';
+import { PrintRequestDialog } from './PrintRequestDialog';
 import { ThemeToggle } from './ThemeToggle';
 import { NotificationBell } from './NotificationBell';
 import { useAuth } from '../contexts/AuthContext';
@@ -171,15 +172,17 @@ export function Navigation() {
               {!isCollapsed && <span className="ml-3 whitespace-nowrap">{item.label}</span>}
             </Link>
           ))}
-          <Link
-            to="/request"
-            className="flex w-full items-center rounded-lg px-4 py-3 text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
-          >
-            <ClipboardList className="size-5" />
-            {!isCollapsed && (
-              <span className="ml-3 whitespace-nowrap">ฟอร์มขอพิมพ์งาน</span>
-            )}
-          </Link>
+          <PrintRequestDialog>
+            <button
+              type="button"
+              className="flex w-full items-center rounded-lg px-4 py-3 text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              <ClipboardList className="size-5" />
+              {!isCollapsed && (
+                <span className="ml-3 whitespace-nowrap">ฟอร์มขอพิมพ์งาน</span>
+              )}
+            </button>
+          </PrintRequestDialog>
         </div>
       </div>
 
