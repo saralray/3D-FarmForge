@@ -17,6 +17,12 @@ function applyStandaloneClass() {
 applyStandaloneClass();
 window.matchMedia('(display-mode: standalone)').addEventListener('change', applyStandaloneClass);
 
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js');
+  });
+}
+
 const rootElement = document.getElementById('root');
 
 if (!rootElement) {

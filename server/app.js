@@ -5219,9 +5219,24 @@ async function serveManifest(req, res) {
     if (branding.faviconDataUrl) {
       const mimeMatch = /^data:(image\/[^;]+);base64,/.exec(branding.faviconDataUrl);
       const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
-      manifest.icons = [
-        { src: '/api/settings/favicon', sizes: 'any', type: mimeType, purpose: 'any maskable' },
-      ];
+      const isSvg = mimeType === 'image/svg+xml';
+      // Chrome on Android requires at least one PNG icon with an explicit pixel
+      // size (≥192×192) to show the install prompt. SVG-only manifests are
+      // silently skipped. For raster uploads declare the favicon at both sizes
+      // Chrome needs; it scales the actual image. For SVG uploads, keep the
+      // static PNG fallbacks so the install prompt still appears.
+      manifest.icons = isSvg
+        ? [
+            { src: '/api/settings/favicon', sizes: 'any', type: mimeType, purpose: 'any' },
+            { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+            { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+            { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ]
+        : [
+            { src: '/api/settings/favicon', sizes: '192x192', type: mimeType, purpose: 'any' },
+            { src: '/api/settings/favicon', sizes: '512x512', type: mimeType, purpose: 'any' },
+            { src: '/api/settings/favicon', sizes: '512x512', type: mimeType, purpose: 'maskable' },
+          ];
     }
   } catch (error) {
     logger.warn('manifest branding read failed', error);
