@@ -342,7 +342,7 @@ endpoint is also how you manage them via the API. Notable keys:
 
 | Key | What it holds |
 |-----|---------------|
-| `branding` | `{ siteName, logoDataUrl, logoSvg, logoAdaptive, logoScale, backgroundDataUrl }` — `siteName` (browser tab + dashboard heading; empty = bundled default name), plus the site logo and an optional full-page website background image (both base64 data URLs; empty = bundled default logo / built-in theme background). |
+| `branding` | `{ siteName, logoDataUrl, logoSvg, logoAdaptive, logoScale, backgroundDataUrl, faviconDataUrl }` — `siteName` (browser tab + dashboard heading; empty = bundled default name), plus the site logo, an optional full-page website background image, and an optional browser/app icon (`faviconDataUrl`) (all base64 data URLs; empty = bundled defaults). |
 | `integration_urls` | `{ googleSheetQueueUrl, googleFormUrl }` (optional external links). |
 | `analytics_layout` | Analytics page grid layout (array of `{i,x,y,w,h}`). |
 | `printer_card_layout:<profile>` | Per-profile detail-card column layout (array of arrays). |
@@ -511,7 +511,7 @@ classified below requires an admin session.
 
 | Class | Who | Examples |
 | --- | --- | --- |
-| **public read** | anyone | `GET /api/printers`, `GET /api/queue`, `GET /api/analytics/daily`, `GET /api/cameras/health`, `GET /api/maintenance`, `GET /api/maintenance/summary`, `GET /api/maintenance/notifications`, `GET /api/printers/:id/maintenance`, `GET /api/settings/maintenance-intervals`, branding/layout reads |
+| **public read** | anyone | `GET /api/printers`, `GET /api/queue`, `GET /api/analytics/daily`, `GET /api/cameras/health`, `GET /api/maintenance`, `GET /api/maintenance/summary`, `GET /api/maintenance/notifications`, `GET /api/printers/:id/maintenance`, `GET /api/settings/maintenance-intervals`, `GET /api/settings/favicon`, branding/layout reads |
 | **admin read** | admin only | `GET /api/users`, `GET /api/slicer-keys`, `GET /api/audit-logs`, `GET /api/notifications/*`, `GET /api/manager/requests`, `GET /api/settings/saml`, `GET /api/settings/home-assistant*` |
 | **public mutation** | anyone | `POST /api/queue/submit` (student intake), `POST /api/manager/request`, the auth endpoints above |
 | **operator** | operator or admin | `POST /api/printers` (create/edit/reorder), `POST /api/printers/:id/command`, `POST /api/queue/:id/printed`, `POST /api/maintenance/:id/complete`, `POST /api/maintenance/notifications/read` |
@@ -535,6 +535,10 @@ Denials return `401` (no/expired session) or `403` (insufficient role).
 > `/api/v1` surface. Requests with no `Origin`/`Referer` (curl, server-to-server)
 > are allowed — use `/api/v1` with an API key for automation.
 
+### Version endpoint
+
+`GET /api/version` — **public, no auth**. Returns `{ buildId: string }` where `buildId` is a 16-hex-char SHA-256 of `dist/index.html`, computed once at server startup. Changes on every new deploy. Cached `no-store`. The frontend polls this every 5 minutes and prompts users to reload when the value changes. Suppressed from access logs (treated as a quiet probe alongside `/healthz`).
+
 ### Maintenance (frontend `/api/*`)
 
 Cookieless, like the rest of the frontend surface (reads public; the complete /
@@ -550,6 +554,7 @@ mark-read writes are operator-or-admin; interval config is admin).
 | `POST /api/maintenance/notifications/read` | Mark notifications read. Body `{ ids? }` (all unread when omitted). |
 | `GET /api/settings/maintenance-intervals` | Global default service intervals (array of `{ type, intervalHours, description }`). |
 | `PUT /api/settings/maintenance-intervals` | Replace the default intervals (admin). Body is the array, or `{ intervals: [...] }`. New printers seed from this; existing printers are backfilled by the worker. |
+| `GET /api/settings/favicon` | Serves the custom browser/app icon as a raw image (correct `Content-Type`). Returns `404` when no custom favicon is configured (bundled `/icon.svg` is used instead). Referenced by the dynamic PWA manifest's `icons` array when a custom favicon is set. |
 
 `healthScore` deductions: lubrication overdue −5, nozzle hours >1000 −10, any
 overdue task −15, print failure rate >10% −10 (clamped 0–100). Status bands:

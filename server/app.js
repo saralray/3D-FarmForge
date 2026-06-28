@@ -695,10 +695,13 @@ const MAX_LOGO_DATA_URL_BYTES = 700 * 1024;
 // logo. ~4 MB of data URL ~= a 3 MB image after base64.
 const MAX_BACKGROUND_DATA_URL_BYTES = 4 * 1024 * 1024;
 
-// The branding PUT can carry both a logo and a background data URL at once, so
-// its body limit must fit both plus the surrounding JSON envelope.
+// Favicons are small; ~350 KB data URL ~= a 256 KB image after base64.
+const MAX_FAVICON_DATA_URL_BYTES = 350 * 1024;
+
+// The branding PUT can carry logo, background, and favicon data URLs at once, so
+// its body limit must fit all three plus the surrounding JSON envelope.
 const MAX_BRANDING_BODY_BYTES =
-  MAX_LOGO_DATA_URL_BYTES + MAX_BACKGROUND_DATA_URL_BYTES + 16 * 1024;
+  MAX_LOGO_DATA_URL_BYTES + MAX_BACKGROUND_DATA_URL_BYTES + MAX_FAVICON_DATA_URL_BYTES + 16 * 1024;
 
 // Allowed logo size multiplier range (1 = the built-in default size).
 const MIN_LOGO_SCALE = 0.5;
@@ -723,6 +726,7 @@ async function getBranding() {
     logoAdaptive: stored.logoAdaptive === true,
     logoScale: clampLogoScale(stored.logoScale ?? 1),
     backgroundDataUrl: typeof stored.backgroundDataUrl === 'string' ? stored.backgroundDataUrl : '',
+    faviconDataUrl: typeof stored.faviconDataUrl === 'string' ? stored.faviconDataUrl : '',
   };
 }
 
@@ -823,6 +827,10 @@ function analyzeSvgForTheme(rawSvg) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, '..', 'dist');
+
+// Hash of dist/index.html, set once in assertProductionInputs(). Changes on
+// every new deploy so the frontend's version poll can prompt users to reload.
+let BUILD_ID = 'dev';
 const port = Number.parseInt(process.env.PORT || '5173', 10);
 const host = process.env.HOST || '0.0.0.0';
 const maxBodyBytes = Number.parseInt(process.env.MAX_BODY_BYTES || String(1024 * 1024), 10);
@@ -3213,6 +3221,11 @@ async function handleApi(req, res, requestUrl) {
     return true;
   }
 
+  if (requestUrl.pathname === '/api/version') {
+    sendJson(res, 200, { buildId: BUILD_ID }, 'no-store');
+    return true;
+  }
+
   if (await handleDataApi(req, res, requestUrl)) {
     return true;
   }
@@ -3380,7 +3393,12 @@ async function handleApi(req, res, requestUrl) {
       return true;
     }
     if (req.method === 'POST') {
-      await upsertPrinter(await readJsonBody(req));
+      const body = await readJsonBody(req);
+      if (!body || typeof body.id !== 'string' || !body.id.trim()) {
+        sendJson(res, 400, { error: 'printer id is required' });
+        return true;
+      }
+      await upsertPrinter(body);
       sendEmpty(res);
       return true;
     }
@@ -5001,10 +5019,49 @@ async function handleApi(req, res, requestUrl) {
         }
       }
 
-      await setAppSetting(BRANDING_KEY, { siteName, logoDataUrl: trimmed, logoSvg, logoAdaptive, logoScale, backgroundDataUrl });
+      // Optional favicon. An empty string falls back to the bundled default icon.
+      const faviconRaw = body?.faviconDataUrl;
+      if (faviconRaw !== undefined && typeof faviconRaw !== 'string') {
+        sendJson(res, 400, { error: 'faviconDataUrl must be a string' });
+        return true;
+      }
+      const faviconDataUrl = typeof faviconRaw === 'string' ? faviconRaw.trim() : '';
+      if (faviconDataUrl && !/^data:image\/(png|jpeg|webp|gif|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,/.test(faviconDataUrl)) {
+        sendJson(res, 400, {
+          error: 'faviconDataUrl must be an empty string or a base64 image data URL',
+        });
+        return true;
+      }
+      if (Buffer.byteLength(faviconDataUrl, 'utf8') > MAX_FAVICON_DATA_URL_BYTES) {
+        sendJson(res, 413, { error: 'Favicon image is too large (max ~256 KB).' });
+        return true;
+      }
+
+      await setAppSetting(BRANDING_KEY, { siteName, logoDataUrl: trimmed, logoSvg, logoAdaptive, logoScale, backgroundDataUrl, faviconDataUrl });
       sendJson(res, 200, await getBranding());
       return true;
     }
+  }
+
+  // Serves the custom favicon as a raw image so the PWA manifest can reference
+  // it as a URL. Returns 404 when no custom favicon is configured.
+  if (requestUrl.pathname === '/api/settings/favicon' && req.method === 'GET') {
+    const { faviconDataUrl } = await getBranding();
+    if (!faviconDataUrl) {
+      sendJson(res, 404, { error: 'No custom favicon configured' });
+      return true;
+    }
+    const match = /^data:(image\/[^;]+);base64,(.*)$/.exec(faviconDataUrl);
+    if (!match) {
+      sendJson(res, 500, { error: 'Stored favicon is malformed' });
+      return true;
+    }
+    const mimeType = match[1];
+    const imageBytes = Buffer.from(match[2], 'base64');
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.end(imageBytes);
+    return true;
   }
 
   return false;
@@ -5154,10 +5211,17 @@ async function serveManifest(req, res) {
   }
 
   try {
-    const siteName = (await getBranding()).siteName.trim();
-    if (siteName) {
-      manifest.name = siteName;
-      manifest.short_name = siteName;
+    const branding = await getBranding();
+    if (branding.siteName.trim()) {
+      manifest.name = branding.siteName.trim();
+      manifest.short_name = branding.siteName.trim();
+    }
+    if (branding.faviconDataUrl) {
+      const mimeMatch = /^data:(image\/[^;]+);base64,/.exec(branding.faviconDataUrl);
+      const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+      manifest.icons = [
+        { src: '/api/settings/favicon', sizes: 'any', type: mimeType, purpose: 'any maskable' },
+      ];
     }
   } catch (error) {
     logger.warn('manifest branding read failed', error);
@@ -5212,7 +5276,7 @@ async function checkReadiness() {
 // LOG_HTTP=off disables access logging entirely. Probe/scrape endpoints are
 // always skipped from the sampled log.
 const LOG_HTTP_MODE = (process.env.LOG_HTTP || 'sample').toLowerCase();
-const QUIET_ROUTES = new Set(['healthz', 'readyz', 'metrics']);
+const QUIET_ROUTES = new Set(['healthz', 'readyz', 'metrics', 'version']);
 
 function logHttp(req, res, route, durationMs, requestId) {
   if (LOG_HTTP_MODE === 'off') {
@@ -5357,7 +5421,8 @@ async function assertProductionInputs() {
     throw new Error('DATABASE_URL is required.');
   }
 
-  await readFile(path.join(distDir, 'index.html'));
+  const indexHtml = await readFile(path.join(distDir, 'index.html'));
+  BUILD_ID = createHash('sha256').update(indexHtml).digest('hex').slice(0, 16);
 }
 
 await assertProductionInputs();

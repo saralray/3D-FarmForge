@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { PrintJob } from '../types';
 import { QueueItem } from '../components/QueueItem';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { List, ClipboardList, ChevronLeft, ChevronRight } from 'lucide-react';
+import { List, ClipboardList, ChevronLeft, ChevronRight, FileSpreadsheet } from 'lucide-react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { deleteQueueJob, fetchQueueJobs, markQueueJobAsPrinted, resetQueueJobStatuses } from '../lib/queueApi';
 import { useAuth } from '../contexts/AuthContext';
 import { usePrinters } from '../contexts/PrintersContext';
 import { isReadOnlyRole } from '../lib/usersApi';
+import { useAutoRefresh } from '../lib/useAutoRefresh';
+import { exportQueueToXlsx } from '../lib/xlsxExport';
 
 export function Queue() {
   const { user } = useAuth();
@@ -21,32 +23,20 @@ export function Queue() {
 
   const HISTORY_PAGE_SIZE = 5;
 
-  useEffect(() => {
-    let active = true;
-
-    // Submissions come from the in-app /request form and are stored directly in
-    // the database, so the queue is just a cheap DB read polled on an interval.
-    const loadQueue = async () => {
-      try {
-        const jobs = await fetchQueueJobs();
-        if (active) {
-          setQueue(jobs.queue);
-          setHistory(jobs.history);
-          setHistoryPage(0);
-        }
-      } catch (error) {
-        console.error('Failed to load queue', error);
-      }
-    };
-
-    loadQueue();
-    const queueInterval = window.setInterval(loadQueue, 30000);
-
-    return () => {
-      active = false;
-      window.clearInterval(queueInterval);
-    };
+  // Submissions come from the in-app /request form and are stored directly in
+  // the database, so the queue is just a cheap DB read polled on an interval.
+  const loadQueue = useCallback(async () => {
+    try {
+      const jobs = await fetchQueueJobs();
+      setQueue(jobs.queue);
+      setHistory(jobs.history);
+      setHistoryPage(0);
+    } catch (error) {
+      console.error('Failed to load queue', error);
+    }
   }, []);
+
+  useAutoRefresh(loadQueue, 30_000);
 
   const handleRemove = async (jobId: string) => {
     try {
@@ -179,6 +169,13 @@ export function Queue() {
   const canManageQueue = user?.role === 'admin' || user?.role === 'operator';
   const canDeleteQueueJobs = user?.role === 'admin';
   const canDownloadQueueFiles = !isReadOnlyRole(user?.role);
+  const canExport = !isReadOnlyRole(user?.role);
+
+  const handleExportExcel = () => {
+    const date = new Date().toISOString().slice(0, 10);
+    exportQueueToXlsx(queue, history, `print-queue-${date}.xlsx`);
+    toast.success('Excel file downloaded');
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -196,6 +193,12 @@ export function Queue() {
               disabled={resetInFlight}
             >
               {resetInFlight ? 'Resetting...' : 'Reset Queue'}
+            </Button>
+          )}
+          {canExport && (
+            <Button variant="outline" onClick={handleExportExcel}>
+              <FileSpreadsheet className="size-4 mr-2" />
+              Export Excel
             </Button>
           )}
           <Button asChild variant="outline">
