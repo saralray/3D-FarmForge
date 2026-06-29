@@ -89,6 +89,7 @@ type oauthConfig struct {
 	clientSecret   string
 	tenant         string
 	authority      string
+	redirectURI    string
 	allowedDomains []string
 }
 
@@ -124,6 +125,7 @@ func getOAuthConfig(ctx context.Context, providerName string) (*oauthConfig, err
 		clientSecret: storedString(m, "clientSecret"),
 		tenant:       strings.TrimSpace(storedString(m, "tenant")),
 		authority:    strings.TrimSpace(storedString(m, "authority")),
+		redirectURI:  strings.TrimSpace(storedString(m, "redirectUri")),
 	}
 	if domains, ok := m["allowedDomains"].([]any); ok {
 		for _, d := range domains {
@@ -224,9 +226,18 @@ func decodeJwtClaims(jwt string) map[string]any {
 	return claims
 }
 
-func oauthRedirectURI(req *http.Request, providerName string) string {
-	if providerName == "adfs" {
+func oauthRedirectURI(req *http.Request, cfg *oauthConfig) string {
+	// Use the stored redirect URI when set — avoids relying on proxy headers
+	// to reconstruct the origin (required for ADFS whose URI is pre-registered).
+	if cfg != nil && cfg.redirectURI != "" {
+		return cfg.redirectURI
+	}
+	if cfg != nil && cfg.provider == "adfs" {
 		return resolvePublicOrigin(req) + adfsCallbackPath
+	}
+	providerName := ""
+	if cfg != nil {
+		providerName = cfg.provider
 	}
 	return resolvePublicOrigin(req) + "/api/auth/" + providerName + "/callback"
 }
@@ -349,11 +360,8 @@ func handleOAuthProvider(ctx context.Context, w http.ResponseWriter, req *http.R
 	}
 
 	if op == "start" {
-		state := signState(secret, uuid.NewString(), providerName)
-		// On-prem AD FS (authority set) only understands prompt=login; cloud
-		// providers get the account chooser.
-		// ADFS and on-prem AD FS only support prompt=login/none/consent —
-		// they reject `select_account` with invalid_request.
+		nonce := uuid.NewString()
+		state := signState(secret, nonce, providerName)
 		prompt := "select_account"
 		if cfg.authority != "" || providerName == "adfs" {
 			prompt = "login"
@@ -363,14 +371,20 @@ func handleOAuthProvider(ctx context.Context, w http.ResponseWriter, req *http.R
 			internalError(w, "parse authorize endpoint", perr)
 			return
 		}
-		authorizeURL.RawQuery = orderedQuery([][2]string{
+		params := [][2]string{
 			{"client_id", cfg.clientID},
-			{"redirect_uri", oauthRedirectURI(req, providerName)},
+			{"redirect_uri", oauthRedirectURI(req, cfg)},
 			{"response_type", "code"},
 			{"scope", oauthScope},
 			{"state", state},
-			{"prompt", prompt},
-		})
+		}
+		// ADFS requires a nonce for OpenID Connect; without it ADFS loses its
+		// internal session state and redirects to /adfs/ls?error=state.
+		if providerName == "adfs" || cfg.authority != "" {
+			params = append(params, [2]string{"nonce", nonce})
+		}
+		params = append(params, [2]string{"prompt", prompt})
+		authorizeURL.RawQuery = orderedQuery(params)
 		sendRedirect(w, authorizeURL.String())
 		return
 	}
@@ -384,7 +398,7 @@ func handleOAuthProvider(ctx context.Context, w http.ResponseWriter, req *http.R
 		return
 	}
 
-	idToken, ok := exchangeOAuthCode(cfg, providerName, code, req)
+	idToken, ok := exchangeOAuthCode(cfg, code, req)
 	if !ok {
 		sendRedirect(w, "/login?oauth_error=exchange_failed")
 		return
@@ -417,12 +431,12 @@ func handleOAuthProvider(ctx context.Context, w http.ResponseWriter, req *http.R
 
 // exchangeOAuthCode swaps the authorization code for tokens at the provider's
 // token endpoint and returns the id_token. ok=false on any HTTP / decode error.
-func exchangeOAuthCode(cfg *oauthConfig, providerName, code string, req *http.Request) (string, bool) {
+func exchangeOAuthCode(cfg *oauthConfig, code string, req *http.Request) (string, bool) {
 	form := url.Values{
 		"code":          {code},
 		"client_id":     {cfg.clientID},
 		"client_secret": {cfg.clientSecret},
-		"redirect_uri":  {oauthRedirectURI(req, providerName)},
+		"redirect_uri":  {oauthRedirectURI(req, cfg)},
 		"grant_type":    {"authorization_code"},
 	}
 	client := &http.Client{Timeout: 15 * time.Second}

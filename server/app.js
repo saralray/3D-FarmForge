@@ -4060,13 +4060,19 @@ async function handleApi(req, res, requestUrl) {
     const secret = await getOAuthSigningSecret();
 
     if (op === 'start') {
-      const state = signState(secret, { n: randomUUID(), p: providerName });
+      const nonce = randomUUID();
+      const state = signState(secret, { n: nonce, p: providerName });
       const authorizeUrl = new URL(provider.authorizeEndpoint(config));
       authorizeUrl.searchParams.set('client_id', config.clientId);
       authorizeUrl.searchParams.set('redirect_uri', oauthRedirectUri(req, providerName, config));
       authorizeUrl.searchParams.set('response_type', 'code');
       authorizeUrl.searchParams.set('scope', OAUTH_SCOPE);
       authorizeUrl.searchParams.set('state', state);
+      // ADFS requires a nonce for OpenID Connect flows; without it ADFS loses
+      // session state and redirects to /adfs/ls?error=state instead of our callback.
+      if (providerName === 'adfs' || config.authority) {
+        authorizeUrl.searchParams.set('nonce', nonce);
+      }
       // Force a fresh login so a shared kiosk doesn't silently reuse a session.
       // ADFS and on-prem AD FS only understand prompt=login/none/consent —
       // they reject the Entra/Google `select_account` value with invalid_request.
