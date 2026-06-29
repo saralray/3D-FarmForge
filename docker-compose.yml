@@ -73,6 +73,10 @@ services:
       # Encrypts printer connection secrets (LAN access codes) at rest. Must be
       # identical across web, slicer-proxy and poller. Empty = stored plaintext.
       PRINTER_SECRET_KEY: ${PRINTER_SECRET_KEY:-}
+      # H-2: Bambu TLS certificate verification. Bambu printers use self-signed
+      # certificates; set to "false" only when the printer cert is trusted at
+      # the OS level. Default "true" (skip) for LAN deployments.
+      BAMBU_TLS_SKIP_VERIFY: ${BAMBU_TLS_SKIP_VERIFY:-true}
       # Max size of a model file uploaded through the in-app print-request form
       # (stored in Postgres). The nginx /api/queue/submit body cap should match.
       QUEUE_UPLOAD_MAX_BYTES: ${QUEUE_UPLOAD_MAX_BYTES:-52428800}
@@ -149,6 +153,8 @@ services:
       POLLER_SHARD_INDEX: ${POLLER_SHARD_INDEX:-0}
       # Must match the web service: used to decrypt printer secrets read from the DB.
       PRINTER_SECRET_KEY: ${PRINTER_SECRET_KEY:-}
+      # H-2: must match the web service (see web service comment above).
+      BAMBU_TLS_SKIP_VERIFY: ${BAMBU_TLS_SKIP_VERIFY:-true}
       # Bambu cameras aren't plain HTTP, so the poller grabs their Discord-snapshot
       # frames from the web service's /__printer_webcam/<id>/snapshot.jpg endpoint
       # over the internal network (it speaks the port-6000 / RTSP camera protocols).

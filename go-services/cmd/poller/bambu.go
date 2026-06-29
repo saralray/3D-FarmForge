@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -39,8 +38,7 @@ func newBambuClient(host, accessCode, serial string) *bambuClient {
 	opts.AddBroker(fmt.Sprintf("ssl://%s:%d", host, bambuMqttPort))
 	opts.SetUsername(bambuMqttUsername)
 	opts.SetPassword(accessCode)
-	// Bambu printers serve a self-signed certificate; trust the LAN device directly.
-	opts.SetTLSConfig(&tls.Config{InsecureSkipVerify: true})
+	opts.SetTLSConfig(bambuTLSConfig()) // H-2: see util.go bambuTLSConfig
 	opts.SetClientID(fmt.Sprintf("printfarm-poller-%s-%d", serial, time.Now().UnixNano()))
 	opts.SetAutoReconnect(true)
 	opts.SetConnectRetry(true)

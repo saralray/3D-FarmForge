@@ -234,6 +234,20 @@ func normalizeSamlRole(role string) string {
 	return "student"
 }
 
+// normalizeSamlRoleForNewUser caps the role an IdP can assert for a user that
+// is not yet in the staff list (auto-provisioned). H-6 FIX: an IdP-asserted
+// "admin" role must not grant admin access to an unknown account — only users
+// already in the staff list with an admin role get it. New users land on
+// "student" (read-only) or at most "operator" if the IdP explicitly claims it.
+func normalizeSamlRoleForNewUser(role string) string {
+	switch role {
+	case "operator":
+		return "operator"
+	default:
+		return "student"
+	}
+}
+
 // ── routes ───────────────────────────────────────────────────────────────────
 
 // handleSSORoutes covers /api/auth/verify, the SAML SP endpoints, and the SAML
@@ -400,9 +414,14 @@ func handleSamlAcs(ctx context.Context, w http.ResponseWriter, req *http.Request
 		sendRedirect(w, "/login?oauth_error=saml_not_provisioned")
 		return
 	}
-	role := normalizeSamlRole(identity.Role)
+	var role string
 	if existing != nil && userRoles[existing.Role] {
+		// Known account: always use the stored role; IdP cannot escalate it.
 		role = existing.Role
+	} else {
+		// H-6 FIX: auto-provisioned (new) user — cap IdP-asserted role to
+		// "operator" at most; "admin" from the IdP is silently downgraded.
+		role = normalizeSamlRoleForNewUser(normalizeSamlRole(identity.Role))
 	}
 	name := identity.Name
 	if name == "" {
@@ -534,10 +553,14 @@ func handleSamlTest(ctx context.Context, w http.ResponseWriter, req *http.Reques
 		{Label: "IdP certificate is a valid X.509 certificate", OK: saml.IsValidCertificate(idpCertificate)},
 	}
 	if urlOK {
+		// H-3 FIX: use an SSRF-safe transport that blocks requests to
+		// private/loopback/link-local IPs so an admin cannot probe internal
+		// services via the SAML test endpoint (see ssrf.go + redis.go).
 		reachable := false
 		detail := ""
 		client := &http.Client{
 			Timeout:       5 * time.Second,
+			Transport:     samlProbeTransport(),
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 		probe, perr := client.Get(idpSsoURL)

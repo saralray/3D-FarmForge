@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -370,7 +369,7 @@ func sendBambuCommand(printer *printerConn, command string, params map[string]an
 	opts.AddBroker(fmt.Sprintf("ssl://%s:8883", printer.IPAddress))
 	opts.SetUsername("bblp")
 	opts.SetPassword(strings.TrimSpace(printer.APIKeyHeader))
-	opts.SetTLSConfig(&tls.Config{InsecureSkipVerify: true})
+	opts.SetTLSConfig(bambuTLSConfig()) // H-2: see redis.go bambuTLSConfig
 	opts.SetClientID(fmt.Sprintf("printfarm-web-%s-%d", serial, time.Now().UnixNano()))
 	opts.SetConnectTimeout(4 * time.Second)
 	opts.SetAutoReconnect(false)

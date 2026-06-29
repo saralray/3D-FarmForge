@@ -55,6 +55,19 @@ const SLICER_UPLOAD_MAX_BYTES = Number.parseInt(
   10,
 );
 
+// H-5 FIX: sanitize a client-supplied filename before using it as a remote FTP
+// path. Strip directory components, null bytes, and characters that are unsafe in
+// FTPS paths or that could confuse Bambu/Moonraker (only alphanum, dash, dot,
+// underscore allowed). Falls back to a safe default when the result is empty.
+function sanitizeUploadFilename(raw) {
+  if (typeof raw !== 'string' || !raw) return 'upload.gcode';
+  // Take only the basename (strip any leading path / .. traversal attempts).
+  const base = raw.replace(/\\/g, '/').split('/').pop() || '';
+  // Keep only safe characters; replace everything else with underscore.
+  const safe = base.replace(/[^\w.\-]/g, '_').replace(/\.{2,}/g, '_');
+  return safe || 'upload.gcode';
+}
+
 // Where the dashboard lives, for the slicer's "Device" tab redirect. Prefer an
 // explicit APP_BASE_URL; otherwise reuse the request's hostname with the
 // dashboard's HTTP_PORT (nginx), since the proxy is published on a sibling port.
@@ -192,7 +205,7 @@ function parseUpload(req) {
         return;
       }
       captured = true;
-      filename = info.filename || 'upload.gcode';
+      filename = sanitizeUploadFilename(info.filename); // H-5: strip path traversal
       stream.on('data', (chunk) => chunks.push(chunk));
       stream.on('limit', () => {
         // busboy hit the fileSize limit — drain and reject so the caller
