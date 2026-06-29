@@ -89,6 +89,7 @@ type oauthConfig struct {
 	clientSecret   string
 	tenant         string
 	authority      string
+	redirectURI    string
 	allowedDomains []string
 }
 
@@ -100,14 +101,12 @@ var oauthSettingsKeys = map[string]string{
 
 func oauthUsesTenant(provider string) bool { return provider == "microsoft" }
 
-// adfsCallbackPath is the fixed redirect_uri registered with the Satit-M Chula
-// ADFS server. All other providers use /api/auth/<provider>/callback.
+// adfsCallbackPath is the fixed redirect_uri pre-registered with the ADFS IdP.
+// All other providers use /api/auth/<provider>/callback.
 const adfsCallbackPath = "/api/auth/oauth2_redirect"
 
 // getOAuthConfig resolves a provider's stored config (nil for an unknown
 // provider). allowedDomains are normalized (trim, lowercase, strip a leading @).
-// For the ADFS provider, ADFS_CLIENT_ID / ADFS_CLIENT_SECRET env vars supply
-// the credentials when the app_setting is not yet populated.
 func getOAuthConfig(ctx context.Context, providerName string) (*oauthConfig, error) {
 	key, ok := oauthSettingsKeys[providerName]
 	if !ok {
@@ -118,7 +117,7 @@ func getOAuthConfig(ctx context.Context, providerName string) (*oauthConfig, err
 		return nil, err
 	}
 	m := decodeStored(raw)
-	storedEnabled, enabledSet := m["enabled"].(bool)
+	storedEnabled, _ := m["enabled"].(bool)
 	cfg := &oauthConfig{
 		provider:     providerName,
 		enabled:      storedEnabled,
@@ -126,20 +125,7 @@ func getOAuthConfig(ctx context.Context, providerName string) (*oauthConfig, err
 		clientSecret: storedString(m, "clientSecret"),
 		tenant:       strings.TrimSpace(storedString(m, "tenant")),
 		authority:    strings.TrimSpace(storedString(m, "authority")),
-	}
-	// ADFS: fall back to env vars when app_settings are not yet populated.
-	if providerName == "adfs" {
-		if cfg.clientID == "" {
-			cfg.clientID = strings.TrimSpace(os.Getenv("ADFS_CLIENT_ID"))
-		}
-		if cfg.clientSecret == "" {
-			cfg.clientSecret = strings.TrimSpace(os.Getenv("ADFS_CLIENT_SECRET"))
-		}
-		// Auto-enable when env creds are present and the setting has never been
-		// explicitly disabled (enabledSet && !storedEnabled means admin turned it off).
-		if !(enabledSet && !storedEnabled) && cfg.clientID != "" && cfg.clientSecret != "" {
-			cfg.enabled = true
-		}
+		redirectURI:  strings.TrimSpace(storedString(m, "redirectUri")),
 	}
 	if domains, ok := m["allowedDomains"].([]any); ok {
 		for _, d := range domains {
@@ -157,12 +143,16 @@ func getOAuthConfig(ctx context.Context, providerName string) (*oauthConfig, err
 }
 
 // isOAuthConfigured reports whether the flow can actually run: enabled, with a
-// client id + secret, plus (for Microsoft) a tenant or AD FS authority.
+// client id + secret, plus (for Microsoft) a tenant or AD FS authority, and
+// (for ADFS) a non-empty authority URL.
 func isOAuthConfigured(c *oauthConfig) bool {
 	if c == nil || !c.enabled || c.clientID == "" || c.clientSecret == "" {
 		return false
 	}
 	if oauthUsesTenant(c.provider) && c.tenant == "" && c.authority == "" {
+		return false
+	}
+	if c.provider == "adfs" && c.authority == "" {
 		return false
 	}
 	return true
@@ -173,7 +163,7 @@ func oauthAuthorizeEndpoint(c *oauthConfig) string {
 	case "google":
 		return "https://accounts.google.com/o/oauth2/v2/auth"
 	case "adfs":
-		return "https://sso.satitm.chula.ac.th/adfs/oauth2/authorize"
+		return strings.TrimRight(c.authority, "/") + "/oauth2/authorize"
 	}
 	if c.authority != "" {
 		return strings.TrimRight(c.authority, "/") + "/oauth2/authorize"
@@ -190,7 +180,7 @@ func oauthTokenEndpoint(c *oauthConfig) string {
 	case "google":
 		return "https://oauth2.googleapis.com/token"
 	case "adfs":
-		return "https://sso.satitm.chula.ac.th/adfs/oauth2/token"
+		return strings.TrimRight(c.authority, "/") + "/oauth2/token"
 	}
 	if c.authority != "" {
 		return strings.TrimRight(c.authority, "/") + "/oauth2/token"
@@ -236,9 +226,18 @@ func decodeJwtClaims(jwt string) map[string]any {
 	return claims
 }
 
-func oauthRedirectURI(req *http.Request, providerName string) string {
-	if providerName == "adfs" {
+func oauthRedirectURI(req *http.Request, cfg *oauthConfig) string {
+	// Use the stored redirect URI when set — avoids relying on proxy headers
+	// to reconstruct the origin (required for ADFS whose URI is pre-registered).
+	if cfg != nil && cfg.redirectURI != "" {
+		return cfg.redirectURI
+	}
+	if cfg != nil && cfg.provider == "adfs" {
 		return resolvePublicOrigin(req) + adfsCallbackPath
+	}
+	providerName := ""
+	if cfg != nil {
+		providerName = cfg.provider
 	}
 	return resolvePublicOrigin(req) + "/api/auth/" + providerName + "/callback"
 }
@@ -361,11 +360,8 @@ func handleOAuthProvider(ctx context.Context, w http.ResponseWriter, req *http.R
 	}
 
 	if op == "start" {
-		state := signState(secret, uuid.NewString(), providerName)
-		// On-prem AD FS (authority set) only understands prompt=login; cloud
-		// providers get the account chooser.
-		// ADFS and on-prem AD FS only support prompt=login/none/consent —
-		// they reject `select_account` with invalid_request.
+		nonce := uuid.NewString()
+		state := signState(secret, nonce, providerName)
 		prompt := "select_account"
 		if cfg.authority != "" || providerName == "adfs" {
 			prompt = "login"
@@ -375,14 +371,20 @@ func handleOAuthProvider(ctx context.Context, w http.ResponseWriter, req *http.R
 			internalError(w, "parse authorize endpoint", perr)
 			return
 		}
-		authorizeURL.RawQuery = orderedQuery([][2]string{
+		params := [][2]string{
 			{"client_id", cfg.clientID},
-			{"redirect_uri", oauthRedirectURI(req, providerName)},
+			{"redirect_uri", oauthRedirectURI(req, cfg)},
 			{"response_type", "code"},
 			{"scope", oauthScope},
 			{"state", state},
-			{"prompt", prompt},
-		})
+		}
+		// ADFS requires a nonce for OpenID Connect; without it ADFS loses its
+		// internal session state and redirects to /adfs/ls?error=state.
+		if providerName == "adfs" || cfg.authority != "" {
+			params = append(params, [2]string{"nonce", nonce})
+		}
+		params = append(params, [2]string{"prompt", prompt})
+		authorizeURL.RawQuery = orderedQuery(params)
 		sendRedirect(w, authorizeURL.String())
 		return
 	}
@@ -396,7 +398,7 @@ func handleOAuthProvider(ctx context.Context, w http.ResponseWriter, req *http.R
 		return
 	}
 
-	idToken, ok := exchangeOAuthCode(cfg, providerName, code, req)
+	idToken, ok := exchangeOAuthCode(cfg, code, req)
 	if !ok {
 		sendRedirect(w, "/login?oauth_error=exchange_failed")
 		return
@@ -429,12 +431,12 @@ func handleOAuthProvider(ctx context.Context, w http.ResponseWriter, req *http.R
 
 // exchangeOAuthCode swaps the authorization code for tokens at the provider's
 // token endpoint and returns the id_token. ok=false on any HTTP / decode error.
-func exchangeOAuthCode(cfg *oauthConfig, providerName, code string, req *http.Request) (string, bool) {
+func exchangeOAuthCode(cfg *oauthConfig, code string, req *http.Request) (string, bool) {
 	form := url.Values{
 		"code":          {code},
 		"client_id":     {cfg.clientID},
 		"client_secret": {cfg.clientSecret},
-		"redirect_uri":  {oauthRedirectURI(req, providerName)},
+		"redirect_uri":  {oauthRedirectURI(req, cfg)},
 		"grant_type":    {"authorization_code"},
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
