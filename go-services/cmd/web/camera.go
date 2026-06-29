@@ -605,7 +605,7 @@ func captureBambuSnapshot(host, accessCode string, timeout time.Duration) ([]byt
 	copy(auth[48:], []byte(accessCode))
 
 	dialer := &net.Dialer{Timeout: timeout}
-	conn, err := tls.DialWithDialer(dialer, "tcp", fmt.Sprintf("%s:%d", host, bambuCameraPortSnap), &tls.Config{InsecureSkipVerify: true})
+	conn, err := tls.DialWithDialer(dialer, "tcp", fmt.Sprintf("%s:%d", host, bambuCameraPortSnap), bambuTLSConfig()) // H-2: see redis.go bambuTLSConfig
 	if err != nil {
 		return nil, err
 	}

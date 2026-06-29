@@ -395,7 +395,10 @@ func handleUsersVerify(ctx context.Context, w http.ResponseWriter, req *http.Req
 	}}, "")
 }
 
-// ── In-memory login rate limiter (Redis path omitted; disabled deployment) ────
+// ── Login rate limiter (H-4 FIX: Redis-backed when REDIS_URL is set) ────────
+// When Redis is configured all web replicas share one counter, preventing
+// brute-force bypass by hitting different instances. Falls back to the
+// in-process map when Redis is unavailable.
 
 const (
 	loginMaxFailures = 8
@@ -418,6 +421,11 @@ type rateResult struct {
 }
 
 func checkLoginRate(key string) rateResult {
+	// H-4 FIX: prefer Redis when available.
+	if redisEnabled() {
+		allowed, retryAfter := redisCheckLoginRate(context.Background(), key)
+		return rateResult{allowed: allowed, retryAfter: retryAfter}
+	}
 	loginMu.Lock()
 	defer loginMu.Unlock()
 	e := loginAttempts[key]
@@ -432,6 +440,10 @@ func checkLoginRate(key string) rateResult {
 }
 
 func recordLoginFailure(key string) {
+	if redisEnabled() {
+		redisRecordLoginFailure(key)
+		return
+	}
 	loginMu.Lock()
 	defer loginMu.Unlock()
 	e := loginAttempts[key]
@@ -444,6 +456,10 @@ func recordLoginFailure(key string) {
 }
 
 func clearLoginAttempts(key string) {
+	if redisEnabled() {
+		redisClearLoginAttempts(key)
+		return
+	}
 	loginMu.Lock()
 	defer loginMu.Unlock()
 	delete(loginAttempts, key)

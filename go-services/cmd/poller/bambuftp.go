@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"io"
 	"log"
 	"regexp"
@@ -67,7 +66,7 @@ func openBambuFTP(printer pmap) (*ftp.ServerConn, error) {
 	conn, err := ftp.Dial(
 		addrPort(addr, bambuFtpPort),
 		ftp.DialWithTimeout(bambuFtpTimeout),
-		ftp.DialWithTLS(&tls.Config{InsecureSkipVerify: true}),
+		ftp.DialWithTLS(bambuTLSConfig()), // H-2: see util.go bambuTLSConfig
 	)
 	if err != nil {
 		return nil, err
