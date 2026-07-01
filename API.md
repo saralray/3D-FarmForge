@@ -752,7 +752,9 @@ Configure each provider's client id/secret, optional allowed email domains, and
 authority URL** (the `/adfs` deep link) in **Settings → Sign-in**; nothing is
 baked into the build. Register `<origin>/api/auth/<provider>/callback` as a
 redirect URI with the provider (Google Cloud console / Azure app registration /
-AD FS relying-party); the origin is derived from `X-Forwarded-Proto`/`Host`.
+AD FS relying-party); the origin is the configured [SSO public
+URL](#sso-public-url-apisettingssso-public-url) (Settings → Sign-in), else
+`APP_BASE_URL`, else derived from `X-Forwarded-Proto`/`Host`.
 
 Both providers may be enabled at once — the login page shows a button for each
 enabled provider.
@@ -850,8 +852,9 @@ AuthnRequest id (carried in a signed `RelayState`).
 #### `GET /api/auth/saml/metadata`
 
 **Public.** Returns the SP metadata XML (`application/samlmetadata+xml`) generated
-from the saved SP entity ID + ACS URL (falling back to origin-derived defaults).
-Import this into the IdP to register the dashboard as an SP.
+from the saved SP entity ID + ACS URL (falling back to the resolved public origin
+— see [SSO public URL](#sso-public-url-apisettingssso-public-url) — when left
+blank). Import this into the IdP to register the dashboard as an SP.
 
 ---
 
@@ -919,6 +922,38 @@ Admin-only (covered by the `/api/settings/*` write rule).
 **Request body:** `{ "enabled": false }` — `enabled` must be a boolean (else `400`).
 
 **Response `200`:** the saved setting, e.g. `{ "enabled": false }`.
+
+## SSO public URL (`/api/settings/sso-public-url`)
+
+Admin override for the site's own public origin, used as the top-priority tier
+when the server builds OAuth `redirect_uri` / SAML `spEntityId`+`acsUrl` (see the
+OAuth and SAML sign-in sections). Resolution order: **(1)** this setting, stored
+in `app_settings` under `sso_public_url` → **(2)** the `APP_BASE_URL` env var →
+**(3)** the `X-Forwarded-Proto`/`X-Forwarded-Host`/`Host` request headers. Set
+it when SSO logins land on the wrong host because the reverse proxy doesn't
+forward a correct host. Not sensitive (it's the site's own public URL, not a
+secret) — `GET` is world-readable like `/api/settings/integrations`; `PUT` is
+admin-only (covered by the `/api/settings/*` write rule).
+
+#### `GET /api/settings/sso-public-url`
+
+**Response `200`:**
+
+```json
+{ "publicUrl": "", "envFallback": "" }
+```
+
+`publicUrl` is the stored override (empty if unset). `envFallback` is the current
+`APP_BASE_URL` env value (read-only — shown so an admin can see what tier 2
+resolves to before setting tier 1).
+
+#### `PUT /api/settings/sso-public-url`
+
+**Request body:** `{ "publicUrl": "https://printfarm.example.com" }` — `publicUrl`
+must be a string; if non-empty it must start with `http://` or `https://`
+(else `400`). A trailing `/` is normalized off.
+
+**Response `200`:** the saved setting, in the same shape as `GET`.
 
 ## Home Assistant (`/api/settings/home-assistant`)
 

@@ -620,11 +620,35 @@ async function getOAuthSigningSecret() {
   return secret;
 }
 
-// The dashboard sits behind nginx, so the public origin must come from the
-// forwarded headers (falling back to Host). The redirect_uri must match this
-// exactly and be registered with the provider (Google Cloud console / Azure app
-// registration) per provider.
-function resolvePublicOrigin(req) {
+// Admin-settable override for the site's own public origin (Settings → Sign-in).
+// Takes precedence over APP_BASE_URL and header-detection below — lets an admin
+// fix SSO callback URLs at runtime with no redeploy when the reverse-proxy setup
+// doesn't produce a correct Host / X-Forwarded-Host.
+const SSO_PUBLIC_URL_KEY = 'sso_public_url';
+
+// Strip a trailing slash so callers can safely append a path (e.g.
+// "/api/auth/saml/acs"). Does not validate scheme — the PUT handler does that.
+function normalizeSsoPublicUrl(raw) {
+  const base = String(raw || '').trim();
+  return base ? base.replace(/\/+$/, '') : '';
+}
+
+async function getSsoPublicUrl() {
+  const stored = await getAppSetting(SSO_PUBLIC_URL_KEY);
+  return normalizeSsoPublicUrl(stored?.publicUrl);
+}
+
+// The public origin used to build OAuth redirect_uri / SAML ACS URLs, resolved in
+// priority order: (1) the admin-set Settings → Sign-in value, (2) the APP_BASE_URL
+// env var, (3) the request headers (X-Forwarded-Proto/-Host, Host) — which only
+// work correctly when the reverse proxy forwards them. The redirect_uri must match
+// this exactly and be registered with the provider (Google Cloud console / Azure
+// app registration / AD FS relying-party).
+async function resolvePublicOrigin(req) {
+  const configured = await getSsoPublicUrl();
+  if (configured) return configured;
+  const envConfigured = normalizeSsoPublicUrl(process.env.APP_BASE_URL);
+  if (envConfigured) return envConfigured;
   const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
   const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost')
     .split(',')[0]
@@ -632,13 +656,13 @@ function resolvePublicOrigin(req) {
   return `${proto}://${host}`;
 }
 
-function oauthRedirectUri(req, providerName, config = null) {
+async function oauthRedirectUri(req, providerName, config = null) {
   // Use the stored redirect URI when set — avoids relying on proxy headers to
   // reconstruct the origin (required for ADFS whose URI is pre-registered).
   if (config?.redirectUri) return config.redirectUri;
   const provider = getOAuthProvider(providerName);
   const path = provider?.callbackPath ?? `/api/auth/${providerName}/callback`;
-  return `${resolvePublicOrigin(req)}${path}`;
+  return `${await resolvePublicOrigin(req)}${path}`;
 }
 
 // Shared Authorization Code exchange + identity extraction. Used by both the
@@ -668,7 +692,7 @@ async function oauthExchangeCallback(req, res, requestUrl, providerName) {
         code,
         client_id: config.clientId,
         client_secret: config.clientSecret,
-        redirect_uri: oauthRedirectUri(req, providerName, config),
+        redirect_uri: await oauthRedirectUri(req, providerName, config),
         grant_type: 'authorization_code',
       }),
     });
@@ -721,11 +745,11 @@ const SAML_DEFAULT_ROLE = 'student';
 
 // Default SP identifiers derived from the public origin when an admin leaves the
 // fields blank. These are also what the metadata endpoint advertises.
-function defaultSamlSpEntityId(req) {
-  return `${resolvePublicOrigin(req)}/api/auth/saml/metadata`;
+async function defaultSamlSpEntityId(req) {
+  return `${await resolvePublicOrigin(req)}/api/auth/saml/metadata`;
 }
-function defaultSamlAcsUrl(req) {
-  return `${resolvePublicOrigin(req)}/api/auth/saml/acs`;
+async function defaultSamlAcsUrl(req) {
+  return `${await resolvePublicOrigin(req)}/api/auth/saml/acs`;
 }
 
 async function getSamlConfig() {
@@ -751,10 +775,10 @@ function isSamlConfigured(config) {
 
 // Resolve the effective SP entity id / ACS URL, falling back to the request
 // origin when an admin left them blank.
-function resolveSamlEndpoints(config, req) {
+async function resolveSamlEndpoints(config, req) {
   return {
-    spEntityId: config.spEntityId || defaultSamlSpEntityId(req),
-    acsUrl: config.acsUrl || defaultSamlAcsUrl(req),
+    spEntityId: config.spEntityId || (await defaultSamlSpEntityId(req)),
+    acsUrl: config.acsUrl || (await defaultSamlAcsUrl(req)),
   };
 }
 
@@ -3927,7 +3951,7 @@ async function handleApi(req, res, requestUrl) {
   //   POST /api/auth/saml/acs      → consume the IdP's signed SAMLResponse (POST binding)
   if (requestUrl.pathname === '/api/auth/saml/metadata' && req.method === 'GET') {
     const config = await getSamlConfig();
-    const { spEntityId, acsUrl } = resolveSamlEndpoints(config, req);
+    const { spEntityId, acsUrl } = await resolveSamlEndpoints(config, req);
     const xml = buildSpMetadata({ spEntityId, acsUrl });
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/samlmetadata+xml; charset=utf-8');
@@ -3953,7 +3977,7 @@ async function handleApi(req, res, requestUrl) {
       sendRedirect(res, '/login?oauth_error=not_configured');
       return true;
     }
-    const { spEntityId, acsUrl } = resolveSamlEndpoints(config, req);
+    const { spEntityId, acsUrl } = await resolveSamlEndpoints(config, req);
     const secret = await getOAuthSigningSecret();
     // Build the request first so its id can be bound into the signed RelayState;
     // the ACS then enforces InResponseTo against it (CSRF / unsolicited-response
@@ -3977,7 +4001,7 @@ async function handleApi(req, res, requestUrl) {
       sendRedirect(res, '/login?oauth_error=not_configured');
       return true;
     }
-    const { spEntityId, acsUrl } = resolveSamlEndpoints(config, req);
+    const { spEntityId, acsUrl } = await resolveSamlEndpoints(config, req);
     const secret = await getOAuthSigningSecret();
 
     // The IdP POSTs an auto-submit form (application/x-www-form-urlencoded).
@@ -4082,7 +4106,7 @@ async function handleApi(req, res, requestUrl) {
       const state = signState(secret, { n: nonce, p: providerName });
       const authorizeUrl = new URL(provider.authorizeEndpoint(config));
       authorizeUrl.searchParams.set('client_id', config.clientId);
-      authorizeUrl.searchParams.set('redirect_uri', oauthRedirectUri(req, providerName, config));
+      authorizeUrl.searchParams.set('redirect_uri', await oauthRedirectUri(req, providerName, config));
       authorizeUrl.searchParams.set('response_type', 'code');
       authorizeUrl.searchParams.set('scope', OAUTH_SCOPE);
       authorizeUrl.searchParams.set('state', state);
@@ -4823,6 +4847,40 @@ async function handleApi(req, res, requestUrl) {
     }
   }
 
+  // Admin override for the site's own public origin (Settings → Sign-in), used as
+  // the top-priority tier in resolvePublicOrigin() — see the comment there. Not
+  // sensitive (it's the site's own public URL, not a secret): GET is world-readable
+  // like /api/settings/integrations; PUT is admin-only via the /api/settings/*
+  // catch-all in isAdminMutation.
+  if (requestUrl.pathname === '/api/settings/sso-public-url') {
+    if (req.method === 'GET') {
+      const stored = await getAppSetting(SSO_PUBLIC_URL_KEY);
+      sendJson(res, 200, {
+        publicUrl: normalizeSsoPublicUrl(stored?.publicUrl),
+        envFallback: normalizeSsoPublicUrl(process.env.APP_BASE_URL),
+      });
+      return true;
+    }
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      if (typeof body?.publicUrl !== 'string') {
+        sendJson(res, 400, { error: 'publicUrl must be a string' });
+        return true;
+      }
+      const publicUrl = normalizeSsoPublicUrl(body.publicUrl);
+      if (publicUrl && !/^https?:\/\//i.test(publicUrl)) {
+        sendJson(res, 400, { error: 'publicUrl must start with http:// or https://' });
+        return true;
+      }
+      await setAppSetting(SSO_PUBLIC_URL_KEY, { publicUrl });
+      sendJson(res, 200, {
+        publicUrl,
+        envFallback: normalizeSsoPublicUrl(process.env.APP_BASE_URL),
+      });
+      return true;
+    }
+  }
+
   // OAuth (SSO) sign-in config, per provider (admin-only in the UI, like the
   // integrations form above). GET never returns the client secret — only whether
   // one is stored; PUT with a blank/omitted clientSecret keeps the existing one so
@@ -4926,13 +4984,13 @@ async function handleApi(req, res, requestUrl) {
   if (requestUrl.pathname === '/api/settings/saml') {
     if (req.method === 'GET') {
       const config = await getSamlConfig();
-      const { spEntityId, acsUrl } = resolveSamlEndpoints(config, req);
+      const { spEntityId, acsUrl } = await resolveSamlEndpoints(config, req);
       sendJson(res, 200, {
         ...config,
         // Surface the effective SP identifiers so the form can prefill the
         // defaults the metadata endpoint advertises when the fields are blank.
-        defaultSpEntityId: defaultSamlSpEntityId(req),
-        defaultAcsUrl: defaultSamlAcsUrl(req),
+        defaultSpEntityId: await defaultSamlSpEntityId(req),
+        defaultAcsUrl: await defaultSamlAcsUrl(req),
         effectiveSpEntityId: spEntityId,
         effectiveAcsUrl: acsUrl,
       });
@@ -4994,11 +5052,11 @@ async function handleApi(req, res, requestUrl) {
         ip: getClientIp(req),
       });
       const saved = await getSamlConfig();
-      const endpoints = resolveSamlEndpoints(saved, req);
+      const endpoints = await resolveSamlEndpoints(saved, req);
       sendJson(res, 200, {
         ...saved,
-        defaultSpEntityId: defaultSamlSpEntityId(req),
-        defaultAcsUrl: defaultSamlAcsUrl(req),
+        defaultSpEntityId: await defaultSamlSpEntityId(req),
+        defaultAcsUrl: await defaultSamlAcsUrl(req),
         effectiveSpEntityId: endpoints.spEntityId,
         effectiveAcsUrl: endpoints.acsUrl,
       });

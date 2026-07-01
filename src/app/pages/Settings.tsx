@@ -71,6 +71,7 @@ import {
   fetchPublicViewerSetting,
   savePublicViewerSetting,
 } from '../lib/publicViewerApi';
+import { fetchSsoPublicUrl, saveSsoPublicUrl } from '../lib/ssoApi';
 
 const IPV4_PATTERN =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
@@ -146,6 +147,11 @@ export function Settings() {
   // dashboard read-only, or is sent to the login screen.
   const [publicViewerEnabled, setPublicViewerEnabled] = useState(true);
   const [savingPublicViewer, setSavingPublicViewer] = useState(false);
+  // Admin override for the site's own public URL (used to build SSO callback
+  // URLs — see the "SSO public URL" card in the Sign-in tab).
+  const [ssoPublicUrl, setSsoPublicUrl] = useState('');
+  const [ssoPublicUrlEnvFallback, setSsoPublicUrlEnvFallback] = useState('');
+  const [savingSsoPublicUrl, setSavingSsoPublicUrl] = useState(false);
   // Controlled so the desktop tab bar and the mobile section dropdown stay in sync.
   const [activeTab, setActiveTab] = useState<string>('manage-printers');
 
@@ -208,6 +214,15 @@ export function Settings() {
       .catch(() => {
         /* non-fatal — defaults to enabled */
       });
+
+    fetchSsoPublicUrl()
+      .then((setting) => {
+        setSsoPublicUrl(setting.publicUrl);
+        setSsoPublicUrlEnvFallback(setting.envFallback);
+      })
+      .catch(() => {
+        /* non-fatal — blank falls back to APP_BASE_URL / header detection */
+      });
   }, []);
 
   const handleTogglePublicViewer = async (enabled: boolean) => {
@@ -230,6 +245,27 @@ export function Settings() {
       );
     } finally {
       setSavingPublicViewer(false);
+    }
+  };
+
+  const handleSaveSsoPublicUrl = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can change the SSO public URL.');
+      return;
+    }
+    setSavingSsoPublicUrl(true);
+    try {
+      const saved = await saveSsoPublicUrl(ssoPublicUrl.trim());
+      setSsoPublicUrl(saved.publicUrl);
+      setSsoPublicUrlEnvFallback(saved.envFallback);
+      toast.success('SSO public URL saved.');
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'Unable to save the SSO public URL.',
+      );
+    } finally {
+      setSavingSsoPublicUrl(false);
     }
   };
 
@@ -2023,6 +2059,46 @@ export function Settings() {
                   disabled={user?.role !== 'admin' || savingPublicViewer}
                 />
               </div>
+            </Card>
+
+            <Card className="p-6 dark:bg-gray-900 dark:border-gray-800">
+              <form onSubmit={handleSaveSsoPublicUrl} className="space-y-2">
+                <Label htmlFor="sso-public-url">SSO public URL</Label>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  The public HTTPS address SSO providers should redirect back to
+                  after sign-in (e.g. <code>https://printfarm.example.com</code>).
+                  Overrides the server's <code>APP_BASE_URL</code> env var and
+                  header auto-detection — set this when SSO logins land on the
+                  wrong host. Leave blank to fall back to{' '}
+                  {ssoPublicUrlEnvFallback ? (
+                    <>
+                      the configured <code>APP_BASE_URL</code> (
+                      <code>{ssoPublicUrlEnvFallback}</code>)
+                    </>
+                  ) : (
+                    'auto-detection from request headers'
+                  )}
+                  .
+                </p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    id="sso-public-url"
+                    value={ssoPublicUrl}
+                    onChange={(e) => setSsoPublicUrl(e.target.value)}
+                    placeholder="https://printfarm.example.com"
+                    disabled={user?.role !== 'admin'}
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="flex-1"
+                  />
+                  <Button
+                    type="submit"
+                    disabled={user?.role !== 'admin' || savingSsoPublicUrl}
+                  >
+                    {savingSsoPublicUrl ? 'Saving…' : 'Save'}
+                  </Button>
+                </div>
+              </form>
             </Card>
 
             <Card className="p-6 dark:bg-gray-900 dark:border-gray-800">
