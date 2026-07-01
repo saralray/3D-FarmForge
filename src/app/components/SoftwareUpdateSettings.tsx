@@ -29,6 +29,7 @@ function relativeTime(iso: string | null | undefined): string | null {
 export function SoftwareUpdateSettings() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -37,6 +38,14 @@ export function SoftwareUpdateSettings() {
     setStatus(next);
     setLoading(false);
   }, []);
+
+  // Manual "Check again": keep the reload icon spinning for a beat so the
+  // animation is visible even when the status fetch returns near-instantly.
+  const handleCheck = useCallback(async () => {
+    setChecking(true);
+    await Promise.all([refresh(), new Promise((resolve) => setTimeout(resolve, 700))]);
+    setChecking(false);
+  }, [refresh]);
 
   useEffect(() => {
     void refresh();
@@ -75,9 +84,9 @@ export function SoftwareUpdateSettings() {
             available for this site.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={loading || applying}>
-          <RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
-          Check again
+        <Button variant="outline" size="sm" onClick={() => void handleCheck()} disabled={loading || checking || applying}>
+          <RefreshCw className={loading || checking ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
+          {checking ? 'Checking…' : 'Check again'}
         </Button>
       </div>
 

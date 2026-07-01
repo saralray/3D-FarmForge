@@ -85,7 +85,7 @@ const SETTINGS_TABS = [
   { value: 'notifications', label: 'Notifications', icon: Bell },
   { value: 'slicer-upload', label: 'API Keys', icon: KeyRound },
   { value: 'managers', label: 'Managers', icon: MonitorCheck },
-  { value: 'maintenance', label: 'System', icon: Wrench },
+  { value: 'system', label: 'System', icon: Wrench },
   { value: 'home-assistant', label: 'Home Assistant', icon: House },
   { value: 'sign-in', label: 'Sign-in', icon: Shield },
 ] as const;
@@ -2055,7 +2055,7 @@ export function Settings() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="maintenance">
+        <TabsContent value="system">
           <div className="space-y-6">
             {user?.role === 'admin' && <SoftwareUpdateSettings />}
           </div>
