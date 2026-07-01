@@ -992,10 +992,12 @@ const WATCHTOWER_TOKEN = (process.env.WATCHTOWER_TOKEN || '').trim();
 // once per TTL regardless of how many browsers are watching.
 let updateCheckCache = null; // { latest, latestCommittedAt, checkedAt }
 
-async function fetchLatestCommit() {
+async function fetchLatestCommit(force = false) {
   if (!UPDATE_CHECK_REPO) return null;
   const now = Date.now();
-  if (updateCheckCache && now - updateCheckCache.checkedAt < UPDATE_CHECK_TTL_MS) {
+  // A manual "Check again" (force) bypasses the TTL cache so a just-pushed
+  // commit shows up immediately instead of after the cache window.
+  if (!force && updateCheckCache && now - updateCheckCache.checkedAt < UPDATE_CHECK_TTL_MS) {
     return updateCheckCache;
   }
   const url = `https://api.github.com/repos/${UPDATE_CHECK_REPO}/commits/${encodeURIComponent(UPDATE_CHECK_BRANCH)}`;
@@ -4377,7 +4379,8 @@ async function handleApi(req, res, requestUrl) {
       return true;
     }
     try {
-      const info = await fetchLatestCommit();
+      const force = requestUrl.searchParams.get('force') === '1';
+      const info = await fetchLatestCommit(force);
       const latest = info?.latest || null;
       // Treat a commit as an update only when we know both sides and they differ.
       // A short SHA baked at build time still matches via prefix comparison.

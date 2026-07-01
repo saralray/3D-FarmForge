@@ -32,18 +32,19 @@ export function SoftwareUpdateSettings() {
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     setLoading(true);
-    const next = await fetchUpdateStatus();
+    const next = await fetchUpdateStatus(force);
     setStatus(next);
     setLoading(false);
   }, []);
 
-  // Manual "Check again": keep the reload icon spinning for a beat so the
-  // animation is visible even when the status fetch returns near-instantly.
+  // Manual "Check again": force a fresh GitHub poll (bypassing the server's TTL
+  // cache) so a just-pushed commit shows up right away, and keep the reload icon
+  // spinning for a beat so the animation is visible even when the fetch is fast.
   const handleCheck = useCallback(async () => {
     setChecking(true);
-    await Promise.all([refresh(), new Promise((resolve) => setTimeout(resolve, 700))]);
+    await Promise.all([refresh(true), new Promise((resolve) => setTimeout(resolve, 700))]);
     setChecking(false);
   }, [refresh]);
 

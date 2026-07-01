@@ -34,10 +34,12 @@ async function readError(response: Response): Promise<string | undefined> {
 }
 
 // Fetch the current-vs-latest version status. Returns a disabled status on any
-// failure so the caller can simply hide the card.
-export async function fetchUpdateStatus(): Promise<UpdateStatus> {
+// failure so the caller can simply hide the card. Pass `force` (manual "Check
+// again") to bypass the server's TTL cache and re-poll GitHub immediately.
+export async function fetchUpdateStatus(force = false): Promise<UpdateStatus> {
   try {
-    const response = await fetch('/api/admin/update-status', { cache: 'no-store' });
+    const url = force ? '/api/admin/update-status?force=1' : '/api/admin/update-status';
+    const response = await fetch(url, { cache: 'no-store' });
     if (!response.ok) {
       return { enabled: false, current: null };
     }
