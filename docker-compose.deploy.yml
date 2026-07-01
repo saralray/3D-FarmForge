@@ -50,6 +50,11 @@ services:
   watchtower:
     image: containrrr/watchtower
     restart: unless-stopped
+    # containrrr/watchtower ships an old Docker API client (1.25); Docker Engine
+    # 25+/29 requires a minimum negotiated API version of 1.40, so pin the client
+    # version or the container crash-loops with "client version 1.25 is too old".
+    environment:
+      DOCKER_API_VERSION: ${WATCHTOWER_DOCKER_API_VERSION:-1.44}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command:

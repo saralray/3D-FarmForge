@@ -37,6 +37,10 @@ services:
       dockerfile: Dockerfile.web
       args:
         VITE_PUBLIC_VIEWER_MODE: ${VITE_PUBLIC_VIEWER_MODE:-false}
+        # Baked into the image as the running version. CI passes the git SHA; a
+        # local build defaults to "dev" (the update check treats "dev" as "no
+        # comparison" so it never shows a false "update available").
+        APP_VERSION: ${APP_VERSION:-dev}
     restart: unless-stopped
     depends_on:
       db:
@@ -87,9 +91,10 @@ services:
       # Max size of a model file uploaded through the in-app print-request form
       # (stored in Postgres). The nginx /api/queue/submit body cap should match.
       QUEUE_UPLOAD_MAX_BYTES: ${QUEUE_UPLOAD_MAX_BYTES:-52428800}
-      # Git commit SHA baked into this image (the running version). Normally set by
-      # the CI build; can be overridden here for a locally built image.
-      APP_VERSION: ${APP_VERSION:-}
+      # NOTE: APP_VERSION (the running git SHA) is baked into the image at build
+      # time (Dockerfile.web ENV) — it must NOT be listed here, or an unset host
+      # APP_VERSION would override the baked value with an empty string. Local
+      # source builds pass it via the build arg below instead.
       # Admin "update available" check (Settings → Maintenance). Set
       # UPDATE_CHECK_REPO to "owner/repo" to enable it; the server compares the
       # running APP_VERSION against the latest commit on UPDATE_CHECK_BRANCH.
