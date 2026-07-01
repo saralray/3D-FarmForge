@@ -20,9 +20,12 @@ export function Root() {
       {backgroundDataUrl && (
         // Faded layer behind the content (-z-10 under `isolate`) so the custom
         // image shows through the theme background rather than at full strength.
+        // Opacity is theme-aware: the image blends against a near-white page in
+        // light mode (so it needs to sit stronger to stay legible) versus a
+        // near-black page in dark mode, where 40% already reads clearly.
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 -z-10 bg-cover bg-center opacity-40"
+          className="pointer-events-none absolute inset-0 -z-10 bg-cover bg-center opacity-70 dark:opacity-40"
           style={{ backgroundImage: `url(${backgroundDataUrl})` }}
         />
       )}
