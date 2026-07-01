@@ -23,6 +23,21 @@ function relativeTime(iso: string | null | undefined): string | null {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
+interface UpdateLogEntry {
+  time: string;
+  message: string;
+}
+
+// Watchtower's HTTP API only acknowledges the trigger — it has no log-streaming
+// endpoint — so "progress" here is synthesized client-side by re-polling
+// /api/admin/update-status until the app comes back up on a new commit SHA.
+const POLL_INTERVAL_MS = 4000;
+const POLL_TIMEOUT_MS = 3 * 60 * 1000;
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // Admin-only "update available" card. Compares the running image's commit SHA
 // (baked at build time) against the latest published commit, and — when a
 // Watchtower sidecar is configured — applies the update in place.
@@ -31,6 +46,11 @@ export function SoftwareUpdateSettings() {
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [updateLog, setUpdateLog] = useState<UpdateLogEntry[]>([]);
+
+  const appendLog = useCallback((message: string) => {
+    setUpdateLog((log) => [...log, { time: new Date().toISOString(), message }]);
+  }, []);
 
   const refresh = useCallback(async (force = false) => {
     setLoading(true);
@@ -52,16 +72,55 @@ export function SoftwareUpdateSettings() {
     void refresh();
   }, [refresh]);
 
+  // Re-polls update-status until either the app comes back up on a new commit
+  // SHA (success) or the timeout elapses. A connection failure mid-poll means
+  // the containers are mid-restart, not that the update failed.
+  const pollUntilRestarted = useCallback(
+    async (previousCurrent: string | null) => {
+      const deadline = Date.now() + POLL_TIMEOUT_MS;
+      let sawDrop = false;
+      while (Date.now() < deadline) {
+        await wait(POLL_INTERVAL_MS);
+        const next = await fetchUpdateStatus(true);
+        const unreachable = !next.enabled && !next.current;
+        if (unreachable) {
+          if (!sawDrop) {
+            appendLog('Connection lost — containers are restarting…');
+            sawDrop = true;
+          }
+          continue;
+        }
+        if (sawDrop) {
+          appendLog('Reconnected to the app.');
+        }
+        if (next.current && next.current !== previousCurrent) {
+          appendLog(`Update complete — now running ${short(next.current)}.`);
+          setStatus(next);
+          return true;
+        }
+      }
+      appendLog('Timed out waiting for the restart to finish. Refresh the page to check the running version.');
+      return false;
+    },
+    [appendLog],
+  );
+
   const handleApply = async () => {
     setApplying(true);
+    setUpdateLog([]);
+    appendLog('Starting update…');
+    const previousCurrent = status?.current ?? null;
     const result = await applyUpdate();
     if (result.ok) {
+      appendLog('Update triggered on the server.');
       toast('Update started', {
-        description:
-          'Pulling the new version and restarting. The site will briefly go offline, then reload once it is back.',
+        description: 'See progress in the log below. The site will briefly go offline, then reload once it is back.',
         duration: Infinity,
       });
+      await pollUntilRestarted(previousCurrent);
+      setApplying(false);
     } else {
+      appendLog(`Failed to start update: ${result.error || 'unknown error'}`);
       toast.error(result.error || 'Could not start the update.');
       setApplying(false);
     }
@@ -141,6 +200,17 @@ export function SoftwareUpdateSettings() {
           <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
             <CheckCircle2 className="h-4 w-4" />
             You are on the latest version.
+          </div>
+        ) : null}
+
+        {updateLog.length > 0 ? (
+          <div className="max-h-40 overflow-y-auto rounded bg-gray-950 p-3 font-mono text-xs text-gray-300">
+            {updateLog.map((entry, index) => (
+              <div key={index}>
+                <span className="text-gray-500">{new Date(entry.time).toLocaleTimeString()}</span>{' '}
+                {entry.message}
+              </div>
+            ))}
           </div>
         ) : null}
       </div>
