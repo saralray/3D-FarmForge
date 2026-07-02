@@ -12,7 +12,10 @@ import { useIsMobile } from './ui/use-mobile';
 
 // How often each dashboard card re-fetches its webcam snapshot for a near-live
 // preview. The printer control/detail page shows the fully live feed instead.
-const SNAPSHOT_REFRESH_MS = 2000;
+// Kept coarse (rather than truly live) because this fetch runs per-card,
+// per-printer, per-open-dashboard — the dominant source of egress traffic on
+// a farm with many printers/viewers.
+const SNAPSHOT_REFRESH_MS = 5000;
 
 interface PrinterCardProps {
   printer: Printer;
@@ -56,12 +59,41 @@ export function PrinterCard({
       return;
     }
 
-    const interval = window.setInterval(() => {
-      setSnapshotNonce(Date.now());
-    }, SNAPSHOT_REFRESH_MS);
+    // Pause snapshot polling while the tab/window isn't visible (e.g. a
+    // dashboard left open in a background tab) — refreshing an image no one
+    // can see just burns bandwidth. Refresh immediately on return.
+    let interval: number | undefined;
+    const startInterval = () => {
+      if (interval !== undefined) {
+        return;
+      }
+      interval = window.setInterval(() => {
+        setSnapshotNonce(Date.now());
+      }, SNAPSHOT_REFRESH_MS);
+    };
+    const stopInterval = () => {
+      if (interval !== undefined) {
+        window.clearInterval(interval);
+        interval = undefined;
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        setSnapshotNonce(Date.now());
+        startInterval();
+      } else {
+        stopInterval();
+      }
+    };
+
+    if (document.visibilityState === 'visible') {
+      startInterval();
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
-      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      stopInterval();
     };
   }, [isOnline, printer.id, isMobile]);
 
