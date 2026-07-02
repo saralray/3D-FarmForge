@@ -25,6 +25,7 @@ import {
   fetchNetworkUsage,
   routeLabel,
   type NetworkUsageResponse,
+  type PollerShardTraffic,
 } from '../lib/networkUsageApi';
 import { formatBytes, formatMaxTwoDecimals } from '../lib/numberFormat';
 import { useAutoRefresh } from '../lib/useAutoRefresh';
@@ -49,8 +50,23 @@ const EMPTY: NetworkUsageResponse = {
   monthToDate: { bytesOut: 0, bytesIn: 0, requests: 0 },
   daily: [],
   byRoute: [],
+  poller: [],
   processStartedAt: new Date().toISOString(),
 };
+
+function formatDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
 
 function OutInLine({ bytesOut, bytesIn }: { bytesOut: number; bytesIn: number }) {
   return (
@@ -252,6 +268,54 @@ export function NetworkUsage() {
               <TableRow>
                 <TableCell colSpan={5} className="py-8 text-center text-gray-500 dark:text-gray-400">
                   No traffic recorded yet.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+
+      <Card className="p-4 space-y-4 dark:bg-gray-800 dark:border-gray-700">
+        <div>
+          <h2 className="text-xl font-semibold dark:text-white">Poller ↔ printers</h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            A separate traffic source: the poller talking directly to the printers
+            (HTTP, Bambu MQTT/FTP) — not browser/client traffic. Shown per shard,
+            last poll cycle only (no history).
+          </p>
+        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Shard</TableHead>
+              <TableHead>Last run</TableHead>
+              <TableHead>Printers polled</TableHead>
+              <TableHead>Cycle time</TableHead>
+              <TableHead>Out</TableHead>
+              <TableHead>In</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.poller.map((shard: PollerShardTraffic) => (
+              <TableRow key={shard.shard}>
+                <TableCell className="font-medium dark:text-gray-200">
+                  {shard.shard + 1} / {shard.shardCount}
+                </TableCell>
+                <TableCell className="whitespace-nowrap text-gray-600 dark:text-gray-400">
+                  {formatDateTime(shard.lastRunAt)}
+                </TableCell>
+                <TableCell className="dark:text-gray-200">{shard.printersPolled}</TableCell>
+                <TableCell className="text-gray-600 dark:text-gray-400">
+                  {formatMaxTwoDecimals(shard.cycleDurationMs / 1000)}s
+                </TableCell>
+                <TableCell className="dark:text-gray-200">{formatBytes(shard.bytesOut)}</TableCell>
+                <TableCell className="dark:text-gray-200">{formatBytes(shard.bytesIn)}</TableCell>
+              </TableRow>
+            ))}
+            {!isLoading && data.poller.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={6} className="py-8 text-center text-gray-500 dark:text-gray-400">
+                  No poller activity recorded yet.
                 </TableCell>
               </TableRow>
             )}

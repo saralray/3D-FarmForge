@@ -49,6 +49,7 @@ import {
   getNetworkUsageByRoute,
   getNetworkUsageToday,
   getNetworkUsageMonthToDate,
+  getPollerHealth,
   upsertNetworkUsageDaily,
   listDiscordWebhooks,
   listManagerRequests,
@@ -3788,17 +3789,19 @@ async function handleApi(req, res, requestUrl) {
   // class, backing the Network Usage page. "Approximate" because it's Node
   // counting response chunk bytes, not TLS/HTTP framing or nginx-only paths.
   if (requestUrl.pathname === '/api/network-usage' && req.method === 'GET') {
-    const [today, monthToDate, daily, byRoute] = await Promise.all([
+    const [today, monthToDate, daily, byRoute, poller] = await Promise.all([
       getNetworkUsageToday(),
       getNetworkUsageMonthToDate(),
       listNetworkUsageDaily(30),
       getNetworkUsageByRoute(30),
+      getPollerHealth(),
     ]);
     sendJson(res, 200, {
       today,
       monthToDate,
       daily,
       byRoute,
+      poller,
       processStartedAt: new Date(getProcessStartSeconds() * 1000).toISOString(),
     });
     return true;

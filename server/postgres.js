@@ -950,6 +950,34 @@ export async function getNetworkUsageMonthToDate() {
   return toUsageTotal(result.rows[0]);
 }
 
+// The poller's own traffic to/from the printers (HTTP polling, Bambu
+// MQTT/FTP) — distinct from the network_usage_daily reads above, which are
+// the web tier's traffic to browsers/clients. One row per shard, overwritten
+// each poll cycle (no history — "last cycle" only, like the table's other
+// columns), so unlike network_usage_daily there's no daily rollup to show.
+export async function getPollerHealth() {
+  await ensureSchema();
+  const result = await query(`
+    SELECT shard_index, shard_count,
+           EXTRACT(EPOCH FROM last_run_at) * 1000 AS last_run_at_ms,
+           cycle_duration_ms, printers_polled, rows_written, refresh_failures,
+           bytes_out, bytes_in
+    FROM poller_health
+    ORDER BY shard_index ASC;
+  `);
+  return result.rows.map((row) => ({
+    shard: row.shard_index,
+    shardCount: row.shard_count,
+    lastRunAt: new Date(Number(row.last_run_at_ms)).toISOString(),
+    cycleDurationMs: Number(row.cycle_duration_ms),
+    printersPolled: row.printers_polled,
+    rowsWritten: row.rows_written,
+    refreshFailures: row.refresh_failures,
+    bytesOut: Number(row.bytes_out),
+    bytesIn: Number(row.bytes_in),
+  }));
+}
+
 export async function upsertQueueJobs(jobs) {
   await ensureSchema();
 

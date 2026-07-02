@@ -23,11 +23,28 @@ export interface NetworkUsageByRoute {
   requests: number;
 }
 
+// The poller's own traffic to/from the printers themselves (HTTP/MQTT/FTP) —
+// a separate source from everything above, which is the web tier's traffic to
+// browsers/clients. Only the latest cycle per shard is kept (poller_health
+// has no history), so there's no daily series for this one.
+export interface PollerShardTraffic {
+  shard: number;
+  shardCount: number;
+  lastRunAt: string;
+  cycleDurationMs: number;
+  printersPolled: number;
+  rowsWritten: number;
+  refreshFailures: number;
+  bytesOut: number;
+  bytesIn: number;
+}
+
 export interface NetworkUsageResponse {
   today: NetworkUsageTotal;
   monthToDate: NetworkUsageTotal;
   daily: NetworkUsageDailyPoint[];
   byRoute: NetworkUsageByRoute[];
+  poller: PollerShardTraffic[];
   processStartedAt: string;
 }
 
