@@ -45,6 +45,14 @@ export function PrintRequest() {
   const [submitted, setSubmitted] = useState(false);
   const { backgroundDataUrl } = useBrandingSettings();
 
+  const hasFile = entries.some((e) => e.file !== null);
+  const canSubmit =
+    firstName.trim() !== '' &&
+    lastName.trim() !== '' &&
+    studentId.trim() !== '' &&
+    course.trim() !== '' &&
+    hasFile;
+
   const resetForm = () => {
     setFirstName('');
     setLastName('');
@@ -65,8 +73,8 @@ export function PrintRequest() {
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
 
-    if (!firstName.trim() && !lastName.trim() && !studentId.trim()) {
-      toast.error('Please enter your name or student ID.');
+    if (!firstName.trim() || !lastName.trim() || !studentId.trim() || !course.trim()) {
+      toast.error('Please fill in your first name, last name, student ID, and course/class.');
       return;
     }
 
@@ -211,41 +219,45 @@ export function PrintRequest() {
                   </h2>
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div className="space-y-1.5">
-                      <Label htmlFor="firstName">First name</Label>
+                      <Label htmlFor="firstName">First name <span className="text-red-500">*</span></Label>
                       <Input
                         id="firstName"
                         value={firstName}
                         onChange={(e) => setFirstName(e.target.value)}
                         placeholder="ชื่อ"
+                        required
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label htmlFor="lastName">Last name</Label>
+                      <Label htmlFor="lastName">Last name <span className="text-red-500">*</span></Label>
                       <Input
                         id="lastName"
                         value={lastName}
                         onChange={(e) => setLastName(e.target.value)}
                         placeholder="นามสกุล"
+                        required
                       />
                     </div>
                   </div>
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div className="space-y-1.5">
-                      <Label htmlFor="studentId">Student ID</Label>
+                      <Label htmlFor="studentId">Student ID <span className="text-red-500">*</span></Label>
                       <Input
                         id="studentId"
                         value={studentId}
                         onChange={(e) => setStudentId(e.target.value)}
                         placeholder="รหัสนักศึกษา"
+                        required
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label htmlFor="course">Course / Class</Label>
+                      <Label htmlFor="course">Course / Class <span className="text-red-500">*</span></Label>
                       <Input
                         id="course"
                         value={course}
                         onChange={(e) => setCourse(e.target.value)}
                         placeholder="วิชา / ชั้นเรียน"
+                        required
                       />
                     </div>
                   </div>
@@ -355,7 +367,7 @@ export function PrintRequest() {
                   </Button>
                 </section>
 
-                <Button type="submit" className="w-full" size="lg" disabled={submitting}>
+                <Button type="submit" className="w-full" size="lg" disabled={submitting || !canSubmit}>
                   {submitting ? 'Submitting…' : 'Submit print request'}
                 </Button>
               </form>
