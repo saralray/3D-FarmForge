@@ -26,6 +26,12 @@ const durationByRoute = new Map();
 // requestCounts — this feeds both /metrics and the network-usage page's
 // periodic DB flush, neither of which needs the method/status breakdown).
 const bytesByRoute = new Map();
+// Inbound (request body) bytes, by route — approximate: derived from the
+// Content-Length header at request start rather than counting actual chunks,
+// so it can never interfere with body parsing downstream (busboy, JSON
+// readers). Requests without Content-Length (rare for browser uploads) are
+// undercounted, same "approximate" caveat as the rest of this feature.
+const bytesInByRoute = new Map();
 const requestsByRoute = new Map();
 let inFlight = 0;
 
@@ -104,8 +110,21 @@ export function recordResponseBytes(route, bytes) {
 // Cumulative-since-process-start snapshots, consumed by the network-usage
 // flush worker (server/app.js) to compute deltas for persistence. Returned as
 // plain objects so the caller can't mutate the live maps.
+// Called once at request start from the Content-Length header (see the note
+// on bytesInByRoute above for why this isn't chunk-counted like the outbound
+// side).
+export function recordRequestBytes(route, bytes) {
+  if (!bytes) {
+    return;
+  }
+  bytesInByRoute.set(route, (bytesInByRoute.get(route) || 0) + bytes);
+}
+
 export function snapshotBytesByRoute() {
   return Object.fromEntries(bytesByRoute);
+}
+export function snapshotBytesInByRoute() {
+  return Object.fromEntries(bytesInByRoute);
 }
 export function snapshotRequestsByRoute() {
   return Object.fromEntries(requestsByRoute);
@@ -145,10 +164,16 @@ export function renderMetrics() {
     lines.push(`printfarm_web_http_request_duration_seconds_count{route="${route}"} ${hist.count}`);
   }
 
-  lines.push('# HELP printfarm_web_response_bytes_total Total response bytes served, by route.');
+  lines.push('# HELP printfarm_web_response_bytes_total Total response (outbound) bytes served, by route.');
   lines.push('# TYPE printfarm_web_response_bytes_total counter');
   for (const [route, bytes] of bytesByRoute) {
     lines.push(`printfarm_web_response_bytes_total{route="${route}"} ${bytes}`);
+  }
+
+  lines.push('# HELP printfarm_web_request_bytes_total Total request (inbound) bytes received, by route.');
+  lines.push('# TYPE printfarm_web_request_bytes_total counter');
+  for (const [route, bytes] of bytesInByRoute) {
+    lines.push(`printfarm_web_request_bytes_total{route="${route}"} ${bytes}`);
   }
 
   lines.push('# HELP printfarm_web_http_requests_in_flight HTTP requests currently being served.');

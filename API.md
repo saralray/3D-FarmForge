@@ -580,17 +580,21 @@ overdue task −15, print failure rate >10% −10 (clamped 0–100). Status band
 
 ### Network usage (frontend `/api/*`)
 
-Admin-only (like audit logs). Approximate app-layer response traffic by route
-category, backing the **Network** page (Settings-adjacent admin nav). Fed by an
-in-process byte counter (`server/metrics.js`) that's flushed to Postgres
-(`network_usage_daily`) once a minute, so history survives a web-container
-restart. It's an estimate: Node counts response chunk bytes, which excludes
-TLS/HTTP framing overhead and any traffic nginx serves without reaching the app
-(e.g. the Prometheus UI at `/prometheus`).
+Admin-only (like audit logs). Approximate app-layer traffic by route category,
+split by direction, backing the **Network** page (Settings-adjacent admin
+nav). Fed by in-process byte counters (`server/metrics.js`) that are flushed
+to Postgres (`network_usage_daily`) once a minute, so history survives a
+web-container restart. It's an estimate: outbound bytes are Node counting
+response chunks (excludes TLS/HTTP framing overhead and any traffic nginx
+serves without reaching the app, e.g. the Prometheus UI at `/prometheus`);
+inbound bytes are read once from each request's `Content-Length` header
+(rather than counting request-body chunks, so instrumentation can never race
+with — or steal chunks from — downstream body parsing, busboy's file-upload
+stream above all), so a request without that header is undercounted.
 
 | Method & path | Description |
 |---------------|-------------|
-| `GET /api/network-usage` | `{ today, monthToDate, daily[], byRoute[], processStartedAt }`. `today`/`monthToDate` are `{ bytes, requests }`. `daily` is the last 30 calendar days, oldest first, zero-filled for days with no traffic. `byRoute` is the last-30-days total per route category (see `classifyRoute` in `server/metrics.js` for the vocabulary — `webcam`, `printer_proxy`, `api_v1`, `api_<resource>`, `static`, `app`, `healthz`, `readyz`, `metrics`), sorted by bytes descending. |
+| `GET /api/network-usage` | `{ today, monthToDate, daily[], byRoute[], processStartedAt }`. `today`/`monthToDate` are `{ bytesOut, bytesIn, requests }` — `bytesOut` is what the server sent (webcam snapshots, API responses, pages/assets), `bytesIn` is what it received (print-request/slicer uploads). `daily` is the last 30 calendar days, oldest first, zero-filled for days with no traffic, each point `{ date, bytesOut, bytesIn, requests }`. `byRoute` is the last-30-days total per route category (see `classifyRoute` in `server/metrics.js` for the vocabulary — `webcam`, `printer_proxy`, `api_v1`, `api_<resource>`, `static`, `app`, `healthz`, `readyz`, `metrics`), each `{ route, bytesOut, bytesIn, requests }`, sorted by `bytesOut` descending. |
 
 ---
 
@@ -1284,8 +1288,9 @@ falls back to Postgres/in-memory). Use for load-balancer routing.
 
 Prometheus exposition of the web tier's own request metrics
 (`printfarm_web_http_requests_total`, `printfarm_web_http_request_duration_seconds`,
-`printfarm_web_response_bytes_total`, `printfarm_web_http_requests_in_flight`,
-`printfarm_web_resident_memory_bytes`, `printfarm_web_start_time_seconds`).
+`printfarm_web_response_bytes_total`, `printfarm_web_request_bytes_total`,
+`printfarm_web_http_requests_in_flight`, `printfarm_web_resident_memory_bytes`,
+`printfarm_web_start_time_seconds`).
 **Internal only** — nginx returns `404` for
 `/metrics` on the public site; Prometheus scrapes `web:5173/metrics` directly
 over the compose network. Carries no secrets. Distinct from the `exporter`

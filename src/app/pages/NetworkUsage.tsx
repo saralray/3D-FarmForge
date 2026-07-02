@@ -6,9 +6,10 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { RefreshCw, Wifi, Gauge, CalendarDays } from 'lucide-react';
+import { RefreshCw, Wifi, Gauge, CalendarDays, ArrowDown, ArrowUp } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import {
@@ -28,6 +29,13 @@ import {
 import { formatBytes, formatMaxTwoDecimals } from '../lib/numberFormat';
 import { useAutoRefresh } from '../lib/useAutoRefresh';
 
+// Out (server -> client, e.g. webcam/API responses) and In (client -> server,
+// e.g. print-request/slicer uploads) get distinct, fixed colors throughout —
+// out is by far the larger number for this app, so it keeps the primary blue
+// used elsewhere in the dashboard's charts; in gets a secondary color.
+const COLOR_OUT = '#3b82f6';
+const COLOR_IN = '#22c55e';
+
 function formatShortDate(iso: string): string {
   const date = new Date(`${iso}T00:00:00`);
   if (Number.isNaN(date.getTime())) {
@@ -37,12 +45,27 @@ function formatShortDate(iso: string): string {
 }
 
 const EMPTY: NetworkUsageResponse = {
-  today: { bytes: 0, requests: 0 },
-  monthToDate: { bytes: 0, requests: 0 },
+  today: { bytesOut: 0, bytesIn: 0, requests: 0 },
+  monthToDate: { bytesOut: 0, bytesIn: 0, requests: 0 },
   daily: [],
   byRoute: [],
   processStartedAt: new Date().toISOString(),
 };
+
+function OutInLine({ bytesOut, bytesIn }: { bytesOut: number; bytesIn: number }) {
+  return (
+    <div className="mt-1 space-y-0.5 text-xs text-gray-500 dark:text-gray-400">
+      <div className="flex items-center gap-1">
+        <ArrowDown className="size-3" style={{ color: COLOR_OUT }} />
+        <span>{formatBytes(bytesOut)} out</span>
+      </div>
+      <div className="flex items-center gap-1">
+        <ArrowUp className="size-3" style={{ color: COLOR_IN }} />
+        <span>{formatBytes(bytesIn)} in</span>
+      </div>
+    </div>
+  );
+}
 
 export function NetworkUsage() {
   const [data, setData] = useState<NetworkUsageResponse>(EMPTY);
@@ -95,9 +118,10 @@ export function NetworkUsage() {
     const now = new Date();
     return now.getDate();
   })();
-  const dailyAverageBytes = data.monthToDate.bytes / Math.max(1, daysElapsedThisMonth);
+  const dailyAverageOut = data.monthToDate.bytesOut / Math.max(1, daysElapsedThisMonth);
+  const dailyAverageIn = data.monthToDate.bytesIn / Math.max(1, daysElapsedThisMonth);
 
-  const totalRouteBytes = data.byRoute.reduce((acc, row) => acc + row.bytes, 0);
+  const totalRouteBytesOut = data.byRoute.reduce((acc, row) => acc + row.bytesOut, 0);
 
   return (
     <div className="p-6 space-y-6">
@@ -108,9 +132,12 @@ export function NetworkUsage() {
             Network Usage
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
-            Approximate app-layer response traffic, by category — measured at the
-            web server, not including TLS/HTTP framing overhead or traffic that
-            never reaches the app (e.g. the Prometheus UI proxied by nginx).
+            Approximate app-layer traffic, split by direction — <strong>out</strong> is
+            what the server sends (webcam snapshots, API responses, pages/assets);{' '}
+            <strong>in</strong> is what it receives (print-request and slicer
+            uploads). Measured at the web server, not including TLS/HTTP framing
+            overhead or traffic that never reaches the app (e.g. the Prometheus UI
+            proxied by nginx).
           </p>
         </div>
         <Button
@@ -138,11 +165,9 @@ export function NetworkUsage() {
             <div>
               <div className="text-sm text-gray-600 dark:text-gray-400">Today</div>
               <div className="text-3xl font-bold mt-1 dark:text-white">
-                {formatBytes(data.today.bytes)}
+                {formatBytes(data.today.bytesOut + data.today.bytesIn)}
               </div>
-              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                {formatMaxTwoDecimals(data.today.requests)} requests
-              </div>
+              <OutInLine bytesOut={data.today.bytesOut} bytesIn={data.today.bytesIn} />
             </div>
             <Wifi className="size-8 text-blue-500" />
           </div>
@@ -152,11 +177,9 @@ export function NetworkUsage() {
             <div>
               <div className="text-sm text-gray-600 dark:text-gray-400">This month</div>
               <div className="text-3xl font-bold mt-1 dark:text-white">
-                {formatBytes(data.monthToDate.bytes)}
+                {formatBytes(data.monthToDate.bytesOut + data.monthToDate.bytesIn)}
               </div>
-              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                {formatMaxTwoDecimals(data.monthToDate.requests)} requests
-              </div>
+              <OutInLine bytesOut={data.monthToDate.bytesOut} bytesIn={data.monthToDate.bytesIn} />
             </div>
             <CalendarDays className="size-8 text-purple-500" />
           </div>
@@ -166,9 +189,9 @@ export function NetworkUsage() {
             <div>
               <div className="text-sm text-gray-600 dark:text-gray-400">Daily average</div>
               <div className="text-3xl font-bold mt-1 dark:text-white">
-                {formatBytes(dailyAverageBytes)}
+                {formatBytes(dailyAverageOut + dailyAverageIn)}
               </div>
-              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">This month so far</div>
+              <OutInLine bytesOut={dailyAverageOut} bytesIn={dailyAverageIn} />
             </div>
             <Gauge className="size-8 text-cyan-500" />
           </div>
@@ -186,9 +209,11 @@ export function NetworkUsage() {
               <Tooltip
                 contentStyle={{ backgroundColor: 'var(--color-bg)', border: '1px solid var(--color-border)' }}
                 labelFormatter={(label: string) => formatShortDate(label)}
-                formatter={(value: number) => [formatBytes(value), 'Traffic']}
+                formatter={(value: number, name: string) => [formatBytes(value), name]}
               />
-              <Bar dataKey="bytes" fill="#3b82f6" name="Traffic" radius={[4, 4, 0, 0]} />
+              <Legend />
+              <Bar dataKey="bytesOut" fill={COLOR_OUT} name="Out" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="bytesIn" fill={COLOR_IN} name="In" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -200,8 +225,9 @@ export function NetworkUsage() {
           <TableHeader>
             <TableRow>
               <TableHead>Category</TableHead>
-              <TableHead>Traffic</TableHead>
-              <TableHead>Share</TableHead>
+              <TableHead>Out</TableHead>
+              <TableHead>In</TableHead>
+              <TableHead>Share (out)</TableHead>
               <TableHead>Requests</TableHead>
             </TableRow>
           </TableHeader>
@@ -209,10 +235,11 @@ export function NetworkUsage() {
             {data.byRoute.map((row) => (
               <TableRow key={row.route}>
                 <TableCell className="font-medium dark:text-gray-200">{routeLabel(row.route)}</TableCell>
-                <TableCell className="dark:text-gray-200">{formatBytes(row.bytes)}</TableCell>
+                <TableCell className="dark:text-gray-200">{formatBytes(row.bytesOut)}</TableCell>
+                <TableCell className="dark:text-gray-200">{formatBytes(row.bytesIn)}</TableCell>
                 <TableCell className="text-gray-600 dark:text-gray-400">
-                  {totalRouteBytes > 0
-                    ? formatMaxTwoDecimals((row.bytes / totalRouteBytes) * 100)
+                  {totalRouteBytesOut > 0
+                    ? formatMaxTwoDecimals((row.bytesOut / totalRouteBytesOut) * 100)
                     : '0'}
                   %
                 </TableCell>
@@ -223,7 +250,7 @@ export function NetworkUsage() {
             ))}
             {!isLoading && data.byRoute.length === 0 && (
               <TableRow>
-                <TableCell colSpan={4} className="py-8 text-center text-gray-500 dark:text-gray-400">
+                <TableCell colSpan={5} className="py-8 text-center text-gray-500 dark:text-gray-400">
                   No traffic recorded yet.
                 </TableCell>
               </TableRow>

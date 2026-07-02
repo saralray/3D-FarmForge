@@ -97,11 +97,13 @@ import { logger } from './logger.js';
 import {
   classifyRoute,
   getProcessStartSeconds,
+  recordRequestBytes,
   recordRequestEnd,
   recordRequestStart,
   recordResponseBytes,
   renderMetrics,
   snapshotBytesByRoute,
+  snapshotBytesInByRoute,
   snapshotRequestsByRoute,
 } from './metrics.js';
 import {
@@ -5696,6 +5698,14 @@ async function handleRequest(req, res) {
   const startedAt = process.hrtime.bigint();
   recordRequestStart();
 
+  // Inbound bytes: read once from Content-Length rather than counting actual
+  // request-body chunks, so this can never race with (or steal chunks from)
+  // downstream body parsing — busboy's file-upload stream above all.
+  const requestContentLength = Number(req.headers['content-length']);
+  if (Number.isFinite(requestContentLength) && requestContentLength > 0) {
+    recordRequestBytes(route, requestContentLength);
+  }
+
   // Tally response bytes per chunk (not just once at the end) so a long-lived
   // stream — the webcam MJPEG feed above all — shows up in the network-usage
   // page in near-real time rather than only once the connection closes.
@@ -5857,29 +5867,40 @@ setInterval(() => {
 // network_usage_daily, so the Network Usage page has history that survives a
 // restart/redeploy. Diffing (rather than writing the running total) also
 // means a stale/duplicate flush is harmless — it just adds zero.
-const lastFlushedBytesByRoute = new Map();
+const lastFlushedBytesOutByRoute = new Map();
+const lastFlushedBytesInByRoute = new Map();
 const lastFlushedRequestsByRoute = new Map();
 
+// A counter smaller than what was last flushed means the process restarted
+// (metrics.js resets to 0) — treat the current value as the whole delta
+// rather than going negative.
+function deltaSince(current, previous) {
+  return current >= previous ? current - previous : current;
+}
+
 async function flushNetworkUsagePass() {
-  const bytesNow = snapshotBytesByRoute();
+  const bytesOutNow = snapshotBytesByRoute();
+  const bytesInNow = snapshotBytesInByRoute();
   const requestsNow = snapshotRequestsByRoute();
-  const routes = new Set([...Object.keys(bytesNow), ...Object.keys(requestsNow)]);
+  const routes = new Set([
+    ...Object.keys(bytesOutNow),
+    ...Object.keys(bytesInNow),
+    ...Object.keys(requestsNow),
+  ]);
 
   const deltas = [];
   for (const route of routes) {
-    const bytes = bytesNow[route] || 0;
+    const bytesOut = bytesOutNow[route] || 0;
+    const bytesIn = bytesInNow[route] || 0;
     const requests = requestsNow[route] || 0;
-    const prevBytes = lastFlushedBytesByRoute.get(route) || 0;
-    const prevRequests = lastFlushedRequestsByRoute.get(route) || 0;
-    // A counter smaller than what was last flushed means the process
-    // restarted (metrics.js resets to 0) — treat the current value as the
-    // whole delta rather than going negative.
-    const deltaBytes = bytes >= prevBytes ? bytes - prevBytes : bytes;
-    const deltaRequests = requests >= prevRequests ? requests - prevRequests : requests;
-    lastFlushedBytesByRoute.set(route, bytes);
+    const deltaBytesOut = deltaSince(bytesOut, lastFlushedBytesOutByRoute.get(route) || 0);
+    const deltaBytesIn = deltaSince(bytesIn, lastFlushedBytesInByRoute.get(route) || 0);
+    const deltaRequests = deltaSince(requests, lastFlushedRequestsByRoute.get(route) || 0);
+    lastFlushedBytesOutByRoute.set(route, bytesOut);
+    lastFlushedBytesInByRoute.set(route, bytesIn);
     lastFlushedRequestsByRoute.set(route, requests);
-    if (deltaBytes > 0 || deltaRequests > 0) {
-      deltas.push({ route, bytes: deltaBytes, requests: deltaRequests });
+    if (deltaBytesOut > 0 || deltaBytesIn > 0 || deltaRequests > 0) {
+      deltas.push({ route, bytesOut: deltaBytesOut, bytesIn: deltaBytesIn, requests: deltaRequests });
     }
   }
 

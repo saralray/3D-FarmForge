@@ -294,6 +294,11 @@ CREATE TABLE IF NOT EXISTS network_usage_daily (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (usage_date, route)
 );
+-- 'bytes' above is outbound (response) traffic. Added after the initial
+-- release once inbound (request/upload) tracking was added; kept as a
+-- separate column rather than renaming 'bytes' so existing rows don't need a
+-- backfill.
+ALTER TABLE network_usage_daily ADD COLUMN IF NOT EXISTS bytes_in BIGINT NOT NULL DEFAULT 0;
 -- Versioned migrations applied after this idempotent baseline (see MIGRATIONS).
 -- This baseline schema is the forward-only "version 0"; ordered migrations record
 -- their version here so each runs exactly once and the DB's schema level is visible.
@@ -833,17 +838,18 @@ export async function upsertNetworkUsageDaily(deltas) {
     return;
   }
   await ensureSchema();
-  for (const { route, bytes, requests } of deltas) {
+  for (const { route, bytesOut, bytesIn, requests } of deltas) {
     await query(
       `
-      INSERT INTO network_usage_daily (usage_date, route, bytes, requests, updated_at)
-      VALUES (CURRENT_DATE, $1, $2, $3, NOW())
+      INSERT INTO network_usage_daily (usage_date, route, bytes, bytes_in, requests, updated_at)
+      VALUES (CURRENT_DATE, $1, $2, $3, $4, NOW())
       ON CONFLICT (usage_date, route) DO UPDATE SET
         bytes = network_usage_daily.bytes + EXCLUDED.bytes,
+        bytes_in = network_usage_daily.bytes_in + EXCLUDED.bytes_in,
         requests = network_usage_daily.requests + EXCLUDED.requests,
         updated_at = NOW();
     `,
-      [route, bytes, requests],
+      [route, bytesOut, bytesIn, requests],
     );
   }
 }
@@ -861,7 +867,7 @@ export async function listNetworkUsageDaily(days = 30) {
       )::date AS usage_date
     ),
     totals AS (
-      SELECT usage_date, SUM(bytes) AS bytes, SUM(requests) AS requests
+      SELECT usage_date, SUM(bytes) AS bytes_out, SUM(bytes_in) AS bytes_in, SUM(requests) AS requests
       FROM network_usage_daily
       GROUP BY usage_date
     )
@@ -869,7 +875,8 @@ export async function listNetworkUsageDaily(days = 30) {
       json_agg(
         json_build_object(
           'date', to_char(d.usage_date, 'YYYY-MM-DD'),
-          'bytes', COALESCE(t.bytes, 0),
+          'bytesOut', COALESCE(t.bytes_out, 0),
+          'bytesIn', COALESCE(t.bytes_in, 0),
           'requests', COALESCE(t.requests, 0)
         )
         ORDER BY d.usage_date ASC
@@ -890,40 +897,53 @@ export async function getNetworkUsageByRoute(days = 30) {
 
   const result = await query(
     `
-    SELECT route, SUM(bytes)::bigint AS bytes, SUM(requests)::bigint AS requests
+    SELECT route, SUM(bytes)::bigint AS bytes_out, SUM(bytes_in)::bigint AS bytes_in, SUM(requests)::bigint AS requests
     FROM network_usage_daily
     WHERE usage_date >= CURRENT_DATE - (($1::integer - 1) * INTERVAL '1 day')
     GROUP BY route
-    ORDER BY bytes DESC;
+    ORDER BY bytes_out DESC;
   `,
     [Number(days)],
   );
 
   return result.rows.map((row) => ({
     route: row.route,
-    bytes: Number(row.bytes),
+    bytesOut: Number(row.bytes_out),
+    bytesIn: Number(row.bytes_in),
     requests: Number(row.requests),
   }));
+}
+
+function toUsageTotal(row) {
+  return {
+    bytesOut: Number(row.bytes_out),
+    bytesIn: Number(row.bytes_in),
+    requests: Number(row.requests),
+  };
 }
 
 export async function getNetworkUsageToday() {
   await ensureSchema();
   const result = await query(`
-    SELECT COALESCE(SUM(bytes), 0)::bigint AS bytes, COALESCE(SUM(requests), 0)::bigint AS requests
+    SELECT COALESCE(SUM(bytes), 0)::bigint AS bytes_out,
+           COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
+           COALESCE(SUM(requests), 0)::bigint AS requests
     FROM network_usage_daily
     WHERE usage_date = CURRENT_DATE;
   `);
-  return { bytes: Number(result.rows[0].bytes), requests: Number(result.rows[0].requests) };
+  return toUsageTotal(result.rows[0]);
 }
 
 export async function getNetworkUsageMonthToDate() {
   await ensureSchema();
   const result = await query(`
-    SELECT COALESCE(SUM(bytes), 0)::bigint AS bytes, COALESCE(SUM(requests), 0)::bigint AS requests
+    SELECT COALESCE(SUM(bytes), 0)::bigint AS bytes_out,
+           COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
+           COALESCE(SUM(requests), 0)::bigint AS requests
     FROM network_usage_daily
     WHERE usage_date >= date_trunc('month', CURRENT_DATE)::date;
   `);
-  return { bytes: Number(result.rows[0].bytes), requests: Number(result.rows[0].requests) };
+  return toUsageTotal(result.rows[0]);
 }
 
 export async function upsertQueueJobs(jobs) {

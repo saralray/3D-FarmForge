@@ -4,19 +4,22 @@
 // response chunk bytes, not TLS/HTTP framing or nginx-only paths.
 
 export interface NetworkUsageTotal {
-  bytes: number;
+  bytesOut: number;
+  bytesIn: number;
   requests: number;
 }
 
 export interface NetworkUsageDailyPoint {
   date: string;
-  bytes: number;
+  bytesOut: number;
+  bytesIn: number;
   requests: number;
 }
 
 export interface NetworkUsageByRoute {
   route: string;
-  bytes: number;
+  bytesOut: number;
+  bytesIn: number;
   requests: number;
 }
 
