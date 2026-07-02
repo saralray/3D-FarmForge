@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BarChart,
   Bar,
@@ -51,13 +51,22 @@ export function NetworkUsage() {
   // matching the Logs page convention) so a manual click always gives visible
   // spinner/disabled feedback, even though the periodic auto-refresh doesn't.
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // Briefly true right after a successful load, to flash the stat tiles —
+  // otherwise a refresh that returns unchanged numbers (likely, since the
+  // server only flushes traffic totals once a minute) looks like nothing
+  // happened at all.
+  const [justUpdated, setJustUpdated] = useState(false);
   const hasData = useRef(false);
+  const flashTimerRef = useRef<number | undefined>(undefined);
 
   const load = useCallback(async () => {
     try {
       const next = await fetchNetworkUsage();
       setData(next);
       hasData.current = true;
+      window.clearTimeout(flashTimerRef.current);
+      setJustUpdated(true);
+      flashTimerRef.current = window.setTimeout(() => setJustUpdated(false), 500);
     } catch {
       if (!hasData.current) {
         toast.error('Unable to load network usage. Check the server and database connection.');
@@ -68,6 +77,10 @@ export function NetworkUsage() {
   }, []);
 
   useAutoRefresh(load, 60_000);
+
+  useEffect(() => {
+    return () => window.clearTimeout(flashTimerRef.current);
+  }, []);
 
   const handleManualRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -100,13 +113,26 @@ export function NetworkUsage() {
             never reaches the app (e.g. the Prometheus UI proxied by nginx).
           </p>
         </div>
-        <Button variant="outline" onClick={handleManualRefresh} disabled={isLoading || isRefreshing}>
-          <RefreshCw className={`size-4 mr-2 ${isLoading || isRefreshing ? 'animate-spin' : ''}`} />
+        <Button
+          variant="outline"
+          onClick={handleManualRefresh}
+          disabled={isLoading || isRefreshing}
+          className="transition-transform active:scale-95"
+        >
+          <RefreshCw
+            className={`size-4 mr-2 transition-transform duration-500 ${
+              isLoading || isRefreshing ? 'animate-spin' : ''
+            }`}
+          />
           Refresh
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div
+        className={`grid grid-cols-1 gap-4 sm:grid-cols-3 transition-opacity duration-500 ${
+          justUpdated ? 'opacity-60' : 'opacity-100'
+        }`}
+      >
         <Card className="h-full p-4 bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/80 dark:to-blue-800/80 border-0">
           <div className="flex items-center justify-between">
             <div>
