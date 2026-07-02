@@ -47,6 +47,10 @@ const EMPTY: NetworkUsageResponse = {
 export function NetworkUsage() {
   const [data, setData] = useState<NetworkUsageResponse>(EMPTY);
   const [isLoading, setIsLoading] = useState(true);
+  // Separate from isLoading (which only ever fires for the very first mount,
+  // matching the Logs page convention) so a manual click always gives visible
+  // spinner/disabled feedback, even though the periodic auto-refresh doesn't.
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const hasData = useRef(false);
 
   const load = useCallback(async () => {
@@ -64,6 +68,15 @@ export function NetworkUsage() {
   }, []);
 
   useAutoRefresh(load, 60_000);
+
+  const handleManualRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      await load();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [load]);
 
   const daysElapsedThisMonth = (() => {
     const now = new Date();
@@ -87,8 +100,8 @@ export function NetworkUsage() {
             never reaches the app (e.g. the Prometheus UI proxied by nginx).
           </p>
         </div>
-        <Button variant="outline" onClick={load} disabled={isLoading}>
-          <RefreshCw className={`size-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+        <Button variant="outline" onClick={handleManualRefresh} disabled={isLoading || isRefreshing}>
+          <RefreshCw className={`size-4 mr-2 ${isLoading || isRefreshing ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
       </div>
