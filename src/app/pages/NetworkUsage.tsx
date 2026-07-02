@@ -56,11 +56,11 @@ function OutInLine({ bytesOut, bytesIn }: { bytesOut: number; bytesIn: number })
   return (
     <div className="mt-1 space-y-0.5 text-xs text-gray-500 dark:text-gray-400">
       <div className="flex items-center gap-1">
-        <ArrowDown className="size-3" style={{ color: COLOR_OUT }} />
+        <ArrowUp className="size-3" style={{ color: COLOR_OUT }} />
         <span>{formatBytes(bytesOut)} out</span>
       </div>
       <div className="flex items-center gap-1">
-        <ArrowUp className="size-3" style={{ color: COLOR_IN }} />
+        <ArrowDown className="size-3" style={{ color: COLOR_IN }} />
         <span>{formatBytes(bytesIn)} in</span>
       </div>
     </div>
