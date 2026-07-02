@@ -6,6 +6,12 @@
 #   docker compose -f docker-compose.yml -f docker-compose.deploy.yml pull
 #   docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d
 #
+# Tip: set COMPOSE_FILE="docker-compose.yml:docker-compose.deploy.yml" in the
+# deploy host's .env (see .env.example) and Compose merges both files by
+# default — plain `docker compose up`/`down`/`pull` then just work, with no
+# `-f` flags to remember and no risk of a bare `down` skipping this file and
+# leaving watchtower (and the network it's attached to) behind.
+#
 # Requires in .env:
 #   IMAGE_PREFIX       Docker Hub namespace the images were pushed under
 #                      (the DOCKERHUB_USERNAME used by the workflow).
